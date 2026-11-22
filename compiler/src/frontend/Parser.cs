@@ -9600,6 +9600,13 @@ public sealed class Parser
         }
 
         Token at = _t[_i++];
+        // A REF CONDITIONAL: both arms `ref` variables (ConditionalExpr.RefArms).
+        if (At(Tok.KwRef) && !StartsRefLambda())
+        {
+            Expr refThen = ParseRefValue();
+            Expect(Tok.Colon, "':' in a conditional expression");
+            return new ConditionalExpr { Cond = cond, Then = refThen, Else = ParseRefValue(), RefArms = true, Line = at.Line, Col = at.Col };
+        }
         Expr then = ParseExpr();
         Expect(Tok.Colon, "':' in a conditional expression");
         return new ConditionalExpr { Cond = cond, Then = then, Else = ParseExpr(), Line = at.Line, Col = at.Col };

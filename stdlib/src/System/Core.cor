@@ -19876,7 +19876,8 @@ public static class RuntimeHelpers {
 /// IList and ICollection it is (Lowering.ArrayFaces): an element as an
 /// object, written from one, and the array copied into another whatever
 /// their elements. Its explicit IList and ICollection members are never
-/// reached, every Array being an array whose descriptor answers them.
+/// reached: an Array is an array whose descriptor answers them, or a
+/// rectangular one (__RectangularArray), which answers every one itself.
 public abstract class Array : IList, ICollection {
     private Array() { }
 
@@ -19942,9 +19943,18 @@ public abstract class Array : IList, ICollection {
     }
     private static int Index(int[] indices) {
         if (indices == null) throw new ArgumentNullException("indices");
-        if (indices.Length != 1) throw new ArgumentException("Indices length does not match the array rank.", "indices");
+        if (indices.Length != 1) throw new ArgumentException(RankWanted(indices.Length));
         return indices[0];
     }
+    // WHAT .NET SAYS OF AS MANY INDICES AS AN ARRAY OF ANOTHER RANK WOULD TAKE:
+    // the rank the indices were for, up to three, and no parameter named.
+    internal static string RankWanted(int indices) => indices switch
+    {
+        1 => "Array was not a one-dimensional array.",
+        2 => "Array was not a two-dimensional array.",
+        3 => "Array was not a three-dimensional array.",
+        _ => "Indices length does not match the array rank.",
+    };
 
     // THE NON-GENERIC FORMS, .NET's own: any array into any other, an
     // element at a time through GetValue and SetValue -- widened as SetValue
@@ -19959,12 +19969,13 @@ public abstract class Array : IList, ICollection {
     public static void Copy(Array sourceArray, int sourceIndex, Array destinationArray, int destinationIndex, int length) {
         if (sourceArray == null) throw new ArgumentNullException("sourceArray");
         if (destinationArray == null) throw new ArgumentNullException("destinationArray");
+        // Ranks first, as .NET asks, before any length.
+        if (sourceArray.Rank != destinationArray.Rank) throw new RankException("The specified arrays must have the same number of dimensions.");
         if (length < 0) throw new ArgumentOutOfRangeException("length", "Non-negative number required.");
         if (sourceIndex < 0) throw new ArgumentOutOfRangeException("sourceIndex", "Number was less than the array's lower bound in the first dimension.");
         if (destinationIndex < 0) throw new ArgumentOutOfRangeException("destinationIndex", "Number was less than the array's lower bound in the first dimension.");
         if (sourceArray.Length - sourceIndex < length) throw new ArgumentException("Source array was not long enough. Check the source index, length, and the array's lower bounds.", "sourceArray");
         if (destinationArray.Length - destinationIndex < length) throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
-        if (sourceArray.Rank != destinationArray.Rank) throw new RankException("Source and destination arrays must have the same number of dimensions.");
         // A PRIMITIVE THAT DOES NOT WIDEN to the destination's is refused at
         // the first element, before anything is copied, and is .NET's
         // ArrayTypeMismatchException rather than SetValue's ArgumentException.
@@ -22441,10 +22452,6 @@ public class DuplicateWaitObjectException : ArgumentException
     public DuplicateWaitObjectException(string? message, Exception? innerException) : base(message ?? Duplicate, innerException) { }
 }
 
-/// An index was outside what the thing being indexed holds.
-/// A value stored into an array whose elements cannot hold it: a Cat into a
-/// Dog[] held as an Animal[], as C#'s array covariance allows at compile time
-/// and refuses at run time (Runtime.ArrayStoreCheck).
 /// WHAT T[,] AND T[,,] ARE UNDER System.Array (Collections.cor's
 /// __Rectangular2 and __Rectangular3): their rank, lengths and elements in
 /// row-major order, which Array's members ask for, and the non-generic
@@ -22461,7 +22468,7 @@ abstract class __RectangularArray : Array, IList, ICollection {
     /// dimensions, each inside its own length.
     internal int FlatIndex(int[] indices) {
         if (indices == null) throw new ArgumentNullException("indices");
-        if (indices.Length != Dimensions) throw new ArgumentException("Indices length does not match the array rank.", "indices");
+        if (indices.Length != Dimensions) throw new ArgumentException(Array.RankWanted(indices.Length));
         int at = 0;
         for (int d = 0; d < indices.Length; d++) {
             int length = LengthOf(d);
@@ -22474,7 +22481,13 @@ abstract class __RectangularArray : Array, IList, ICollection {
     int ICollection.Count => FlatCount;
     bool ICollection.IsSynchronized => false;
     object ICollection.SyncRoot => this;
-    void ICollection.CopyTo(Array array, int index) { throw new RankException("Only single dimension arrays are supported here."); }
+    // AS .NET's: no destination, or one not of one dimension, refused for
+    // what it is; one of one dimension refused for the ranks differing.
+    void ICollection.CopyTo(Array array, int index) {
+        if (array == null) throw new ArgumentNullException("destinationArray");
+        if (array.Rank != 1) throw new ArgumentException("Only single dimensional arrays are supported for the requested action.");
+        throw new RankException("The specified arrays must have the same number of dimensions.");
+    }
     object? IList.this[int index] {
         get { throw new ArgumentException("Array was not a one-dimensional array."); }
         set { throw new ArgumentException("Array was not a one-dimensional array."); }
@@ -22501,6 +22514,9 @@ public class RankException : SystemException
     public RankException(string? message, Exception? innerException) : base(message ?? "Attempted to operate on an array with the incorrect number of dimensions.", innerException) { }
 }
 
+/// A value stored into an array whose elements cannot hold it: a Cat into a
+/// Dog[] held as an Animal[], as C#'s array covariance allows at compile time
+/// and refuses at run time (Runtime.ArrayStoreCheck).
 public class ArrayTypeMismatchException : SystemException
 {
     internal override int Code => unchecked((int)0x80131503);
@@ -22509,6 +22525,7 @@ public class ArrayTypeMismatchException : SystemException
     public ArrayTypeMismatchException(string? message, Exception? innerException) : base(message ?? "Attempted to access an element as a type incompatible with the array.", innerException) { }
 }
 
+/// An index was outside what the thing being indexed holds.
 public class IndexOutOfRangeException : SystemException
 {
     internal override int Code => unchecked((int)0x80131508);

@@ -1182,6 +1182,10 @@ public sealed partial class Lowering
             case UnaryExpr u:
                 return EmitUnary(u);
 
+            // A REF CONDITIONAL READ: the chosen variable's value.
+            case ConditionalExpr { RefArms: true } refRead:
+                return LoadPlace(PlaceOf(refRead)!);
+
             case ConditionalExpr c:
             {
                 Type result = _b.TypeOf(c);
@@ -5090,8 +5094,31 @@ public sealed partial class Lowering
     private CallExpr? RefGetterCall(Expr e)
         => e is IndexExpr or MemberExpr && _b.Rewrites.TryGetValue(e, out Expr? made) && made is CallExpr call && RefCallee(call) is not null ? call : null;
 
+    /// <summary>
+    /// The address of the variable a ref conditional chooses: each arm's
+    /// own (AddressOf its RefArgExpr's target), the one the condition picks.
+    /// </summary>
+    private VReg RefConditionalAddress(ConditionalExpr chosen, bool pins = false)
+    {
+        VReg address = _f.NewReg(IrTypes.Word, "refcond");
+        Block then = _f.NewBlock("refthen"), other = _f.NewBlock("refelse"), end = _f.NewBlock("refend");
+        BranchOn(chosen.Cond, then, other);
+        _e.SetBlock(then);
+        _e.CopyTo(address, R(AddressOf(chosen.Then, ((RefArgExpr)chosen.Then).Target, pins)));
+        _e.Jump(end);
+        _e.SetBlock(other);
+        _e.CopyTo(address, R(AddressOf(chosen.Else, ((RefArgExpr)chosen.Else).Target, pins)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return address;
+    }
+
     private VReg AddressOf(Node at, Expr target, bool pins = false)
     {
+        if (target is ConditionalExpr { RefArms: true } chosen)
+        {
+            return RefConditionalAddress(chosen, pins);
+        }
         // Its getter's answer is the address.
         if (RefGetterCall(target) is CallExpr getter)
         {

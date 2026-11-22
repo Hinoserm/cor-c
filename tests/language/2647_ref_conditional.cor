@@ -1,0 +1,56 @@
+// test: ref_conditional
+// expect-exit: 0
+// expect-output:
+// local 10 2
+// other 10 20
+// assigned 10 30
+// read 30
+// argument 10 130
+// returned 11 20 33
+// fields 7 0
+// loop 224 11
+//
+// The ref conditional, `c ? ref a : ref b` (C# 7.2): a variable, one of the two,
+// that a ref local takes, a ref argument passes, a ref return hands back, an
+// assignment (compound too) writes and a read loads -- locals, array elements
+// and fields. Expected output from real .NET 10.
+
+using System;
+
+class Box { public int Field; }
+
+static class Program
+{
+    static int[] _table = { 10, 20, 30 };
+    static void Bump(ref int x) { x += 100; }
+    static ref int Pick(bool first, int[] items) => ref first ? ref items[0] : ref items[items.Length - 1];
+
+    static void Main()
+    {
+        int a = 1, b = 2;
+        bool c = true;
+        ref int r = ref (c ? ref a : ref b);
+        r = 10;
+        Console.WriteLine("local " + a + " " + b);
+        c = false;
+        ref int s = ref c ? ref a : ref b;
+        s = 20;
+        Console.WriteLine("other " + a + " " + b);
+        (c ? ref a : ref b) = 30;
+        Console.WriteLine("assigned " + a + " " + b);
+        int read = c ? ref a : ref b;
+        Console.WriteLine("read " + read);
+        Bump(ref c ? ref a : ref b);
+        Console.WriteLine("argument " + a + " " + b);
+        Pick(true, _table) = 11;
+        Pick(false, _table) = 33;
+        Console.WriteLine("returned " + _table[0] + " " + _table[1] + " " + _table[2]);
+        Box one = new Box(), two = new Box();
+        ref int f = ref (a > 5 ? ref one.Field : ref two.Field);
+        f = 7;
+        Console.WriteLine("fields " + one.Field + " " + two.Field);
+        int[] grid = { 1, 2, 3 };
+        for (int i = 0; i < 3; i++) (i % 2 == 0 ? ref grid[i] : ref a) += 1;
+        Console.WriteLine("loop " + grid[0] + grid[1] + grid[2] + " " + a);
+    }
+}

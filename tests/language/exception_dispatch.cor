@@ -18,24 +18,24 @@ static class Program
         Exception? caught = null;
         try { Bare<int>(); }
         catch (Exception error) { caught = error; }
-        if (caught == null || !caught.StackTrace.Contains("Origin")) return 1;
+        if (caught == null || !caught.StackTrace!.Contains("Origin")) return 1;
         ExceptionDispatchInfo dispatch = ExceptionDispatchInfo.Capture(caught);
-        string original = caught.StackTrace;
+        string original = caught.StackTrace!;
         try { Explicit(caught); }
         catch (Exception error)
         {
-            if (!error.StackTrace.Contains("Explicit") || error.StackTrace.Contains("Origin")) return 2;
+            if (!error.StackTrace!.Contains("Explicit") || error.StackTrace!.Contains("Origin")) return 2;
         }
         try { dispatch.Throw(); }
         catch (Exception error)
         {
-            if (error != dispatch.SourceException || !error.StackTrace.StartsWith(original)) return 3;
-            if (!error.StackTrace.Contains("End of stack trace")) return 4;
+            if (error != dispatch.SourceException || !error.StackTrace!.StartsWith(original)) return 3;
+            if (!error.StackTrace!.Contains("End of stack trace")) return 4;
         }
         try { dispatch.Throw(); }
         catch (Exception error)
         {
-            if (!error.StackTrace.StartsWith(original)) return 5;
+            if (!error.StackTrace!.StartsWith(original)) return 5;
         }
         Console.WriteLine("exception dispatch ok");
         return 0;

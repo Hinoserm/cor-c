@@ -23,4 +23,13 @@ public sealed class ConditionalExpr : Expr
     /// makes is a zeroed slot of the frame (Lowering's ConditionalExpr).
     /// </summary>
     public bool Effect { get; init; }
+
+    /// <summary>
+    /// A REF CONDITIONAL, `c ? ref a : ref b` (C# 7.2): each arm a variable
+    /// referred to (RefArgExpr), the whole a variable itself -- one of the
+    /// two, chosen at run time -- that a ref local, a ref argument or a ref
+    /// return takes the address of, and that an assignment writes or a read
+    /// loads (Lowering.RefConditionalAddress).
+    /// </summary>
+    public bool RefArms { get; init; }
 }

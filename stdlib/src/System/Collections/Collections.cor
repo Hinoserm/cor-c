@@ -2219,6 +2219,8 @@ static class __Rectangular {
     /// primitive widened, anything else refused with SetValue's exception.
     public static T Element<T>(object? value) {
         if (value is T same) return same;
+        // Null into references is null, with nothing made for it (Clear).
+        if (value == null && default(T) == null) return default!;
         T[] one = new T[1];
         ((Array)one).SetValue(value, 0);
         return one[0];

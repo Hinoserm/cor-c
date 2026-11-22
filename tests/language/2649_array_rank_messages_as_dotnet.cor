@@ -1,0 +1,39 @@
+// test: array_rank_messages_as_dotnet
+// expect-exit: 0
+// expect-output:
+// copy ranks RankException: The specified arrays must have the same number of dimensions.
+// copy ranks short RankException: The specified arrays must have the same number of dimensions.
+// copyto null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// copyto rank2 ArgumentException: Only single dimensional arrays are supported for the requested action.
+// copyto rank1 RankException: The specified arrays must have the same number of dimensions.
+// getvalue count ArgumentException: Array was not a three-dimensional array.
+// getvalue count 1d ArgumentException: Array was not a two-dimensional array.
+// setvalue count ArgumentException: Array was not a three-dimensional array.
+// getvalue one ArgumentException: Array was not a one-dimensional array.
+//
+// .NET's own words for an array asked with the wrong number of dimensions:
+// Copy between ranks (checked before any length), ICollection.CopyTo out of a
+// rectangular array, and GetValue/SetValue with as many indices as another
+// rank would take (named by that rank, no parameter). From real .NET 10.
+
+using System;
+using System.Collections;
+static class Program
+{
+    static void Show(string what, Action a) { try { a(); Console.WriteLine(what + " ok"); } catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message); } }
+    static void Main()
+    {
+        int[,] g = new int[2, 3];
+        int[] flat = new int[6];
+        int[] tiny = new int[1];
+        Show("copy ranks", () => Array.Copy(g, flat, 6));
+        Show("copy ranks short", () => Array.Copy(g, tiny, 6));
+        Show("copyto null", () => ((ICollection)g).CopyTo(null!, 0));
+        Show("copyto rank2", () => ((ICollection)g).CopyTo(new int[2, 3], 0));
+        Show("copyto rank1", () => ((ICollection)g).CopyTo(flat, 0));
+        Show("getvalue count", () => g.GetValue(1, 2, 3));
+        Show("getvalue count 1d", () => flat.GetValue(1, 2));
+        Show("setvalue count", () => g.SetValue(1, 1, 2, 3));
+        Show("getvalue one", () => g.GetValue(0));
+    }
+}

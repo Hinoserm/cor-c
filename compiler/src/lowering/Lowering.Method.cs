@@ -2306,6 +2306,14 @@ public sealed partial class Lowering
                 }
                 return PlaceOfField(f.Field, Eval(m.Target), m);
 
+            // A REF CONDITIONAL: the variable it chooses, by its address.
+            case ConditionalExpr { RefArms: true } refChosen:
+            {
+                Type chosenType = _b.TypeOf(refChosen);
+                VReg chosenAt = RefConditionalAddress(refChosen);
+                return new MemPlace(RegOperand.Of(chosenAt), 0, chosenType, Inline: InlineElement(chosenType));
+            }
+
             case UnaryExpr { Op: UnOp.Deref } deref:
             {
                 Type pointee = _b.TypeOf(deref);

@@ -217,10 +217,11 @@ public static class OwnedFieldSolver
         // Followed, any free reached every IOwnsStorage.FreeStorage, so every
         // allocation (its slow path's heap check ending the process, which
         // frees a C symbol's name) stored into every List's items (1327, 1311).
-        // FreeField, FreeReplaced and FreeOwnedReplaced need no place here:
-        // every call out of them is to one of these (Free, FreeHeld,
-        // FreeReferenceElements), so following them reaches no store.
-        // FreeManual pushes onto a free list and calls nothing.
+        // Not here, and followed: FreeReplaced and FreeOwnedReplaced, whose
+        // only frees are Free and FreeHeld (cut, so nothing beneath them is
+        // seen either way); FreeField, which clears its LIVE owner's field
+        // (at + offset) itself -- a store into that field, seen as one -- and
+        // checks and logs; FreeManual, a free-list push with its own lock.
         static bool FreesTheDead(string function)
             => function.StartsWith("m_Runtime_Free_1_", StringComparison.Ordinal)
             || function.StartsWith("m_Runtime_FreeHeld_1_", StringComparison.Ordinal)

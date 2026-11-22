@@ -4387,7 +4387,7 @@ public sealed class Monomorphiser
                 return new ConditionalExpr
                 {
                     Cond = Rewrite(c2.Cond, map), Then = Rewrite(c2.Then, map), Else = Rewrite(c2.Else, map),
-                    Effect = c2.Effect,
+                    Effect = c2.Effect, RefArms = c2.RefArms,
                     Line = c2.Line, Col = c2.Col,
                 };
 

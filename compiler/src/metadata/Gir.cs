@@ -937,6 +937,8 @@ public static class Gir
 
                 case ConditionalExpr c2:
                     U8((byte)E.Conditional);
+                    // Its forms (bit 0 a null-conditional's Effect, bit 1 a ref conditional's RefArms).
+                    U8((byte)((c2.Effect ? 1 : 0) | (c2.RefArms ? 2 : 0)));
                     Expr(c2.Cond);
                     Expr(c2.Then);
                     Expr(c2.Else);
@@ -1924,10 +1926,11 @@ public static class Gir
 
                 case E.Conditional:
                 {
+                    byte forms = U8();
                     Expr cond = Need();
                     Expr then = Need();
 
-                    return new ConditionalExpr { Cond = cond, Then = then, Else = Need() };
+                    return new ConditionalExpr { Cond = cond, Then = then, Else = Need(), Effect = (forms & 1) != 0, RefArms = (forms & 2) != 0 };
                 }
 
                 case E.Cast:

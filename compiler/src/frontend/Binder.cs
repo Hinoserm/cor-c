@@ -18718,6 +18718,22 @@ public sealed partial class Binder
                 return target;
             }
 
+            // A REF CONDITIONAL: two variables of one type, the whole a
+            // variable of it (C# 12.18's ref conditional; CS8173 otherwise).
+            case ConditionalExpr { RefArms: true } refChosen:
+            {
+                CheckCondition(refChosen.Cond);
+                Type thenType = CheckExpr(refChosen.Then);
+                Type elseType = CheckExpr(refChosen.Else);
+                if (thenType.IsError || elseType.IsError) return Type.Error;
+                if (!thenType.AsNonNullable().Equals(elseType.AsNonNullable()))
+                {
+                    Error(refChosen, $"CS8173: The expression must be of type '{thenType}' because it is being assigned by reference");
+                    return Type.Error;
+                }
+                return thenType;
+            }
+
             case ConditionalExpr c2:
             {
                 // EACH ARM KNOWS WHAT THE CONDITION PROVED, which is the same
@@ -19053,6 +19069,12 @@ public sealed partial class Binder
                 {
                     CheckAssignable(operand, wanted, cast.Operand, "cast");
                     return wanted;
+                }
+                // NOR IS VOID CAST TO ANYTHING (CS0030): `(object)VoidCall()`.
+                if (operand.IsVoid && !wanted.IsVoid && !wanted.IsError)
+                {
+                    Error(cast, $"CS0030: Cannot convert type 'void' to '{wanted}'");
+                    return Type.Error;
                 }
 
                 // A DYNAMIC VALUE CAST: the binder's explicit conversion.
@@ -20529,6 +20551,9 @@ public sealed partial class Binder
             UnaryExpr { Op: UnOp.Deref } => true,
             // So is the variable a ref-returning call answers.
             CallExpr call => RefCallee(call) is not null,
+            // And the one a ref conditional chooses (its arms checked as
+            // variables where they were bound).
+            ConditionalExpr { RefArms: true } => true,
             _           => false,
         };
 
@@ -20603,6 +20628,8 @@ public sealed partial class Binder
             UnaryExpr { Op: UnOp.Deref } => true,
             // A CALL OF A METHOD THAT RETURNS BY REFERENCE IS A VARIABLE.
             CallExpr call => RefCallee(call) is not null,
+            // SO IS A REF CONDITIONAL: one of its arms, each a variable.
+            ConditionalExpr { RefArms: true } => true,
             _ => false,
         };
 

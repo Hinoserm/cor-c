@@ -1,0 +1,11 @@
+// test: void_cast_refused
+// expect-compile-error: CS0030
+// A void call has no value to cast: Roslyn refuses `(object)Nothing()` with
+// CS0030, cannot convert type 'void' to 'object'.
+
+using System;
+static class Program
+{
+    static void Nothing() { }
+    static void Main() { object o = (object)Nothing(); Console.WriteLine(o); }
+}
