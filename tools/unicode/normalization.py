@@ -101,10 +101,12 @@ while True:
     if not grew:
         break
 
-# CHECKED AGAINST NFC AND NFKC THEMSELVES: every code point stable under the
-# form with a decomposition (canonical for NFC, compatibility for NFKC) put
-# after each composite's first -- a change the form makes there is one only a
-# Maybe may let through.
+# CHECKED AGAINST NFC AND NFKC THEMSELVES: each code point that the form
+# leaves as it is and that has a decomposition (canonical for NFC,
+# compatibility for NFKC), and is not already a Maybe, put after each
+# composite's first -- a change the form makes there is one only a Maybe may
+# let through. (Maybe grows by NFD alone: a code point whose compatibility
+# decomposition starts with a second is NFKC No already.)
 firsts = sorted({key >> 21 for key in composites} | set(range(0x1100, 0x1100 + 19)) | {0xAC00})
 for form in ("NFC", "NFKC"):
     for cp in chars():

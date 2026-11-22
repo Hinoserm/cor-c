@@ -1,15 +1,17 @@
 // test: event subscription inside its type is the field's compound assignment
 // expect-exit: 123
-// Inside Button, `Clicked += null` is the field-like event's field assigned
-// and its value the delegate; outside, += and -= subscribe and unsubscribe,
-// and are void: a lambda whose body is one is an Action, and `?.` over a
-// null button does nothing.
+// Inside Button, `Clicked += null` subscribes through the field-like event's
+// field, and a plain read of `Clicked` there is the field (its delegate);
+// the subscription itself is void inside as outside -- Roslyn refuses `var
+// copy = (Clicked += null)` with CS0815 (test 2644). Outside, += and -=
+// subscribe and unsubscribe: a lambda whose body is one is an Action, and
+// `?.` over a null button does nothing.
 using System;
 
 class Button
 {
     public event Action<int>? Clicked;
-    public int Fire(int v) { Clicked?.Invoke(v); var copy = (Clicked += null); return copy is null ? 0 : 1; }
+    public int Fire(int v) { Clicked?.Invoke(v); Clicked += null; return Clicked is null ? 0 : 1; }
 }
 
 static class Program
