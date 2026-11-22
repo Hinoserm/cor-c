@@ -1,0 +1,30 @@
+// test: generic_inference_through_a_namespaced_base_argument
+// expect-exit: 0
+// expect-output:
+// Item item | Item item | Object item
+//
+// Shop's Crate<T> is an IHolds<Item>, Item being Shop's own: a generic
+// method called from outside Shop infers T as Item, from the Crate itself, a
+// list of Crates as an IEnumerable of the interface, and by variance into
+// IHolds<object>. The template's bases and their arguments are named where
+// the template is written (Binder.InTemplateScope). From .NET 10 (probe
+// ~/tmp/dn/tmplname2).
+
+using System;
+using System.Collections.Generic;
+namespace Shop
+{
+    public sealed class Item { public override string ToString() => "item"; }
+    public interface IHolds<out T> { T Get(); }
+    public sealed class Crate<T> : IHolds<Item> { public Item Get() => new Item(); }
+}
+static class Program
+{
+    static string H<T>(Shop.IHolds<T> h) => typeof(T).Name + " " + h.Get();
+    static string Hs<T>(IEnumerable<Shop.IHolds<T>> hs) { string r = typeof(T).Name; foreach (var h in hs) r += " " + h.Get(); return r; }
+    static int Main()
+    {
+        Console.WriteLine(H(new Shop.Crate<int>()) + " | " + Hs(new List<Shop.Crate<long>> { new Shop.Crate<long>() }) + " | " + H<object>(new Shop.Crate<string>()));
+        return 0;
+    }
+}
