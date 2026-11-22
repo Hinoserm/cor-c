@@ -2209,8 +2209,11 @@ public static class Driver
             if (hidden.Contains(target)) named.TryAdd(target, user);
             else if (live.Add(target)) work.Push(target);
         }
+        // A MOVED THROW (ThrowOutline) is its caller's code: coalescible, but
+        // kept where its caller is, never a root of its own.
         foreach (Function f in module.Functions)
-            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || module.OwnsLibraryCode(f.SourcePath) || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
+            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || module.OwnsLibraryCode(f.SourcePath) || f.GenericCode || f.Coalescible && !Corsac.Lang.Opt.ThrowOutline.IsStub(f.Name))
+                && live.Add(f.Name)) work.Push(f.Name);
         foreach (DataItem d in module.Data)
             if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || module.OwnsLibraryCode(d.SourcePath) || d.Coalescible || d.GenericCode) && live.Add(d.Name)) work.Push(d.Name);
         void Walk()
@@ -2252,7 +2255,8 @@ public static class Driver
                 + " (" + module.WhyNotOwned(module.Functions.FirstOrDefault(f => named.ContainsKey(f.Name))?.SourcePath ?? module.Data.FirstOrDefault(d => named.ContainsKey(d.Name))?.SourcePath) + ")";
         // A version of library code the image's live code does not call goes
         // with the library code it was made of.
-        module.Functions.RemoveAll(f => hidden.Contains(f.Name) || f.SystemCode && !f.GenericCode && !f.Coalescible && !live.Contains(f.Name));
+        module.Functions.RemoveAll(f => hidden.Contains(f.Name)
+            || f.SystemCode && !f.GenericCode && (!f.Coalescible || Corsac.Lang.Opt.ThrowOutline.IsStub(f.Name)) && !live.Contains(f.Name));
         module.Data.RemoveAll(d => hidden.Contains(d.Name) || !swept && d.SystemCode && !d.Coalescible && !live.Contains(d.Name)
             && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("ts_", StringComparison.Ordinal) || d.Name.StartsWith("t_", StringComparison.Ordinal)));
         return null;

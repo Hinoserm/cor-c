@@ -14350,6 +14350,12 @@ public class Lookup<K, T> : ILookup<K, T>, IEnumerable<IGrouping<K, T>> {
 /// orderings the program makes, and a program that orders none pays nothing.
 interface IOrderedEdge<T> {
     T Edge(bool wantLast, Func<T, bool>? predicate, out bool found);
+    /// ITS SOURCE'S COUNT, nothing sorted and no key asked, as .NET's
+    /// OrderedIterator.GetCount: through a chain of orderings to the first
+    /// source; -1 where `onlyIfCheap` and that source is not a collection.
+    /// Count and Any ask it, through this interface for the same reason as
+    /// Edge.
+    int SourceCount(bool onlyIfCheap);
 }
 
 sealed class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T>, IOrderedEdge<T> {
@@ -14367,8 +14373,15 @@ sealed class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T>, IOrdere
         this.last = last;
     }
 
-    /// What it sorts, which is what Count counts (Enumerable.Count).
-    internal IEnumerable<T> Source => source;
+    public int SourceCount(bool onlyIfCheap) {
+        IEnumerable<T> counted = source;
+        while (counted is OrderedSequence<T> inner) { counted = inner.source; }
+        if (Enumerable.Sized(counted) is int sized) { return sized; }
+        if (onlyIfCheap) { return -1; }
+        int walked = 0;
+        using (IEnumerator<T> walk = counted.GetEnumerator()) { while (walk.MoveNext()) { walked = checked(walked + 1); } }
+        return walked;
+    }
 
     public IOrderedEnumerable<T> CreateOrderedEnumerable<K>(Func<T, K> keySelector, IComparer<K>? comparer, bool descending) {
         if (keySelector == null) { throw new ArgumentNullException("keySelector"); }
@@ -15696,10 +15709,18 @@ public static class Enumerable {
     public static bool Any<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
         if (Sized(source) is int count) { return count != 0; }
-        // NOT ASKED WHETHER IT IS AN ORDERED SEQUENCE, which .NET's answers
-        // by its source's count: the lifetime rules took the fields of every
-        // sequence handed here for an ordered sequence's, and a list a Where
-        // walked went to the collector (1211). It is walked to its first.
+        // AN ORDERED SEQUENCE AS .NET's answers it: by its source's count
+        // where that is a collection's, no key asked; else by its first,
+        // found in one walk, nothing sorted (Edge). Through IOrderedEdge, not
+        // its fields: read by a type test and a cast, every sequence handed
+        // here was taken for an ordering, and a list a Where walked went to
+        // the collector (1211).
+        if (source is IOrderedEdge<T> ordered) {
+            int cheap = ordered.SourceCount(true);
+            if (cheap >= 0) { return cheap != 0; }
+            ordered.Edge(false, null, out bool found);
+            return found;
+        }
         using (IEnumerator<T> walk = source.GetEnumerator()) { return walk.MoveNext(); }
     }
 
@@ -15708,7 +15729,7 @@ public static class Enumerable {
     /// non-generic ICollection and this library's read-only collections.
     /// Any other read-only collection is walked, as .NET walks one: its
     /// Count is the type's own to say, and a user's may do anything.
-    private static int? Sized<T>(IEnumerable<T> source) {
+    internal static int? Sized<T>(IEnumerable<T> source) {
         if (source is ICollection<T> collection) { return collection.Count; }
         if (source is Queue<T> queue) { return queue.Count; }
         if (source is Stack<T> stack) { return stack.Count; }
@@ -15782,31 +15803,18 @@ public static class Enumerable {
         NotNull(source, "source");
         if (Sized(source) is int count) { return count; }
         // AN ORDERED SEQUENCE IS COUNTED BY ITS SOURCE, as .NET's counts it:
-        // nothing is sorted and no key is asked for (CountOrdered). Behind a
-        // test of the sequence itself, so a caller whose sequence is of
-        // another class -- a Where's iterator, made where Count is inlined
-        // -- has the test answered and no chain walked: a variable that is
-        // either the sequence or what a link of the chain read was a join
-        // the lifetime rules cannot follow, and every list a counted LINQ
-        // walk was made over was taken to escape (1311).
-        if (source is OrderedSequence<T> ordered) { return CountOrdered(ordered); }
-        // Walked here, not by a call: inlined, the walk's GetEnumerator is
-        // the sequence's own class's, which a caller made.
+        // nothing is sorted and no key is asked for. Through IOrderedEdge,
+        // as First and Last ask it: the link answers that call by the
+        // orderings the program makes, so a sequence of another class --
+        // a Where's iterator a caller has just made -- is no ordering's,
+        // inlined or not. A chain walked here, either the sequence or what
+        // a link of the chain read, was a join the lifetime rules cannot
+        // follow: inlined into 1311's Consumers.Positive, the Where iterator
+        // and the list it held were taken to escape (--trace-escape: "escapes
+        // via counted = copy").
+        if (source is IOrderedEdge<T> ordered) { return ordered.SourceCount(false); }
         int walked = 0;
         using (IEnumerator<T> walk = source.GetEnumerator()) { while (walk.MoveNext()) { walked = checked(walked + 1); } }
-        return walked;
-    }
-
-    /// An ordered sequence's count: its source's, through a CHAIN OF THEM to
-    /// the first (OrderBy's of a ThenBy's sorts none). Its own function, not
-    /// a call of Count: a Count that called itself was a cycle, and every
-    /// sequence any Count was asked of was taken to escape.
-    private static int CountOrdered<T>(OrderedSequence<T> ordered) {
-        IEnumerable<T> counted = ordered.Source;
-        while (counted is OrderedSequence<T> inner) { counted = inner.Source; }
-        if (Sized(counted) is int sized) { return sized; }
-        int walked = 0;
-        using (IEnumerator<T> walk = counted.GetEnumerator()) { while (walk.MoveNext()) { walked = checked(walked + 1); } }
         return walked;
     }
 

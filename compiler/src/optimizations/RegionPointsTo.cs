@@ -2580,7 +2580,11 @@ public sealed class RegionPointsTo : IModulePass
                 // no call at all. Run as every target, a view's Count handed
                 // the view, and the list's new array with it, to code nobody
                 // follows.
-                if (ConstantTable(f, i) is var (table, slotAt) && _data.TryGetValue(table, out DataItem? named))
+                // On null: never made (FrameVtable.OnNull).
+                if (FrameVtable.OnNull(i, r => Single(f, r))) return;
+                // Or the vtable of an object made in this frame, read back from
+                // its slot (FrameVtable): its own class's method.
+                if ((ConstantTable(f, i) ?? FrameVtable.Of(f, i, r => Single(f, r))) is var (table, slotAt) && _data.TryGetValue(table, out DataItem? named))
                 {
                     foreach (DataReloc rel in named.Relocs)
                         if (rel.Offset == slotAt && rel.Addend == 0) { Bind(copy, i, rel.Symbol, 1); return; }

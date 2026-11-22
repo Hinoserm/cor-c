@@ -454,7 +454,11 @@ public static class RegionSummary
                     // the compile follows and the link did not: a view's Count
                     // was a call naming nothing, and handed the view, and the
                     // list's new array with it, to the unknown object).
-                    if (ConstantTable(i) is var (table, slotAt) && _data.TryGetValue(table, out DataItem? descriptor))
+                    // ON NULL: never made (FrameVtable.OnNull).
+                    if (FrameVtable.OnNull(i, Single)) return;
+                    // OR THE VTABLE OF AN OBJECT MADE IN THIS FRAME, read back
+                    // from its slot (FrameVtable): its own class's method.
+                    if ((ConstantTable(i) ?? FrameVtable.Of(_f, i, Single)) is var (table, slotAt) && _data.TryGetValue(table, out DataItem? descriptor))
                     {
                         string? method = null;
                         foreach (DataReloc rel in descriptor.Relocs)
@@ -481,6 +485,14 @@ public static class RegionSummary
                     {
                         CallsThroughMethod = true;
                         MethodSlots(through, 0);
+                        // --dump-function SYMBOL: the call taken for one through
+                        // a method read out of a descriptor, and the slots it reads.
+                        if (Switches.DumpFunction == _f.Name)
+                        {
+                            System.Text.StringBuilder whole = new();
+                            _f.Dump(whole);
+                            Console.Error.WriteLine("region hint: called blind " + i + " at slots " + string.Join(",", _blindSlots) + "\n" + whole);
+                        }
                     }
                     _callOf[i] = _calls.Count;
                     // A number answered (Instr.Number) carries no address back.

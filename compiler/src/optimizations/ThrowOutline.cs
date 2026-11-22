@@ -28,12 +28,17 @@ using Block = Corsac.Lang.Ir.Block;
 /// the line of its call of the function -- the function's own row gone, as
 /// .NET's inlined methods are from its traces.
 ///
-/// The new function is the unit's own (not exported, not one of a copy's
-/// coalesced definitions): another unit's copy of the function may have
-/// moved its throws otherwise, and numbered them otherwise, so no name of
-/// one may stand for another's. A body that calls it is then no body the
-/// link brings into another unit (IrUnitCodec: it names a local) -- as it
-/// was none before, reading its own frame.
+/// NAMED BY WHAT IT IS: `NAME$throw$` and a hash of its own body, placeless
+/// (IrFunctionCodec), so one name is one body in every unit -- another
+/// unit's copy of the function, which may have moved its throws otherwise,
+/// names its own otherwise -- and it is exported and coalescible, copies
+/// of one body one definition at the link. Local, a function that took a
+/// small function's moved throw in (NotNull put in its callers) named a
+/// local and was no body the link brings into another unit (IrUnitCodec):
+/// every such caller stopped being taken across units, and with them the
+/// regions and lifetimes the link worked out through them (1298, 1319).
+/// The driver's sweep takes it as its caller's code, not a root of its own
+/// (Driver.LibraryPrivateKept).
 ///
 /// Only in a function small enough, without them, to be put in its callers
 /// (SmallBody, LoopBody), that nothing else keeps out of them -- a handler of its
@@ -139,7 +144,6 @@ public sealed class ThrowOutline : IModulePass
                 foreach (Instr i in b.Instrs)
                     if (i.Dest is { } d) outside.Add(d);
 
-        int ordinal = 0;
         foreach ((Block head, List<Block> region) in throws)
         {
             List<VReg> reads = new();
@@ -165,29 +169,40 @@ public sealed class ThrowOutline : IModulePass
                     if (i.Op == Opcode.Call && i.Callee is { } callee && callee.StartsWith(CaptureCall, StringComparison.Ordinal) && i.Operands.Count == 3)
                         i.Operands[2] = new ImmOperand(0, IrTypes.Word);
             }
-            Function stub = new(f.Name + StubMark + ordinal++, IrType.Void)
+            // Made once under a name every stub is first given, to read what
+            // it is, and again under the name that says so.
+            Function Made(string name)
             {
-                Exported = false, GenericCode = f.GenericCode, FromLibrary = f.FromLibrary,
-                SystemCode = f.SystemCode, SourceFile = f.SourceFile, Line = line > 0 ? line : f.Line, Display = f.Display,
-                SourcePath = f.SourcePath, Unjudged = f.Unjudged, NoInlining = true,
-            };
-            List<VReg> passed = new();
-            foreach (VReg r in reads)
-            {
-                VReg p = stub.NewReg(r.Type, r.Name);
-                p.Number = r.Number;
-                stub.Params.Add(p);
-                passed.Add(p);
+                Function fn = new(name, IrType.Void)
+                {
+                    Exported = true, Coalescible = true, GenericCode = f.GenericCode, FromLibrary = f.FromLibrary,
+                    SystemCode = f.SystemCode, SourceFile = f.SourceFile, Line = line > 0 ? line : f.Line, Display = f.Display,
+                    SourcePath = f.SourcePath, Unjudged = f.Unjudged, NoInlining = true,
+                };
+                List<VReg> passed = new();
+                foreach (VReg r in reads)
+                {
+                    VReg p = fn.NewReg(r.Type, r.Name);
+                    p.Number = r.Number;
+                    fn.Params.Add(p);
+                    passed.Add(p);
+                }
+                Block entry = fn.NewBlock("entry");
+                Builder builder = new(fn, entry);
+                builder.Call(body.Name, IrType.Void, passed);
+                // (Its line every instruction's that Expand puts in its place: a
+                // fault in the throw's own work is said at the throw.)
+                entry.Instrs[0].Line = line;
+                entry.Instrs.Add(new Instr { Op = Opcode.Unreachable, Line = line });
+                Inline.Expand(fn, entry, 0, entry.Instrs[0], body);
+                return fn;
             }
-            Block entry = stub.NewBlock("entry");
-            Builder builder = new(stub, entry);
-            builder.Call(body.Name, IrType.Void, passed);
-            // (Its line every instruction's that Expand puts in its place: a
-            // fault in the throw's own work is said at the throw.)
-            entry.Instrs[0].Line = line;
-            entry.Instrs.Add(new Instr { Op = Opcode.Unreachable, Line = line });
-            Inline.Expand(stub, entry, 0, entry.Instrs[0], body);
-            made.Add(stub);
+            byte[] identity = FastHash.Of(Corsac.Lang.Metadata.IrFunctionCodec.Write(Made(f.Name + StubMark), placeless: true));
+            string named = f.Name + StubMark + Convert.ToHexString(identity, 0, 8);
+            // TWO THROWS OF ONE BODY -- a span's two range checks, each the
+            // same refusal -- are one function, as any two copies of it are.
+            Function stub = made.Find(m => m.Name == named) ?? module.Functions.Find(m => m.Name == named) ?? Made(named);
+            if (!made.Contains(stub) && !module.Functions.Contains(stub)) made.Add(stub);
 
             // And the way into them a call of it, which never returns.
             foreach (Block b in region.Skip(1)) f.Blocks.Remove(b);
@@ -202,7 +217,7 @@ public sealed class ThrowOutline : IModulePass
         return made;
     }
 
-    /// <summary>What a throw moved out of its function has in its name, after the function's: then its place among the function's (a copy of it keeps the mark wherever it is put).</summary>
+    /// <summary>What a throw moved out of its function has in its name, after the function's: then the hash of its body (a copy of it keeps the mark wherever it is put).</summary>
     public const string StubMark = "$throw$";
 
     /// <summary>Whether a function is a throw moved out of another (its calls the cold path they were there: Inline).</summary>
