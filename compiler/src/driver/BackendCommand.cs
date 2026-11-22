@@ -41,7 +41,8 @@ public static class BackendCommand
                 // only the message, and a failure in a backend process had no
                 // trace anywhere.
                 Console.Error.WriteLine("corc backend: " + request.Input + ": " + error);
-                BackendProtocol.WriteResponse(writer, error.Message);
+                // A compile error says where, as the driver says it (its ToString).
+                BackendProtocol.WriteResponse(writer, error is Corsac.Lang.CompileError said ? said.ToString() : error.Message);
             }
         }
     }
