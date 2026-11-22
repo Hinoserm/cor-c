@@ -14492,12 +14492,18 @@ public sealed partial class Binder
                 continue;
             }
 
-            if (Bare(b.Name) == face && args.Count == arity)
+            // THE BASE AS ITS INSTANCES NAME IT (TemplateName), as `face` is:
+            // `IShelf<T>` written in Shop's Shelf is Shop.IShelf. Compared by
+            // the written name alone, a namespaced or nested interface never
+            // matched a qualified face. The written name still matches where
+            // nothing resolves it.
+            bool resolved = FindBase(b, out TypeSymbol? holder);
+            if (args.Count == arity && (resolved && holder is not null ? TemplateName(holder) == face || Bare(b.Name) == face : Bare(b.Name) == face))
             {
                 return args;
             }
 
-            if (!FindBase(b, out TypeSymbol? holder)
+            if (!resolved
                 || holder?.Decl is not { } deeper
                 || deeper.TypeParams.Count != args.Count)
             {
@@ -15639,7 +15645,7 @@ public sealed partial class Binder
             {
                 mine[template.TypeParams[i].Name] = on.Args[i];
             }
-            if (OpenAs(template, Bare(owner.Name), parameters.Count, mine, 0) is not { } through)
+            if (OpenAs(template, TemplateName(owner), parameters.Count, mine, 0) is not { } through)
             {
                 return null;
             }
