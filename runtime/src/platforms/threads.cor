@@ -244,6 +244,21 @@ public static partial class Scheduler
     public static int ThreadCount => _workers;
 }
 
+/// Timer's overload over a wait handle, in the file that has WaitHandle
+/// (the core runtime, which a kernel compiles too, has none): disposed, and
+/// `notifyObject` signalled; false where it was already.
+public sealed partial class Timer
+{
+    public bool Dispose(System.Threading.WaitHandle notifyObject)
+    {
+        ArgumentNullException.ThrowIfNull(notifyObject);
+        if (Disposed) return false;
+        Dispose();
+        if (notifyObject is System.Threading.EventWaitHandle signal) signal.Set();
+        return true;
+    }
+}
+
 namespace Microsoft.Win32.SafeHandles
 {
     /// WHAT IS UNDER A WaitHandle, as .NET's SafeWaitHandle: the object its

@@ -233,8 +233,8 @@ public sealed partial class Binder
         switch (target)
         {
             // A REF CONDITIONAL is read-only where either arm is.
-            case ConditionalExpr { RefArms: true } chosen:
-                return ReadOnlyVariable(((RefArgExpr)chosen.Then).Target) ?? ReadOnlyVariable(((RefArgExpr)chosen.Else).Target);
+            case ConditionalExpr { RefArms: true, Then: RefArgExpr thenArm, Else: RefArgExpr elseArm }:
+                return ReadOnlyVariable(RefArmTarget(thenArm)) ?? ReadOnlyVariable(RefArmTarget(elseArm));
 
             case NameExpr n when _r.Resolved.TryGetValue(n, out Sym? named):
                 return named switch
@@ -270,8 +270,8 @@ public sealed partial class Binder
         switch (target)
         {
             // A REF CONDITIONAL reaches as far as the nearer of its two.
-            case ConditionalExpr { RefArms: true } chosen:
-                return RefEscapes(((RefArgExpr)chosen.Then).Target) && RefEscapes(((RefArgExpr)chosen.Else).Target);
+            case ConditionalExpr { RefArms: true, Then: RefArgExpr thenArm, Else: RefArgExpr elseArm }:
+                return RefEscapes(RefArmTarget(thenArm)) && RefEscapes(RefArmTarget(elseArm));
 
             case NameExpr n when _r.Resolved.TryGetValue(n, out Sym? s):
                 return s switch

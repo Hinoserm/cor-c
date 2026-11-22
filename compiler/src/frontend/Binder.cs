@@ -18723,15 +18723,42 @@ public sealed partial class Binder
             case ConditionalExpr { RefArms: true } refChosen:
             {
                 CheckCondition(refChosen.Cond);
-                Type thenType = CheckExpr(refChosen.Then);
-                Type elseType = CheckExpr(refChosen.Else);
+                // Each arm `ref` and a variable (not a ref lambda, which
+                // ParseRefValue lets through for a `return ref` alone).
+                if (refChosen.Then is not RefArgExpr || refChosen.Else is not RefArgExpr)
+                {
+                    Error(refChosen, "CS8326: Both conditional operator values must be ref values or neither may be a ref value");
+                    return Type.Error;
+                }
+                // A READ-ONLY ARM IS NO ERROR HERE: the whole is then read-only
+                // (ReadOnlyVariable, ReadOnlyField look through the arms), and a
+                // write through it, or a writable ref to it, is refused there.
+                bool outerReadOnly = _readOnlyReference;
+                _readOnlyReference = true;
+                Type thenType, elseType;
+                try
+                {
+                    // EACH ARM KNOWS WHAT THE CONDITION PROVED, as a value
+                    // conditional's arms do.
+                    List<Sym> whenTrue = Assume(refChosen.Cond, true);
+                    thenType = CheckExpr(refChosen.Then);
+                    Forget(whenTrue);
+                    List<Sym> whenFalse = Assume(refChosen.Cond, false);
+                    elseType = CheckExpr(refChosen.Else);
+                    Forget(whenFalse);
+                }
+                finally { _readOnlyReference = outerReadOnly; }
                 if (thenType.IsError || elseType.IsError) return Type.Error;
-                if (!thenType.AsNonNullable().Equals(elseType.AsNonNullable()))
+                // ONE TYPE, by the rule a reference has (RequireSameReferenceType):
+                // nullable annotations aside, `int?` (a cell) no `int`.
+                if (!MethodSignatures.SameType(thenType.AsNonNullable(), elseType.AsNonNullable())
+                    || thenType.IsNullableValue != elseType.IsNullableValue)
                 {
                     Error(refChosen, $"CS8173: The expression must be of type '{thenType}' because it is being assigned by reference");
                     return Type.Error;
                 }
-                return thenType;
+                // Null where either may be.
+                return elseType.Nullable && !thenType.Nullable ? elseType : thenType;
             }
 
             case ConditionalExpr c2:
@@ -19813,6 +19840,8 @@ public sealed partial class Binder
                 // resolve it, and inside a generic the answer depends on which
                 // instantiation is being compiled.
                 Type named = Resolve(to.Type, _thisType);
+                // A TYPE ALREADY REFUSED (CS0122, CS0246) has said so once.
+                if (named.IsError) return Type.Error;
 
                 // A TYPE ARGUMENT ONLY RUN TIME KNOWS (Type.CanonParam): a
                 // shared method copy's, handed in as a hidden argument, or a
@@ -20584,8 +20613,18 @@ public sealed partial class Binder
     /// the initialisers moved into StaticInit$ and its kin, a closure's, a
     /// record's -- write what they were made to.
     /// </summary>
+    /// <summary>
+    /// A ref conditional's arm's variable: what its check rewrote it to (a
+    /// ref-returning indexer's or member's call) or what it names.
+    /// </summary>
+    private Expr RefArmTarget(RefArgExpr arm)
+        => _r.Rewrites.TryGetValue(arm, out Expr? rewritten) && rewritten is RefArgExpr through ? through.Target : arm.Target;
+
     private string? ReadOnlyField(Expr target)
     {
+        // A REF CONDITIONAL: read-only where either arm is.
+        if (target is ConditionalExpr { RefArms: true, Then: RefArgExpr thenArm, Else: RefArgExpr elseArm })
+            return ReadOnlyField(RefArmTarget(thenArm)) ?? ReadOnlyField(RefArmTarget(elseArm));
         if (!_r.Resolved.TryGetValue(target, out Sym? sym) || sym is not FieldSym { Field: var field }
             || !field.Declared || !field.Mods.HasFlag(Mods.Readonly)) return null;
         if (_method is not { } method || method.Name.Contains('$') || method.Name.Contains('<')) return null;

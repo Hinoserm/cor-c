@@ -1,0 +1,61 @@
+// test: timer_and_wait_callback
+// expect-exit: 0
+// expect-output:
+// one-shot True state
+// periodic True
+// stopped at 3
+// disposed before due 0
+// change after dispose False
+// own state True
+// range dueTime
+// null callback
+// wait callback True 42
+//
+// .NET's System.Threading.Timer: a one-shot with its state, a periodic one stopped
+// from its own callback, one disposed before it was due, Change after Dispose, a
+// timer that is its own state, the argument checks; and ThreadPool's WaitCallback
+// by name. Expected output from real .NET 10.
+
+using System;
+using System.Threading;
+
+static class Program
+{
+    static void Main()
+    {
+        using ManualResetEventSlim once = new ManualResetEventSlim();
+        object? seen = null;
+        using (Timer t = new Timer(s => { seen = s; once.Set(); }, "state", 20, Timeout.Infinite))
+        {
+            Console.WriteLine("one-shot " + once.Wait(5000) + " " + seen);
+        }
+
+        int ticks = 0;
+        using ManualResetEventSlim third = new ManualResetEventSlim();
+        Timer? periodic = null;
+        periodic = new Timer(_ => { if (Interlocked.Increment(ref ticks) == 3) { periodic!.Change(Timeout.Infinite, Timeout.Infinite); third.Set(); } }, null, 10, 10);
+        Console.WriteLine("periodic " + third.Wait(5000));
+        Thread.Sleep(100);
+        Console.WriteLine("stopped at " + Volatile.Read(ref ticks));
+        periodic.Dispose();
+
+        int late = 0;
+        Timer never = new Timer(_ => Interlocked.Increment(ref late), null, 50, Timeout.Infinite);
+        never.Dispose();
+        Thread.Sleep(150);
+        Console.WriteLine("disposed before due " + late);
+        Console.WriteLine("change after dispose " + never.Change(10, 10));
+
+        Timer self = new Timer(s => { });
+        Console.WriteLine("own state " + self.Change(Timeout.Infinite, Timeout.Infinite));
+        self.Dispose();
+
+        try { new Timer(_ => { }, null, -2, 0); } catch (ArgumentOutOfRangeException e) { Console.WriteLine("range " + e.ParamName); }
+        try { new Timer(null!, null, 0, 0); } catch (ArgumentNullException e) { Console.WriteLine("null " + e.ParamName); }
+
+        using ManualResetEventSlim queued = new ManualResetEventSlim();
+        WaitCallback work = s => { seen = s; queued.Set(); };
+        ThreadPool.QueueUserWorkItem(work, 42);
+        Console.WriteLine("wait callback " + queued.Wait(5000) + " " + seen);
+    }
+}

@@ -9,21 +9,42 @@
 // returned 11 20 33
 // fields 7 0
 // loop 224 11
+// struct copy 1,2 3,4 50,4
+// struct ref 1,60 3,4
+// struct assigned 1,60 7,8
+// mixed 99,0 1,1
+// mixed 99,0 99,1
+// ref locals 11 77
+// nested 11 88 4
+// readonly arm 4 9 3
+// narrowed 12
 //
 // The ref conditional, `c ? ref a : ref b` (C# 7.2): a variable, one of the two,
 // that a ref local takes, a ref argument passes, a ref return hands back, an
-// assignment (compound too) writes and a read loads -- locals, array elements
-// and fields. Expected output from real .NET 10.
+// assignment (compound too) writes and a read loads -- locals, array elements,
+// fields, structs (copied when read by value; a by-reference parameter beside a
+// plain local), ref locals as arms, a nested one, readonly arms read, and the
+// condition's null proof in each arm. Expected output from real .NET 10.
 
 using System;
 
 class Box { public int Field; }
+struct Pt { public int X, Y; public Pt(int x, int y) { X = x; Y = y; } public override string ToString() => X + "," + Y; }
+class Holder { public readonly int Fixed = 5; public Box? Maybe; }
 
 static class Program
 {
     static int[] _table = { 10, 20, 30 };
     static void Bump(ref int x) { x += 100; }
     static ref int Pick(bool first, int[] items) => ref first ? ref items[0] : ref items[items.Length - 1];
+    static void Mixed(ref Pt passed, bool usePassed)
+    {
+        Pt local = new Pt(1, 1);
+        ref Pt r = ref (usePassed ? ref passed : ref local);
+        r.X = 99;
+        Console.WriteLine("mixed " + passed + " " + local);
+    }
+    static int ReadIn(in int fixedArg, bool c) { int other = 3; return c ? ref fixedArg : ref other; }
 
     static void Main()
     {
@@ -52,5 +73,32 @@ static class Program
         int[] grid = { 1, 2, 3 };
         for (int i = 0; i < 3; i++) (i % 2 == 0 ? ref grid[i] : ref a) += 1;
         Console.WriteLine("loop " + grid[0] + grid[1] + grid[2] + " " + a);
+        Pt p1 = new Pt(1, 2), p2 = new Pt(3, 4);
+        Pt copy = c ? ref p1 : ref p2;
+        copy.X = 50;
+        Console.WriteLine("struct copy " + p1 + " " + p2 + " " + copy);
+        ref Pt rp = ref (!c ? ref p1 : ref p2);
+        rp.Y = 60;
+        Console.WriteLine("struct ref " + p1 + " " + p2);
+        (c ? ref p1 : ref p2) = new Pt(7, 8);
+        Console.WriteLine("struct assigned " + p1 + " " + p2);
+        Pt outer = new Pt(0, 0);
+        Mixed(ref outer, true);
+        Mixed(ref outer, false);
+        ref int ra = ref a, rb = ref b;
+        ref int rr = ref (c ? ref ra : ref rb);
+        rr = 77;
+        Console.WriteLine("ref locals " + a + " " + b);
+        int d = 4;
+        ref int nested = ref (c ? ref a : ref (a > 0 ? ref b : ref d));
+        nested = 88;
+        Console.WriteLine("nested " + a + " " + b + " " + d);
+        Holder h = new Holder();
+        int fromReadonly = c ? ref h.Fixed : ref d;
+        Console.WriteLine("readonly arm " + fromReadonly + " " + ReadIn(9, true) + " " + ReadIn(9, false));
+        h.Maybe = new Box();
+        ref int narrowed = ref (h.Maybe != null ? ref h.Maybe.Field : ref d);
+        narrowed = 12;
+        Console.WriteLine("narrowed " + h.Maybe.Field);
     }
 }

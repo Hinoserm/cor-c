@@ -1,0 +1,15 @@
+// test: ref_conditional_nullable_cell_not_value
+// expect-compile-error: CS8173
+// An int? and an int are not one type by reference -- one is a cell, the
+// other the number -- so Roslyn refuses them as a ref conditional's arms.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        int a = 1; int? b = 2; bool c = true;
+        ref int r = ref (c ? ref a : ref b);
+        Console.WriteLine(r);
+    }
+}

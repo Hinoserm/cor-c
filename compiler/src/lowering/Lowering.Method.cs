@@ -913,6 +913,13 @@ public sealed partial class Lowering
     /// </summary>
     private void MarkRefAliased(Expr target)
     {
+        // A REF CONDITIONAL aliases both its arms' variables.
+        if (target is ConditionalExpr { RefArms: true, Then: RefArgExpr thenArm, Else: RefArgExpr elseArm })
+        {
+            MarkRefAliased(thenArm.Target);
+            MarkRefAliased(elseArm.Target);
+            return;
+        }
         while (target is MemberExpr { Target: { } inner } && IsStructValue(_b.TypeOf(inner)))
         {
             target = inner;
@@ -2311,7 +2318,8 @@ public sealed partial class Lowering
             {
                 Type chosenType = _b.TypeOf(refChosen);
                 VReg chosenAt = RefConditionalAddress(refChosen);
-                return new MemPlace(RegOperand.Of(chosenAt), 0, chosenType, Inline: InlineElement(chosenType));
+                // A struct's address is its bytes' (RefConditionalAddress): in line there.
+                return new MemPlace(RegOperand.Of(chosenAt), 0, chosenType, Inline: IsStructValue(chosenType) || InlineElement(chosenType));
             }
 
             case UnaryExpr { Op: UnOp.Deref } deref:

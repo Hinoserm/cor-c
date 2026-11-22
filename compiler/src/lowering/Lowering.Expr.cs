@@ -307,7 +307,7 @@ public sealed partial class Lowering
         if (value is DefaultExpr) return;
         // A conditional of the same type as an arm writes its arms into the
         // same block: `a ? x : b ? y : z` is one block, not one for each `?:`.
-        if (value is ConditionalExpr nested && !_b.Rewrites.ContainsKey(nested) && _b.TypeOf(nested).Equals(resultType))
+        if (value is ConditionalExpr { RefArms: false } nested && !_b.Rewrites.ContainsKey(nested) && _b.TypeOf(nested).Equals(resultType))
         {
             Block innerThen = _f.NewBlock("qthen");
             Block innerElse = _f.NewBlock("qelse");
@@ -340,6 +340,8 @@ public sealed partial class Lowering
         // Not a call that returns by reference: what it answers is a variable
         // somewhere else, and taking its value is a copy like any other's.
         if (e is CallExpr call && RefCallee(call) is not null) return false;
+        // Nor a ref conditional: the variable it chooses, copied like any other.
+        if (e is ConditionalExpr { RefArms: true }) return false;
         return e is NewExpr or CallExpr or DefaultExpr or WithExpr or TupleExpr or ConditionalExpr or SwitchExpr;
     }
 
@@ -5100,14 +5102,24 @@ public sealed partial class Lowering
     /// </summary>
     private VReg RefConditionalAddress(ConditionalExpr chosen, bool pins = false)
     {
+        // A STRUCT'S IS ITS BYTES' ADDRESS, one convention for every arm --
+        // a by-reference parameter's, a ref local's, a plain local's block --
+        // as a struct passed by reference has it (StructReference).
+        Type type = _b.TypeOf(chosen);
+        bool structure = IsStructValue(type);
+        VReg Arm(Expr arm)
+        {
+            Expr target = _b.Rewrites.TryGetValue(arm, out Expr? rewritten) && rewritten is RefArgExpr through ? through.Target : ((RefArgExpr)arm).Target;
+            return structure ? StructReference(target, type) : AddressOf(arm, target, pins);
+        }
         VReg address = _f.NewReg(IrTypes.Word, "refcond");
         Block then = _f.NewBlock("refthen"), other = _f.NewBlock("refelse"), end = _f.NewBlock("refend");
         BranchOn(chosen.Cond, then, other);
         _e.SetBlock(then);
-        _e.CopyTo(address, R(AddressOf(chosen.Then, ((RefArgExpr)chosen.Then).Target, pins)));
+        _e.CopyTo(address, R(Arm(chosen.Then)));
         _e.Jump(end);
         _e.SetBlock(other);
-        _e.CopyTo(address, R(AddressOf(chosen.Else, ((RefArgExpr)chosen.Else).Target, pins)));
+        _e.CopyTo(address, R(Arm(chosen.Else)));
         _e.Jump(end);
         _e.SetBlock(end);
         return address;

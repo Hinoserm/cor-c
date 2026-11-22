@@ -4501,6 +4501,10 @@ public static partial class Scheduler
     }
 
     static partial void PoolPosted();
+    /// A worker to come, for work that will be posted later from no thread of
+    /// the program's (a timer's): the pool started as the first Post starts
+    /// it. Nothing where there are no threads.
+    internal static void WantPool() { PoolPosted(); }
     static partial void PoolWorkerBlocks();
     static partial void PoolWorkerUnblocks();
     static partial void StackRoom(ref nuint room);
@@ -5994,18 +5998,16 @@ public static partial class ThreadPool
         return true;
     }
 
-    // .NET'S OWN SHAPES: a callback of its state -- .NET's WaitCallback, an
-    // Action<object?> here, which every lambda and method group converts to
-    // alike, a delegate type of its own costing every image its descriptor
-    // -- and an Action of a state typed (preferLocal says which queue; there
-    // is one queue here). Each flows as the Action does, the unsafe ones not
-    // at all.
-    public static bool QueueUserWorkItem(Action<object?> callBack)
+    // .NET'S OWN SHAPES: a callback of its state, .NET's WaitCallback (a
+    // program may name the type, and a lambda converts to it), and an Action
+    // of a state typed (preferLocal says which queue; there is one queue
+    // here). Each flows as the Action does, the unsafe ones not at all.
+    public static bool QueueUserWorkItem(WaitCallback callBack)
     {
         return QueueUserWorkItem(callBack, null);
     }
 
-    public static bool QueueUserWorkItem(Action<object?> callBack, object? state)
+    public static bool QueueUserWorkItem(WaitCallback callBack, object? state)
     {
         ArgumentNullException.ThrowIfNull(callBack);
         Scheduler.Post(() => callBack(state));
@@ -6019,7 +6021,7 @@ public static partial class ThreadPool
         return true;
     }
 
-    public static bool UnsafeQueueUserWorkItem(Action<object?> callBack, object? state)
+    public static bool UnsafeQueueUserWorkItem(WaitCallback callBack, object? state)
     {
         ArgumentNullException.ThrowIfNull(callBack);
         Scheduler.Post(() => callBack(state), AsyncContext.Bare());
@@ -6031,6 +6033,147 @@ public static partial class ThreadPool
         ArgumentNullException.ThrowIfNull(callBack);
         Scheduler.Post(() => callBack(state), AsyncContext.Bare());
         return true;
+    }
+}
+
+/// .NET's WaitCallback: what ThreadPool.QueueUserWorkItem runs, with its state.
+public delegate void WaitCallback(object? state);
+
+/// .NET's TimerCallback: what a Timer runs, with its state.
+public delegate void TimerCallback(object? state);
+
+/// .NET's ITimer (TimeProvider's): a timer that can be moved or stopped.
+public interface ITimer : IDisposable, IAsyncDisposable
+{
+    bool Change(TimeSpan dueTime, TimeSpan period);
+}
+
+/// .NET'S System.Threading.Timer: its callback run on the pool once
+/// `dueTime` has passed and then every `period` (Timeout.Infinite: once;
+/// a due time of Infinite: not at all until Change). Over the scheduler's
+/// timers (Scheduler.AddTimerAt), each arming a generation of its own, so a
+/// Change or a Dispose leaves an entry already due running nothing. The
+/// next firing is armed before the callback runs, as .NET's is, so a slow
+/// callback may overlap the next.
+public sealed partial class Timer : ITimer
+{
+    const string Range = "Number must be either non-negative and less than or equal to Int32.MaxValue or -1.";
+    const string TooLong = "Time-out interval must be less than 2^32-2.";
+    const long Most = 0xfffffffe;
+
+    static long _active;
+
+    readonly TimerCallback _callback;
+    readonly object? _state;
+    readonly object _gate = new object();
+    TimerEntry? _entry;
+    long _period = Timeout.Infinite;
+    int _generation;
+    bool _disposed;
+
+    /// A timer of no due time whose state is the timer itself, as .NET's.
+    public Timer(TimerCallback callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        _callback = callback;
+        _state = this;
+        Interlocked.Increment(ref _active);
+    }
+
+    public Timer(TimerCallback callback, object? state, int dueTime, int period) : this(callback, state, (long)dueTime, (long)period) { }
+    public Timer(TimerCallback callback, object? state, uint dueTime, uint period)
+        : this(callback, state, dueTime == uint.MaxValue ? -1L : (long)dueTime, period == uint.MaxValue ? -1L : (long)period) { }
+    public Timer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        : this(callback, state, Milliseconds(dueTime, "dueTime"), Milliseconds(period, "period")) { }
+
+    public Timer(TimerCallback callback, object? state, long dueTime, long period)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        Check(dueTime, period);
+        _callback = callback;
+        _state = state;
+        Interlocked.Increment(ref _active);
+        Change(dueTime, period);
+    }
+
+    /// How many timers there are, made and not disposed.
+    public static long ActiveCount => Interlocked.Read(ref _active);
+
+    public bool Change(int dueTime, int period) => Change((long)dueTime, (long)period);
+    public bool Change(uint dueTime, uint period) => Change(dueTime == uint.MaxValue ? -1L : (long)dueTime, period == uint.MaxValue ? -1L : (long)period);
+    public bool Change(TimeSpan dueTime, TimeSpan period) => Change(Milliseconds(dueTime, "dueTime"), Milliseconds(period, "period"));
+
+    /// Moved: what was armed runs nothing, and the timer fires `dueTime`
+    /// from now. False once disposed.
+    public bool Change(long dueTime, long period)
+    {
+        Check(dueTime, period);
+        lock (_gate)
+        {
+            if (_disposed) return false;
+            _entry?.Cancel();
+            _entry = null;
+            _generation++;
+            _period = period;
+            if (dueTime != Timeout.Infinite) Arm(dueTime, _generation);
+        }
+        return true;
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _entry?.Cancel();
+            _entry = null;
+            _generation++;
+        }
+        Interlocked.Decrement(ref _active);
+    }
+
+    /// Whether Dispose has run (threads.cor's Dispose(WaitHandle) asks).
+    bool Disposed { get { lock (_gate) return _disposed; } }
+
+    public ValueTask DisposeAsync()
+    {
+        Dispose();
+        return default;
+    }
+
+    // Under _gate.
+    void Arm(long milliseconds, int generation)
+    {
+        Scheduler.WantPool();
+        _entry = Scheduler.AddTimerAt(Clock.Now() + milliseconds * 1000000, () => Fire(generation));
+    }
+
+    void Fire(int generation)
+    {
+        lock (_gate)
+        {
+            if (_disposed || generation != _generation) return;
+            if (_period > 0) Arm(_period, generation);
+            else _entry = null;
+        }
+        _callback(_state);
+    }
+
+    static void Check(long dueTime, long period)
+    {
+        if (dueTime < -1) throw new ArgumentOutOfRangeException("dueTime", Range);
+        if (period < -1) throw new ArgumentOutOfRangeException("period", Range);
+        if (dueTime > Most) throw new ArgumentOutOfRangeException("dueTime", TooLong);
+        if (period > Most) throw new ArgumentOutOfRangeException("period", TooLong);
+    }
+
+    static long Milliseconds(TimeSpan span, string name)
+    {
+        long ms = (long)span.TotalMilliseconds;
+        if (ms < -1) throw new ArgumentOutOfRangeException(name, Range);
+        if (ms > Most) throw new ArgumentOutOfRangeException(name, TooLong);
+        return ms;
     }
 }
 
