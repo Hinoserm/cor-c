@@ -3184,6 +3184,9 @@ public sealed partial class Lowering
         {
             item.Relocs.Add(new DataReloc(DescVariance * w, variance, 0));
         }
+        // Built, its members declared: its slots recorded, where they were
+        // pending when it was named (RecordSlots).
+        RecordSlots(t, sym);
         return sym;
     }
 
@@ -3378,12 +3381,13 @@ public sealed partial class Lowering
     {
         // ONLY WHAT IS DECLARED ALREADY: a type whose members wait to be
         // declared (TypeSymbol.MembersPending) -- in its own right or along
-        // its chain -- is left unrecorded, never declared here to be counted.
-        // Declaring every type a unit names a descriptor of made it lower the
-        // bodies they held: the GUI module's unit of the font engine took five
-        // times its memory and kept the library's code it may not keep. The
-        // link takes an unrecorded type's slots by its holders, as it must for
-        // one no unit names; the units that lower a type record it.
+        // its chain -- is not declared here to be counted. Another image's
+        // descriptor named here (ShadowDescriptor) declares nothing, and so
+        // records nothing; this unit's own is recorded again once its build
+        // has declared its members. Declaring every type a unit named a
+        // descriptor of lowered the bodies they held, and the K8 image's GUI
+        // module kept library code it may not keep. A type no unit recorded
+        // the link takes by its holders.
         for (TypeSymbol? pending = t; pending is not null; pending = pending.Base)
             if (pending.MembersPending) return;
         SortedSet<long> slots = new();
@@ -3445,6 +3449,9 @@ public sealed partial class Lowering
                 slots = Math.Max(slots, m.VtableSlot + 1);
             }
         }
+        // Its members declared now, by this descriptor's own build: its slots
+        // recorded, where they were pending when it was named (RecordSlots).
+        RecordSlots(t, sym);
 
         MethodSymbol?[] table = new MethodSymbol?[slots];
         List<TypeSymbol> chain = new();
