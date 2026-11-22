@@ -3753,6 +3753,21 @@ public sealed partial class Lowering
             return _e.Const(0, IrType.I32);
         }
 
+        // WHETHER THERE IS ONE AT ALL (Binder: `x is object y` over a
+        // reference, `x is T y` over what is a T already): before every
+        // shared copy's test below, which would ask the descriptor of what
+        // its static type already says.
+        if (_b.NonNullPatterns.Contains(isx))
+        {
+            VReg present = Eval(isx.Operand);
+            if (_b.PatternSlot.TryGetValue(isx, out int named))
+            {
+                // As the binding was declared: object, or the operand's own type.
+                BindPattern(isx, named, _b.PatternSym.TryGetValue(isx, out LocalSym? declared) ? declared.Type : Type.Any, present);
+            }
+            return _e.Binary(Opcode.Ne, R(present), Imm(0, present.Type), IrType.I32);
+        }
+
         // `x is U` IN A SHARED METHOD COPY, U its own type parameter (HiddenParam).
         if (HiddenParam(isx.Type) is { } isTo && HeldByReference(_b.TypeOf(isx.Operand)))
         {
@@ -3826,17 +3841,6 @@ public sealed partial class Lowering
             _e.Jump(end);
             _e.SetBlock(end);
             return result;
-        }
-
-        if (_b.NonNullPatterns.Contains(isx))
-        {
-            VReg present = Eval(isx.Operand);
-            if (_b.PatternSlot.TryGetValue(isx, out int named))
-            {
-                // As the binding was declared: object, or the operand's own type.
-                BindPattern(isx, named, _b.PatternSym.TryGetValue(isx, out LocalSym? declared) ? declared.Type : Type.Any, present);
-            }
-            return _e.Binary(Opcode.Ne, R(present), Imm(0, present.Type), IrType.I32);
         }
 
         if (_b.BoxPatterns.Contains(isx))

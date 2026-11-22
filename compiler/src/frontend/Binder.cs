@@ -20171,9 +20171,11 @@ public sealed partial class Binder
                 {
                     // `x is T y` OVER WHAT IS A T ALREADY -- a `Type?` asked
                     // whether it is a Type -- asks only whether there is one,
-                    // as C# reads it: no run-time test of the type, which a
-                    // Type, a descriptor's address, has no object to answer
-                    // for where the runtime keeps no type objects (a kernel).
+                    // as C# reads it: no run-time test of the type on any
+                    // path, a shared copy's included (Lowering.EmitIs asks
+                    // this first) -- which a Type, a descriptor's address, has
+                    // no object to answer for where the runtime keeps no type
+                    // objects (a kernel).
                     _r.NonNullPatterns.Add(isx);
                 }
                 else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && !operand.IsError && !operand.IsVoid)
