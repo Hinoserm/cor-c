@@ -481,23 +481,60 @@ public static class BackendProtocol
     }
 
     public static void WriteResponse(BinaryWriter writer, string? error)
-    { writer.Write(error is null ? 0 : 1); WriteText(writer, error ?? ""); writer.Flush(); }
+    { writer.Write(error is null ? 0 : 1); WriteText(writer, error is null ? "" : Fitted(error)); writer.Flush(); }
+
+    /// <summary>
+    /// AN ERROR AS A REPLY CAN CARRY IT: whatever the backend failed on --
+    /// a compile error's whole listing, an exception's message naming
+    /// anything -- said, never a second failure in the saying (WriteText
+    /// refuses a NUL, a lone surrogate the strict encoder cannot write, and
+    /// more than MaxText bytes). Those characters spelled out, and the text
+    /// cut at a character's end with how much went.
+    /// </summary>
+    internal static string Fitted(string error)
+    {
+        System.Globalization.CultureInfo plain = System.Globalization.CultureInfo.InvariantCulture;
+        const string cut = "\n... ({0} more characters cut: a backend reply holds {1} bytes)";
+        int room = MaxText - Utf8.GetByteCount(string.Format(plain, cut, int.MaxValue, MaxText));
+        StringBuilder said = new(Math.Min(error.Length, room));
+        int bytes = 0, at = 0;
+        while (at < error.Length)
+        {
+            char c = error[at];
+            bool pair = char.IsHighSurrogate(c) && at + 1 < error.Length && char.IsLowSurrogate(error[at + 1]);
+            string piece = c == '\0' ? "\\0"
+                         : pair ? error.Substring(at, 2)
+                         : char.IsSurrogate(c) ? "\\u" + ((int)c).ToString("X4", plain)
+                         : c.ToString();
+            int size = Utf8.GetByteCount(piece);
+            if (bytes + size > room) break;
+            said.Append(piece);
+            bytes += size;
+            at += pair ? 2 : 1;
+        }
+        return at == error.Length ? said.ToString() : said.Append(string.Format(plain, cut, error.Length - at, MaxText)).ToString();
+    }
+
     public static void ReadResponse(BinaryReader reader)
     {
         int status = reader.ReadInt32(); string error = ReadText(reader);
         if (status == 1) throw new InvalidDataException("Compiler backend: " + error);
         if (status != 0 || error.Length != 0) throw new InvalidDataException("Invalid backend response");
     }
+
+    /// <summary>The most bytes one text of the protocol holds.</summary>
+    internal const int MaxText = 65536;
+
     private static void WriteText(BinaryWriter writer, string text)
     {
         byte[] bytes = Utf8.GetBytes(text);
-        if (bytes.Length > 65536 || text.Contains('\0')) throw new InvalidDataException("Invalid backend text");
+        if (bytes.Length > MaxText || text.Contains('\0')) throw new InvalidDataException("Invalid backend text");
         writer.Write(bytes.Length); writer.Write(bytes);
     }
     private static string ReadText(BinaryReader reader)
     {
         int length = reader.ReadInt32();
-        if (length < 0 || length > 65536) throw new InvalidDataException("Invalid backend text length");
+        if (length < 0 || length > MaxText) throw new InvalidDataException("Invalid backend text length");
         byte[] bytes = reader.ReadBytes(length);
         if (bytes.Length != length) throw new EndOfStreamException("Truncated backend text");
         string text = Utf8.GetString(bytes);

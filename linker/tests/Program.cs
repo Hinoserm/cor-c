@@ -63,6 +63,7 @@ public static partial class Program
         Try("indexed IR archives and bounded import plans", () => { IrArchiveTests.Run(); Check(true, "IR archive contract"); });
         Try("closed-image IR retention", () => { IrReachabilityTests.Run(); Check(true, "IR retention graph"); });
         Try("link-time lifetime hints", () => { LifetimeTests.Run(); Check(true, "lifetime hints"); });
+        Try("a backend error reply always fits the protocol", () => { BackendReplyTests.Run(); Check(true, "backend reply"); });
         Try("link-time region hints", () => { RegionTests.Run(); Check(true, "region hints"); });
         Try("slot families beside calls nothing names", () => { ArgumentSolverTests.Run(); Check(true, "argument solver families"); });
         EscapeEngine();
