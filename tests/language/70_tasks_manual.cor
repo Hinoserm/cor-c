@@ -221,6 +221,9 @@ static class Program
         all[1] = middle;
         all[2] = fast;
         Task.WhenAll(all).Wait();
+        // A delay's continuations are posted, so d80's runs on a worker
+        // beside WhenAll's: the scheduler run until it is idle first.
+        Scheduler.RunUntilIdle();
         Line("whenall done");
 
         Task[] mixed = new Task[3];

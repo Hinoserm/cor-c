@@ -236,7 +236,8 @@ internal static class Program
         string cmpZero = FunctionAsm(asm, "cmpzero");
         Check(!System.Text.RegularExpressions.Regex.IsMatch(cmpZero, @"xor \w+, 0\b"), "compare with zero emits no xor r, 0");
         Check(System.Text.RegularExpressions.Regex.IsMatch(cmpZero, @"test (\w+), \1") && !cmpZero.Contains("cmp "), "32-bit compare with zero is a test");
-        Check(System.Text.RegularExpressions.Regex.IsMatch(cmpZero, @"or \w+, \w+"), "64-bit compare with zero is an or of the halves");
+        // The second half a register or its own stack slot, folded in.
+        Check(System.Text.RegularExpressions.Regex.IsMatch(cmpZero, @"or \w+, (\w+|\[[^\]]+\])"), "64-bit compare with zero is an or of the halves");
         Check(!System.Text.RegularExpressions.Regex.IsMatch(asm, @"mov (\[ebp-\d+\]), (\w+)\n\s+mov \2, \1\n"), "no reload straight after a store to the same slot");
         Check(!System.Text.RegularExpressions.Regex.IsMatch(asm, @"mov (\w+), \[ebp-\d+\]\n\s+xor \1, \1\n"), "no reload before a register is zeroed");
         string exit42 = FunctionAsm(asm, "exit42");

@@ -11,8 +11,6 @@
 // sum 6
 // tie1 sleeping
 // tie2 sleeping
-// tie1 woke
-// tie2 woke
 // ties 12
 // longer sleeping
 // later sleeping
@@ -35,9 +33,10 @@
 // late 1
 //
 // Task.Delay: timers fire in deadline order whatever order they were
-// started in; two equal delays started one after the other wake in that
-// order; a short delay started later wakes before a long one started
-// earlier. Task.WhenAll completes only after its last task, and
+// started in; two equal delays both wake, awaited in either order -- in
+// no order of their own, their continuations run side by side on the
+// pool's threads, as .NET's do; a short delay started later wakes before a
+// long one started earlier. Task.WhenAll completes only after its last task, and
 // Task.WhenAny completes with the first task to finish, leaving the other
 // running. Durations differ by at least 40 ms so no result depends on how
 // long the surrounding code takes.
@@ -60,6 +59,13 @@ static class Program
         return value;
     }
 
+    static async Task<int> Quiet(string name, int ms, int value)
+    {
+        Line(name + " sleeping");
+        await Task.Delay(ms);
+        return value;
+    }
+
     static async Task Main()
     {
         Task<int> slow = Sleeper("slow", 300, 3);
@@ -72,8 +78,8 @@ static class Program
         sum = sum + await mid;
         Line("sum " + sum);
 
-        Task<int> tie1 = Sleeper("tie1", 100, 5);
-        Task<int> tie2 = Sleeper("tie2", 100, 7);
+        Task<int> tie1 = Quiet("tie1", 100, 5);
+        Task<int> tie2 = Quiet("tie2", 100, 7);
         int ties = await tie2;
         ties = ties + await tie1;
         Line("ties " + ties);

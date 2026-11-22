@@ -18473,10 +18473,10 @@ public static class GcThreads
     }
 
     /// Whether `block` is a registered thread's: the one written down
-    /// before there is a table, or one in it. What says a thread has not yet
-    /// ended, so Runtime.EndThread acts once: asked of the registry itself,
-    /// not of the block's State, which any wait made after the end would
-    /// swap from Gone again.
+    /// before there is a table, or one in it. Its answer is what says a
+    /// thread has not ended, so Runtime.EndThread acts once: the registry
+    /// itself is asked, not the block's State, which any wait made after the
+    /// end would swap from Gone again.
     public static bool IsRegistered(nuint block)
     {
         if (block == 0) return false;

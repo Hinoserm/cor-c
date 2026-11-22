@@ -204,10 +204,10 @@ public static class Win32
         nuint block = Sys.ThreadBlock();
         if (block == 0) return;
         // A thread the runtime started has ended already (Thread's body:
-        // Runtime.EndThread): only the block to give back. Its State says
-        // Gone, and nothing it ran since waits; asked of the registry only
-        // where it does not, which takes the registry's lock -- not for a
-        // thread long gone, under the loader's lock as DllMain runs.
+        // Runtime.EndThread): only the block to give back. Its State usually
+        // still says Gone, and then no lock is taken under the loader's as
+        // DllMain runs; where a later wait changed it, the registry is asked,
+        // which takes the registry's lock, as before.
         if (Sys.ReadAddress(block + Tls.State) != GcThreads.Gone && GcThreads.IsRegistered(block))
         {
             Runtime.EndBlocking();
