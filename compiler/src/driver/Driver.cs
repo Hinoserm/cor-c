@@ -705,7 +705,7 @@ public static class Driver
             // else is running. What the compiler allocates does not, so a
             // change that removes repeated work shows up as a smaller number
             // whoever else is using the processors.
-            + " allocated=" + GC.GetTotalAllocatedBytes()
+            + " allocated=" + UnitScope.AllocatedSoFar()
             + " specialisations=" + Lang.Monomorphiser.Specialisations + " members=" + Lang.Monomorphiser.SpecialisedMembers
             + " deferred=" + Lang.Monomorphiser.DeferredSpecialisations + " with-bodies=" + Lang.Monomorphiser.DeferredWithBodies + " members-made-later=" + Lang.Monomorphiser.MembersMadeLater
             + " deferred-declared=" + Lang.TypeSymbol.DeferredDeclared + " members-declared-later=" + Lang.TypeSymbol.DeferredMembersDeclared

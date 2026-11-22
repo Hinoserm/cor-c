@@ -27,8 +27,45 @@ public sealed class UnitState
     /// Lowering.LibraryProvided: images under it provide the class library.
     public bool LibraryProvided;
 
+    // AND THOSE A PROJECT'S ENTRY UNIT DECIDES APART FROM THE REST (--lib
+    // --no-shared-init are its others'): kept with the unit as well, rather
+    // than safe only while entry units compile alone first.
+
+    /// Lowering.SharedObject: this unit makes a shared object's start.
+    public bool SharedObject;
+
+    /// Lowering.Dynamic: a program over shared libraries, not a library.
+    public bool Dynamic;
+
+    /// Lowering.ClosedWorld: the whole program, no other image beside.
+    public bool ClosedWorld;
+
+    /// Lowering.SharedLiterals: literals one at the link.
+    public bool SharedLiterals;
+
+    // ITS STATISTICS, its own: counted by its thread and its helpers at once
+    // (Interlocked), printed with the unit.
+
+    /// Monomorphiser's: specialisations made, their members, deferred ones,
+    /// those with bodies, members made later, imported deferrals and their
+    /// members made later.
+    public long Specialisations, SpecialisedMembers, DeferredSpecialisations, DeferredWithBodies, MembersMadeLater, DeferredImports, ImportedMembersMadeLater;
+
+    /// TypeSymbol's: deferred types declared after all, their members, and
+    /// lookups answered from a deferred type's names.
+    public long DeferredDeclared, DeferredMembersDeclared, ProbesAnswered;
+
+    /// Escape's last run (--stats).
+    public (int Promoted, int Owned, int OwnedReturns, int Fresh, int Fields, int Variables) EscapeRun;
+
+    /// The pipeline's phase reporter (--report-phases), this unit's clock.
+    public System.Action<string>? Stage;
+
     /// What the unit's helpers allocated (Run), added to its own thread's.
     public long HelpersAllocated;
+
+    /// Where its own thread's allocation stood as it began (Begin).
+    public long Begun;
 }
 
 /// <summary>
@@ -48,7 +85,17 @@ public static class UnitScope
     public static long Begin(UnitState unit)
     {
         _current = unit;
-        return System.GC.GetAllocatedBytesForCurrentThread();
+        unit.Begun = System.GC.GetAllocatedBytesForCurrentThread();
+        return unit.Begun;
+    }
+
+    /// What this thread's unit has allocated so far, its helpers' too; the
+    /// process's whole outside one -- what a compile's statistics print.
+    public static long AllocatedSoFar()
+    {
+        UnitState? unit = _current;
+        return unit is null ? System.GC.GetTotalAllocatedBytes()
+            : System.GC.GetAllocatedBytesForCurrentThread() - unit.Begun + Interlocked.Read(ref unit.HelpersAllocated);
     }
 
     /// The unit's end on this thread: what it allocated, its helpers' too.

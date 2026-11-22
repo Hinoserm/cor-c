@@ -308,7 +308,10 @@ public static class ProjectCompile
             int code;
             try
             {
-                code = Driver.Compile(one.ToArray());
+                try { code = Driver.Compile(one.ToArray()); }
+                // ANY OTHER WAY OUT LEAVES THE UNIT TOO: a thread whose unit
+                // threw goes on to the next with no stale scope.
+                catch { UnitScope.Leave(); throw; }
             }
             // A UNIT THAT CANNOT BE COMPILED IS A FAILED UNIT, not a dead
             // process. Compiling one source by itself reports a bad input and

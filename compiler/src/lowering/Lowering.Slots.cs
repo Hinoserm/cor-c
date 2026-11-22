@@ -26,7 +26,7 @@ public sealed partial class Lowering
     /// exporting to modules. Set by the driver; off, every slot's method is
     /// required as it is named.
     /// </summary>
-    public static bool ClosedWorld { get; set; }
+    public static bool ClosedWorld { get => Corsac.UnitScope.Current.ClosedWorld; set => Corsac.UnitScope.Current.ClosedWorld = value; }
 
     private readonly HashSet<int> _slotsCalled = new();
 

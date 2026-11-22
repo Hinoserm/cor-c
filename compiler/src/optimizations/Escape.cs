@@ -3176,8 +3176,12 @@ continue;
     /// <summary>How many of the owned allocations were a fresh function's result.</summary>
     public int OwnedReturns { get; private set; }
 
-    /// <summary>The last run's counts, for --stats: frame slots, owned allocations, of those fresh results, fresh functions.</summary>
-    public static (int Promoted, int Owned, int OwnedReturns, int Fresh, int Fields, int Variables) LastRun { get; private set; }
+    /// <summary>The last run's counts, for --stats: frame slots, owned allocations, of those fresh results, fresh functions -- this unit's (UnitScope).</summary>
+    public static (int Promoted, int Owned, int OwnedReturns, int Fresh, int Fields, int Variables) LastRun
+    {
+        get => Corsac.UnitScope.Current.EscapeRun;
+        private set => Corsac.UnitScope.Current.EscapeRun = value;
+    }
 
     /// <summary>
     /// How many of this unit's functions were found to return a fresh object

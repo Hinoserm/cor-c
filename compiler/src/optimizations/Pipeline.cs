@@ -237,8 +237,12 @@ public sealed class Pipeline
         return p;
     }
 
-    /// <summary>--report-phases: told the name of each module and late pass as it ends (the driver's Phase).</summary>
-    public static Action<string>? Stage { get; set; }
+    /// <summary>--report-phases: told the name of each module and late pass as it ends (the driver's Phase) -- this unit's, with its own clock (UnitScope).</summary>
+    public static Action<string>? Stage
+    {
+        get => Corsac.UnitScope.Current.Stage;
+        set => Corsac.UnitScope.Current.Stage = value;
+    }
 
     /// <summary>Whether this pipeline tells Stage (the compile's own, not the cleanups inside passes).</summary>
     public bool Reports { get; set; }

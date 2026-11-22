@@ -65,7 +65,8 @@ public sealed class Monomorphiser
     /// they carried: what a unit's imported generics cost, printed with the
     /// declaration statistics.
     /// </summary>
-    public static long Specialisations, SpecialisedMembers;
+    public static long Specialisations => Corsac.UnitScope.Current.Specialisations;
+    public static long SpecialisedMembers => Corsac.UnitScope.Current.SpecialisedMembers;
 
     /// <summary>
     /// How many of those specialised types had their members deferred
@@ -73,10 +74,11 @@ public sealed class Monomorphiser
     /// because something asked: SpecialisedMembers counts only the members
     /// made with their type.
     /// </summary>
-    public static long DeferredSpecialisations, MembersMadeLater;
+    public static long DeferredSpecialisations => Corsac.UnitScope.Current.DeferredSpecialisations;
+    public static long MembersMadeLater => Corsac.UnitScope.Current.MembersMadeLater;
 
     /// <summary>How many of the deferred ones were copies per argument, whose bodies were deferred with them (BodiesLater).</summary>
-    public static long DeferredWithBodies;
+    public static long DeferredWithBodies => Corsac.UnitScope.Current.DeferredWithBodies;
 
     /// <summary>Names that are NOT a machine word: narrower, or in the other bank.</summary>
     private static readonly HashSet<string> Narrow = new(StringComparer.Ordinal)
@@ -1050,18 +1052,18 @@ public sealed class Monomorphiser
                     _templateNames[template] = names;
                 }
                 made.DeferMembers(asking => MakeMembers(template, members, args, name, scope, bodies ? asking : null), names);
-                DeferredSpecialisations++;
-                if (bodies) DeferredWithBodies++;
+                System.Threading.Interlocked.Increment(ref Corsac.UnitScope.Current.DeferredSpecialisations);
+                if (bodies) System.Threading.Interlocked.Increment(ref Corsac.UnitScope.Current.DeferredWithBodies);
             }
             else
             {
-                SpecialisedMembers += made.Members.Count;
+                System.Threading.Interlocked.Add(ref Corsac.UnitScope.Current.SpecialisedMembers, made.Members.Count);
             }
 
             _made[job.Name] = made;
             if (made.Kind is TypeKind.Struct or TypeKind.Enum) _madeValue.Add(job.Name);
             output.Types.Add(made);
-            Specialisations++;
+            System.Threading.Interlocked.Increment(ref Corsac.UnitScope.Current.Specialisations);
         }
         // AND AGAIN AFTER THE SPECIALISATIONS. Rewriting the queue above names
         // templates too -- EqualityComparer`1 reached only from a specialised
@@ -1317,7 +1319,7 @@ public sealed class Monomorphiser
                 $"the members of '{name}', made when first asked for, named a type, a declaration or a mistake "
                 + "their first making did not: deferred members must be made exactly as they were");
         }
-        MembersMadeLater += made.Count;
+        System.Threading.Interlocked.Add(ref Corsac.UnitScope.Current.MembersMadeLater, made.Count);
         return made;
     }
 
@@ -3096,7 +3098,8 @@ public sealed class Monomorphiser
     /// for them again because something asked: printed with the declaration
     /// statistics.
     /// </summary>
-    public static long DeferredImports, ImportedMembersMadeLater;
+    public static long DeferredImports => Corsac.UnitScope.Current.DeferredImports;
+    public static long ImportedMembersMadeLater => Corsac.UnitScope.Current.ImportedMembersMadeLater;
 
     /// <summary>
     /// AN IMPORTED DECLARATION'S MEMBERS, DROPPED NOW AND MADE ON FIRST USE.
@@ -3121,7 +3124,7 @@ public sealed class Monomorphiser
         HashSet<string> names = MemberNames(made.Members);
         TypeRef[] signatures = SignatureTypes(made.Members);
         made.DeferMembers(asking => MakeImported(asking, read, name, scope), names, signatures);
-        DeferredImports++;
+        System.Threading.Interlocked.Increment(ref Corsac.UnitScope.Current.DeferredImports);
     }
 
     /// <summary>
@@ -3233,7 +3236,7 @@ public sealed class Monomorphiser
                 $"the members of '{name}', read again when first asked for, named a type, a declaration or a mistake "
                 + "their first reading did not: deferred members must be made exactly as they were");
         }
-        ImportedMembersMadeLater += made.Count;
+        System.Threading.Interlocked.Add(ref Corsac.UnitScope.Current.ImportedMembersMadeLater, made.Count);
         return made;
     }
 

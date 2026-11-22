@@ -162,7 +162,7 @@ public sealed partial class Lowering
     /// at start -- Runtime.RegisterRoots for the statics the collector must
     /// scan, Runtime.RegisterFrames for the table a trace reads.
     /// </summary>
-    public static bool Dynamic { get; set; }
+    public static bool Dynamic { get => Corsac.UnitScope.Current.Dynamic; set => Corsac.UnitScope.Current.Dynamic = value; }
 
     /// <summary>
     /// This compilation is a shared object. It gets one function nobody
@@ -170,7 +170,7 @@ public sealed partial class Lowering
     /// through DT_INIT before anything uses the library, and which tells the
     /// runtime where this image's statics and frame table are.
     /// </summary>
-    public static bool SharedObject { get; set; }
+    public static bool SharedObject { get => Corsac.UnitScope.Current.SharedObject; set => Corsac.UnitScope.Current.SharedObject = value; }
 
     /// <summary>
     /// The unit is for an image that exports its public surface: a shared
@@ -213,7 +213,7 @@ public sealed partial class Lowering
     /// so a program's literal and a library's of the same text are still
     /// two objects.
     /// </summary>
-    public static bool SharedLiterals { get; set; }
+    public static bool SharedLiterals { get => Corsac.UnitScope.Current.SharedLiterals; set => Corsac.UnitScope.Current.SharedLiterals = value; }
 
     /// <summary>
     /// The name of the entry stub, and whether it has to clear .bss itself.

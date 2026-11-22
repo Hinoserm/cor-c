@@ -246,8 +246,8 @@ public sealed class TypeSymbol
             _declareMembers = null;
             // Its own members read to declare them, not by the unit (MemberWatch).
             using (MemberWatch.Within(Decl?.Watch)) declare(this);
-            DeferredDeclared++;
-            DeferredMembersDeclared += (_fields?.Count ?? 0) + (_methods?.Count ?? 0);
+            System.Threading.Interlocked.Increment(ref Corsac.UnitScope.Current.DeferredDeclared);
+            System.Threading.Interlocked.Add(ref Corsac.UnitScope.Current.DeferredMembersDeclared, (_fields?.Count ?? 0) + (_methods?.Count ?? 0));
         }
     }
 
@@ -257,7 +257,9 @@ public sealed class TypeSymbol
     /// answered from a deferred type's names without declaring it (MayHave):
     /// printed with the declaration statistics.
     /// </summary>
-    public static long DeferredDeclared, DeferredMembersDeclared, ProbesAnswered;
+    public static long DeferredDeclared => Corsac.UnitScope.Current.DeferredDeclared;
+    public static long DeferredMembersDeclared => Corsac.UnitScope.Current.DeferredMembersDeclared;
+    public static long ProbesAnswered => Corsac.UnitScope.Current.ProbesAnswered;
 
     /// <summary>
     /// WHETHER A MEMBER OF ITS OWN CAN BE CALLED THIS, asked before looking
@@ -288,7 +290,7 @@ public sealed class TypeSymbol
         {
             return true;
         }
-        ProbesAnswered++;
+        System.Threading.Interlocked.Increment(ref Corsac.UnitScope.Current.ProbesAnswered);
         (ProbedNames ??= new(StringComparer.Ordinal)).Add(name);
         return false;
     }
