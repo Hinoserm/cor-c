@@ -2704,8 +2704,9 @@ namespace System.Collections.Concurrent
     /// a chain published whole (a node is complete before the store that
     /// links it in). The table is sized as .NET sizes it: at least the
     /// concurrency level (the processor count by default) and 31, made a
-    /// prime (HashSizes.Prime, .NET's GetPrime); each lock may hold its share of buckets' worth of
-    /// members (the budget) before the table grows -- to the prime past twice
+    /// prime (HashSizes.Prime, .NET's GetPrime); each lock may hold its
+    /// share of buckets' worth of members (the budget) before the table
+    /// grows -- to the prime past twice
     /// its size, every chain read head first into the new one, so a chain
     /// comes out reversed -- or, where the table is three quarters empty,
     /// only the budget doubles. A table made by the default constructors

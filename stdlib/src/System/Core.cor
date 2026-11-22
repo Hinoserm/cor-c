@@ -14352,7 +14352,7 @@ interface IOrderedEdge<T> {
     T Edge(bool wantLast, Func<T, bool>? predicate, out bool found);
 }
 
-class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T>, IOrderedEdge<T> {
+sealed class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T>, IOrderedEdge<T> {
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
     private IEnumerable<T> source;
@@ -15782,13 +15782,29 @@ public static class Enumerable {
         NotNull(source, "source");
         if (Sized(source) is int count) { return count; }
         // AN ORDERED SEQUENCE IS COUNTED BY ITS SOURCE, as .NET's counts it:
-        // nothing is sorted and no key is asked for. Its source counted here,
-        // not by a call of this one: a Count that called itself was a cycle,
-        // and every sequence any Count was asked of was taken to escape.
-        // A CHAIN OF THEM to the first: OrderBy's of a ThenBy's sorts none.
-        IEnumerable<T> counted = source;
-        while (counted.GetType() == typeof(OrderedSequence<T>)) { counted = ((OrderedSequence<T>)counted).Source; }
-        if (!ReferenceEquals(counted, source) && Sized(counted) is int sized) { return sized; }
+        // nothing is sorted and no key is asked for (CountOrdered). Behind a
+        // test of the sequence itself, so a caller whose sequence is of
+        // another class -- a Where's iterator, made where Count is inlined
+        // -- has the test answered and no chain walked: a variable that is
+        // either the sequence or what a link of the chain read was a join
+        // the lifetime rules cannot follow, and every list a counted LINQ
+        // walk was made over was taken to escape (1311).
+        if (source is OrderedSequence<T> ordered) { return CountOrdered(ordered); }
+        // Walked here, not by a call: inlined, the walk's GetEnumerator is
+        // the sequence's own class's, which a caller made.
+        int walked = 0;
+        using (IEnumerator<T> walk = source.GetEnumerator()) { while (walk.MoveNext()) { walked = checked(walked + 1); } }
+        return walked;
+    }
+
+    /// An ordered sequence's count: its source's, through a CHAIN OF THEM to
+    /// the first (OrderBy's of a ThenBy's sorts none). Its own function, not
+    /// a call of Count: a Count that called itself was a cycle, and every
+    /// sequence any Count was asked of was taken to escape.
+    private static int CountOrdered<T>(OrderedSequence<T> ordered) {
+        IEnumerable<T> counted = ordered.Source;
+        while (counted is OrderedSequence<T> inner) { counted = inner.Source; }
+        if (Sized(counted) is int sized) { return sized; }
         int walked = 0;
         using (IEnumerator<T> walk = counted.GetEnumerator()) { while (walk.MoveNext()) { walked = checked(walked + 1); } }
         return walked;

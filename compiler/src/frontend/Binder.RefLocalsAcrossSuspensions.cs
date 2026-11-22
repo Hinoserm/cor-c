@@ -567,14 +567,20 @@ public sealed partial class Binder
         return e is NameExpr n && RefLocalOf(n, w) >= 0 ? n : null;
     }
 
-    /// <summary>Whether a name is an element of a tuple type, as its type or its class names them.</summary>
+    /// <summary>
+    /// Whether a name is an element of a tuple type, as the binder finds one
+    /// (CheckMember): by the names its type or its class carries, else by
+    /// every naming the shape was given where they agree (TupleElement) --
+    /// a monomorphised generic's element carries no names of its own.
+    /// </summary>
     private static bool TupleElement(Type held, TypeSymbol owner, string name)
     {
         if (held.IsNullableValue || owner.TupleNamings.Count == 0) return false;
-        IReadOnlyList<string>? named = held.Names ?? owner.TupleNames;
-        if (named is null) return false;
-        for (int i = 0; i < named.Count; i++) if (named[i] == name) return true;
-        return false;
+        if ((held.Names ?? owner.TupleNames) is { } named)
+        {
+            for (int i = 0; i < named.Count; i++) if (named[i] == name) return true;
+        }
+        return owner.TupleElement(name) >= 0;
     }
 
     /// <summary>Whether an expression awaits in this body: an await inside a lambda it only makes is the lambda's.</summary>
