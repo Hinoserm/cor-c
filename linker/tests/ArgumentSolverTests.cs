@@ -197,11 +197,21 @@ public static class ArgumentSolverTests
         // Drv : Kern (the kernel's), inheriting Kern's Run at slot 0 and adding Own at 4; Own, the module's alone.
         Descriptor("Drv", new[] { "t_Kern", "t_Drv" }, new[] { "m_Kern_Run", "m_Drv_Own" });
         Descriptor("Own", new[] { "t_Own" }, new[] { "m_Own_Run" });
+        // An object of each, laid down whole: its stamp where its table begins,
+        // which is where every slot is counted from (VirtualTargets' bases).
+        foreach (string made in new[] { "t_Drv", "t_Own" })
+        {
+            int at = data.Bytes.Count;
+            data.Bytes.AddRange(new byte[2 * w]);
+            data.Relocs.Add(new Relocation(at, made, table, RelocKind.Abs32));
+        }
         List<(string Name, ObjectFile Object)> inputs = new() { ("module", o) };
 
         Check(VirtualTargets.ForeignAncestors(inputs).SetEquals(new[] { "t_Kern" }), "a type only a display names is not another image's");
         string run = VirtualTargets.Prefix + "t_Drv+0";
-        Check(!VirtualTargets.Resolve(inputs, new[] { run }).ContainsKey(run), "a slot holding another image's symbol was answered without being told whose it is");
+        Dictionary<string, string[]> untold = VirtualTargets.Resolve(inputs, new[] { run });
+        Check(!untold.ContainsKey(run), "a slot holding another image's symbol was answered without being told whose it is: ["
+            + string.Join(",", untold.GetValueOrDefault(run) ?? Array.Empty<string>()) + "]");
         Check(VirtualTargets.Resolve(inputs, new[] { run }, null, name => name == "m_Kern_Run").TryGetValue(run, out string[]? kern)
             && kern.SequenceEqual(new[] { "m_Kern_Run" }), "a slot holding the kernel's function, told so, is not answered with it");
         HashSet<string> held = VirtualTargets.MethodsHeldBy(inputs, new HashSet<string>(StringComparer.Ordinal) { "t_Kern" });

@@ -55,7 +55,11 @@ public static class ArgumentSummary
                 // of another function, whose calls are that function's.
                 Fixed = f.CalleePops != 0 || f.KeepsCallerRegisters || f.Async is not null || f.InsideState || f.ProgramEntry || f.Version
                     || f.Name == m.Entry || f.Name == m.Main || f.Name.StartsWith(StackArguments, StringComparison.Ordinal) || helpers.Contains(f.Name),
-                Copies = f.Coalescible || f.GenericCode,
+                // (Exported: a function local to its unit -- a throw moved
+                // out, a constant's version -- is that unit's alone, whatever
+                // code it was made of; another unit's of the same name is
+                // another function, never a copy of this one.)
+                Copies = f.Exported && (f.Coalescible || f.GenericCode),
             };
             parameterOf.Clear();
             for (int k = 0; k < f.Params.Count; k++)

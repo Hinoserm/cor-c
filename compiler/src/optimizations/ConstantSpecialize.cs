@@ -68,7 +68,19 @@ public sealed class ConstantSpecialize : IModulePass
             if (!versions.TryGetValue(key, out Function? version))
             {
                 if (versions.Count >= ModuleLimit || counts.GetValueOrDefault(target.Name) >= PerFunctionLimit) continue;
-                string name = target.Name + "$constant$" + versions.Count;
+                // NAMED BY WHAT IT BAKES IN, each constant argument's place and
+                // value: a version of generic code is generic code, the same
+                // name in every unit that makes it, and the link takes copies
+                // of one name for one function (coalescing; the argument solve
+                // reads one unit's hints for all). A count of this unit's
+                // versions named another unit's other version alike: unit A's
+                // first, GetSubArray with its start known, and unit B's first,
+                // another, were one function to the link, whose argument facts
+                // took from B's the parameter A's never read.
+                string name = target.Name + "$constant$" + string.Join("_", call.Operands.Select((o, index) => o is ImmOperand imm
+                    ? index.ToString(System.Globalization.CultureInfo.InvariantCulture) + (imm.Value < 0 ? "m" + ((ulong)(-(imm.Value + 1)) + 1).ToString("x", System.Globalization.CultureInfo.InvariantCulture)
+                        : "x" + imm.Value.ToString("x", System.Globalization.CultureInfo.InvariantCulture))
+                    : null).Where(part => part is not null));
                 if (originals.ContainsKey(name)) continue;
                 version = new Function(name, target.Returns)
                 {
