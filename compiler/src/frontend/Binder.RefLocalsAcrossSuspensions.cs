@@ -152,11 +152,11 @@ public sealed partial class Binder
         }
         if (w.Index.Count == 0) return;
         w.Words = (w.Index.Count + 63) >> 6;
-        if (body is Stmt top) FinallyDepths(top, 0, w.LabelDepth);
+        int cases = body is Stmt top ? FinallyDepths(top, 0, w.LabelDepth) : 0;
         // Round after round while a label or a case gains from a goto later
         // in the text. Each round that goes on adds a bit to one of them, so
         // there are at most as many as their bits, and one more to see it.
-        int targets = w.LabelDepth.Count + CountCases(body);
+        int targets = w.LabelDepth.Count + cases;
         for (int round = 0; round <= (targets + 1) * (w.Index.Count + 1); round++)
         {
             int gained = Gained(w);
@@ -183,41 +183,42 @@ public sealed partial class Binder
         }
     }
 
-    private int CountCases(Node body)
-    {
-        int cases = 0;
-        foreach (Node n in SafetyNodes(body)) if (n is SwitchStmt sw) cases += sw.Cases.Count;
-        return cases;
-    }
-
     /// <summary>
     /// Each label's depth in finally blocks: the try blocks with a finally
     /// whose body or catch it is in. A goto out leaves by the ones deeper
     /// than its label's -- C# reaches only a label in a block around it.
+    /// Answers the switch cases met, all told, for the rounds' bound. Every
+    /// statement that holds statements is here; one that is not would be
+    /// met by no goto (Binder: a label is in a block around the goto).
     /// </summary>
-    private void FinallyDepths(Stmt s, int depth, Dictionary<LabeledStmt, int> into)
+    private int FinallyDepths(Stmt s, int depth, Dictionary<LabeledStmt, int> into)
     {
         switch (s)
         {
-            case LabeledStmt l: into[l] = depth; FinallyDepths(l.Body, depth, into); return;
-            case Block b: foreach (Stmt one in b.Statements) FinallyDepths(one, depth, into); return;
-            case IfStmt i: FinallyDepths(i.Then, depth, into); if (i.Else is not null) FinallyDepths(i.Else, depth, into); return;
-            case WhileStmt loop: FinallyDepths(loop.Body, depth, into); return;
-            case DoStmt loop: FinallyDepths(loop.Body, depth, into); return;
-            case ForStmt loop: FinallyDepths(loop.Body, depth, into); return;
+            case LabeledStmt l: into[l] = depth; return FinallyDepths(l.Body, depth, into);
+            case Block b: { int n = 0; foreach (Stmt one in b.Statements) n += FinallyDepths(one, depth, into); return n; }
+            case IfStmt i: return FinallyDepths(i.Then, depth, into) + (i.Else is not null ? FinallyDepths(i.Else, depth, into) : 0);
+            case WhileStmt loop: return FinallyDepths(loop.Body, depth, into);
+            case DoStmt loop: return FinallyDepths(loop.Body, depth, into);
+            case ForStmt loop: return FinallyDepths(loop.Body, depth, into);
             case ForeachStmt fe:
-                if (_r.Lowered.TryGetValue(fe, out Stmt? lowered)) FinallyDepths(lowered, depth, into);
-                else FinallyDepths(fe.Body, depth, into);
-                return;
-            case SwitchStmt sw: foreach (SwitchCase c in sw.Cases) foreach (Stmt one in c.Body) FinallyDepths(one, depth, into); return;
+                return _r.Lowered.TryGetValue(fe, out Stmt? lowered) ? FinallyDepths(lowered, depth, into) : FinallyDepths(fe.Body, depth, into);
+            case SwitchStmt sw:
+            {
+                int n = sw.Cases.Count;
+                foreach (SwitchCase c in sw.Cases) foreach (Stmt one in c.Body) n += FinallyDepths(one, depth, into);
+                return n;
+            }
             case TryStmt ts:
             {
                 int inside = ts.Finally is null ? depth : depth + 1;
-                FinallyDepths(ts.Body, inside, into);
-                foreach (CatchClause cc in ts.Catches) FinallyDepths(cc.Body, inside, into);
-                if (ts.Finally is not null) FinallyDepths(ts.Finally, depth, into);
-                return;
+                int n = FinallyDepths(ts.Body, inside, into);
+                foreach (CatchClause cc in ts.Catches) n += FinallyDepths(cc.Body, inside, into);
+                if (ts.Finally is not null) n += FinallyDepths(ts.Finally, depth, into);
+                return n;
             }
+            default:
+                return 0;
         }
     }
 
@@ -408,6 +409,7 @@ public sealed partial class Binder
             case GotoStmt g:
                 if (_r.Gotos.TryGetValue(g, out LabeledStmt? toLabel))
                 {
+                    // Unknown, every finally open: more crossed, the side that misses nothing.
                     int depth = w.LabelDepth.TryGetValue(toLabel, out int labelDepth) ? labelDepth : 0;
                     w.Labels[toLabel] = JoinCrossed(LabelIn(w, toLabel), CrossThroughFinallys(c, w, depth));
                 }
@@ -557,11 +559,22 @@ public sealed partial class Binder
     /// </summary>
     private NameExpr? RefLocalRoot(Expr e, CrossWalk w)
     {
-        // Through a struct's own instance fields only: a property's value is
-        // a copy, no variable.
+        // Through a struct's own instance fields only -- a property's value is
+        // a copy, no variable -- or a tuple's elements, by the names its type
+        // gives them (the binder's own rule, CheckMember).
         while (e is MemberExpr { Target: { } inner } member && _r.TypeOf(inner) is { } held && ValueTyped(held)
-               && held.Symbol is { } owner && owner.Fields.Any(f => !f.Static && f.Name == member.Name)) e = inner;
+               && held.Symbol is { } owner && (owner.FindField(member.Name) is { Static: false } || TupleElement(held, owner, member.Name))) e = inner;
         return e is NameExpr n && RefLocalOf(n, w) >= 0 ? n : null;
+    }
+
+    /// <summary>Whether a name is an element of a tuple type, as its type or its class names them.</summary>
+    private static bool TupleElement(Type held, TypeSymbol owner, string name)
+    {
+        if (held.IsNullableValue || owner.TupleNamings.Count == 0) return false;
+        IReadOnlyList<string>? named = held.Names ?? owner.TupleNames;
+        if (named is null) return false;
+        for (int i = 0; i < named.Count; i++) if (named[i] == name) return true;
+        return false;
     }
 
     /// <summary>Whether an expression awaits in this body: an await inside a lambda it only makes is the lambda's.</summary>

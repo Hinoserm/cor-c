@@ -491,9 +491,7 @@ public sealed partial class Binder
     /// </summary>
     private HeldLocks WalkLockBody(Stmt body, LockWalk w)
     {
-        FinallyDepths(body, 0, w.LabelDepth);
-        int cases = 0;
-        foreach (Node n in SafetyNodes(body)) if (n is SwitchStmt sw) cases += sw.Cases.Count;
+        int cases = FinallyDepths(body, 0, w.LabelDepth);
         int most = (w.LabelDepth.Count + cases + 1) * (LockMost - LockLeast + 2);
         HeldLocks end = DeadLocks;
         for (int round = 0; round <= most; round++)
@@ -767,7 +765,8 @@ public sealed partial class Binder
             case GotoStmt g:
                 if (_r.Gotos.TryGetValue(g, out LabeledStmt? toLabel))
                 {
-                    int depth = w.LabelDepth.TryGetValue(toLabel, out int labelDepth) ? labelDepth : 0;
+                    // Unknown, no finally: none given back on the way, the side that misses nothing.
+                    int depth = w.LabelDepth.TryGetValue(toLabel, out int labelDepth) ? labelDepth : w.Finallys.Count;
                     w.Labels[toLabel] = JoinLocks(LabelIn(w, toLabel), ThroughFinallys(h, w, depth));
                 }
                 return DeadLocks;

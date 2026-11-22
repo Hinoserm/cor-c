@@ -6,10 +6,10 @@
 //
 // A struct's field assigned through a ref local with an awaited value, which
 // Roslyn compiles: the field's address is taken first, as C# evaluates an
-// assignment's target before its value, and kept across the suspension (the
-// machine is read word by word by the collector, so the array stays). C#'s
-// answer, 7 and 8 -- NOT .NET 10's: its own code for B, where the await
-// really suspends, throws NullReferenceException (probe ~/tmp/dn/asyncref8).
+// assignment's target before its value, and kept across the suspension in
+// the machine. THIS TEST EXPECTS WHAT .NET 10 DOES NOT GIVE: C#'s answer, 7
+// and 8. .NET 10's own code for B, where the await really suspends, throws
+// NullReferenceException (probe ~/tmp/dn/asyncref8) -- its bug, not C#'s rule.
 
 using System;
 using System.Threading.Tasks;
