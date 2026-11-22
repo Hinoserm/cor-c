@@ -9,6 +9,11 @@
 // nullable of Int32
 // not nullable
 // node 3 none
+// False True True False True False
+// False True True False
+// True False True
+// a String word, not a String, a Base Derived, not a Derived
+// True False True False True False
 // no type
 //
 // `x is T y` over what is a T already -- a Type? asked whether it is a
@@ -16,8 +21,11 @@
 // interface, a delegate, a generic class in a copy of its own and in a
 // shared one, a switch arm -- asks only whether there is one, as C# reads
 // it: no run-time type test, which a Type has no object to answer in a
-// kernel (the library's dynamic binder, compiled there). Output from
-// .NET 10 (probe ~/tmp/dn/sametype).
+// kernel (the library's dynamic binder, compiled there). But `o is T` and
+// `t is U` in a shared copy (string's, Node's, Derived's) are of a type
+// only run time knows -- object to the compiler, and equal to object --
+// and stay descriptor tests: a boxed 5 is no string. Output from .NET 10
+// (probe ~/tmp/dn/sametype).
 
 using System;
 
@@ -26,7 +34,7 @@ class Base { public virtual string Name => "base"; }
 sealed class Derived : Base { public override string Name => "derived"; }
 interface IShape { int Sides { get; } }
 sealed class Square : IShape { public int Sides => 4; }
-sealed class Box<T> { public T Held; public Box(T held) { Held = held; } }
+sealed class Box<T> { public T Held; public Box(T held) { Held = held; } public bool Is(object? o) => o is T; public bool Same(T? o) => o is T; }
 
 static class Program
 {
@@ -40,6 +48,9 @@ static class Program
     static string Sides(IShape? s) => s is IShape y ? "sides " + y.Sides : "no shape";
     static string Call(Func<int>? f) => f is Func<int> g ? "called " + g() : "no call";
     static string Held<T>(Box<T>? b) => b is Box<T> y ? "held " + y.Held : "empty box";
+    static bool IsT<T>(object? o) => o is T;
+    static string Of<T>(object? o) => o is T y ? "a " + typeof(T).Name + " " + y : "not a " + typeof(T).Name;
+    static bool Pair<T, U>(T? t) => t is U;
     static string Switch(Node? n) => n switch { Node m => "switch " + m.Value, null => "switch null" };
 
     static int Main()
@@ -52,6 +63,11 @@ static class Program
         Console.WriteLine(Say(typeof(int?)));
         Console.WriteLine(Say(typeof(string)));
         Console.WriteLine(Say(3) + " " + Say(0));
+        Console.WriteLine(IsT<string>(5) + " " + IsT<string>("s") + " " + IsT<object>(5) + " " + IsT<string>(null) + " " + IsT<Node>(new Node(1)) + " " + IsT<Node>("n"));
+        Console.WriteLine(new Box<string>("b").Is(5) + " " + new Box<string>("b").Is("x") + " " + new Box<object>(1).Is(5) + " " + new Box<Node>(null!).Is(new Base()));
+        Console.WriteLine(new Box<string>("b").Same("x") + " " + new Box<string>("b").Same(null) + " " + new Box<Node>(null!).Same(new Node(2)));
+        Console.WriteLine(Of<string>("word") + ", " + Of<string>(new Node(4)) + ", " + Of<Base>(new Derived()) + ", " + Of<Derived>(new Base()));
+        Console.WriteLine(Pair<object, string>("s") + " " + Pair<object, string>(new Node(1)) + " " + Pair<Base, Derived>(new Derived()) + " " + Pair<Base, Derived>(new Base()) + " " + Pair<string, object>("s") + " " + Pair<string, string>(null));
         Type? maybe = null;
         Console.WriteLine(maybe is Type ? "a type" : "no type");
         return 0;

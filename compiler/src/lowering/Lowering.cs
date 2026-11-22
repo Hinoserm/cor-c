@@ -2096,6 +2096,12 @@ public sealed partial class Lowering
     // member NullableUnderlying$, Lowering.IntrinsicMember).
     private const int TypeFlagNullable = 0x2000000;
 
+    // OBJECT'S DESCRIPTOR (ObjectDescriptor), which every object is
+    // (Runtime.DescribedAs): its depth is 0, every root class's own place in
+    // its display, so a test of the display found only a bare object one --
+    // a shared Box<object>'s `o is T` false of everything.
+    private const int TypeFlagObject = 0x4000000;
+
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
     private const int DescVariance = 11;

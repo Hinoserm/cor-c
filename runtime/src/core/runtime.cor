@@ -5241,6 +5241,8 @@ public static partial class Runtime
     const int FaceComparableFlag = 64;
     const int FaceFormattableFlag = 128;
     const int FaceOfFlag = 256;
+    // Object's own descriptor (Lowering.TypeFlagObject), which every object is.
+    const int ObjectFlag = 0x4000000;
 
     /// THE INTEGER KIND A BOX HOLDS, from its descriptor's flags
     /// (Lowering.BoxKind): an enum's underlying integer or the primitive
@@ -5371,9 +5373,18 @@ public static partial class Runtime
             return true;
         }
         const int w = WordSize.Bytes;
-        // A class's depth is its place in its chain; an interface's and an
-        // array's is -1.
-        // A class's depth in its chain; an interface's is negative.
+        // EVERY OBJECT IS AN OBJECT: a box, a string, an array, any class.
+        // Object's depth is 0, every root class's own place in its display,
+        // so the display answered only a bare `new object()` -- a shared
+        // copy's `o is T` and `(T)o` with T object (its context's entry
+        // object's descriptor, as typeof(T) must read it) false of all else.
+        nuint wantFlags = Sys.ReadAddress(want + DescFlagsWordHere * w);
+        if ((wantFlags & ObjectFlag) != 0)
+        {
+            return true;
+        }
+        // A class's depth in its chain; an interface's and an array's is
+        // negative.
         int wantDepth = (int)Sys.ReadAddress(want + DescDepthWord * w);
         if (wantDepth >= 0)
         {
@@ -5398,7 +5409,6 @@ public static partial class Runtime
         // A BOX OR A STRING IS ITS SYSTEM INTERFACES (BoxedFaces), which its
         // table names none of, so that every unit's copy of it is one table:
         // the interface's own descriptor says which face it is.
-        nuint wantFlags = Sys.ReadAddress(want + DescFlagsWordHere * w);
         // AN ARRAY IS ITS SEQUENCE INTERFACES, AND ITS WALKER IEnumerator<T>
         // (Lowering.ArrayFaces), named in no table of theirs for the same
         // reason: an IList<U> -- its word 10 the descriptor of U[] -- of an

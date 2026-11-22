@@ -15020,6 +15020,17 @@ public sealed partial class Binder
         return Convertible(got, want) && Convertible(want, got);
     }
 
+    /// <summary>
+    /// WHETHER A TESTED TYPE IS ONE ONLY RUN TIME KNOWS: a shared copy's own
+    /// word (__canon, a hidden method argument), or a type made of one. It is
+    /// object to the binder, and equal to object and to every other such word
+    /// (equality leaves CanonParam out), but `o is T` in the copy for string
+    /// is false of a boxed 5: never a plain null test (NonNullPatterns), but
+    /// the descriptor's (Lowering.EmitIs's shared-copy tests).
+    /// </summary>
+    private static bool OnlyRunTimeKnows(IsExpr isx, Type tested)
+        => isx.Type.Name != TypeRef.Same && (Monomorphiser.MentionsCanon(isx.Type) || MarksCanon(tested));
+
     /// <summary>Whether a use-site argument is, or holds, a word only run time knows (Type.CanonParam).</summary>
     private static bool MarksCanon(Type t)
         => t.CanonParam != -1 && t.Prim == Prim.Any && t.Symbol is null || t.UseArgs is { } inner && inner.Any(MarksCanon);
@@ -20156,7 +20167,8 @@ public sealed partial class Binder
                         Error(isx, $"a '{operand}' can only match its held '{operand.Underlying}' value");
                     }
                 }
-                else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && (operand.IsReference || operand.Prim == Prim.Any))
+                else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && (operand.IsReference || operand.Prim == Prim.Any)
+                         && !OnlyRunTimeKnows(isx, tested))
                 {
                     // `x is object y` OVER A REFERENCE asks only whether there is
                     // one. Taken for a value pattern -- `object` is no class
@@ -20167,14 +20179,14 @@ public sealed partial class Binder
                 }
                 else if (!operand.IsError && !tested.IsError && !tested.IsArray && tested.Prim != Prim.String
                          && (operand.IsReference || operand.Prim == Prim.Type)
-                         && operand.AsNonNullable().Equals(tested.AsNonNullable()))
+                         && operand.AsNonNullable().Equals(tested.AsNonNullable()) && !OnlyRunTimeKnows(isx, tested))
                 {
                     // `x is T y` OVER WHAT IS A T ALREADY -- a `Type?` asked
                     // whether it is a Type -- asks only whether there is one,
                     // as C# reads it: no run-time test of the type on any
-                    // path, a shared copy's included (Lowering.EmitIs asks
-                    // this first) -- which a Type, a descriptor's address, has
-                    // no object to answer for where the runtime keeps no type
+                    // path (Lowering.EmitIs asks this before a shared copy's
+                    // tests) -- which a Type, a descriptor's address, has no
+                    // object to answer for where the runtime keeps no type
                     // objects (a kernel).
                     _r.NonNullPatterns.Add(isx);
                 }

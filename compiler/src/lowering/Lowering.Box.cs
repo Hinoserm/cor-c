@@ -325,6 +325,7 @@ public sealed partial class Lowering
         WriteWord(block, DescSize * w, _t.ObjectHeaderBytes);
         WriteWord(block, DescDepth * w, 0);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
+        WriteWord(block, DescFlags * w, TypeFlagObject);
 
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _m.Data.Add(item);
