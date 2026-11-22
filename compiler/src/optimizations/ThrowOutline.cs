@@ -73,7 +73,9 @@ public sealed class ThrowOutline : IModulePass
     {
         _stubs = new(StringComparer.Ordinal);
         _callerOf = new(StringComparer.Ordinal);
-        _localContent = null;
+        _localContent = new(StringComparer.Ordinal);
+        _localData = null;
+        _localFunctions = null;
         foreach (Function g in module.Functions)
             if (IsStub(g.Name)) _stubs.TryAdd(g.Name, (g, null));
         List<Function> made = new();
@@ -81,6 +83,9 @@ public sealed class ThrowOutline : IModulePass
             if (Candidate(f)) made.AddRange(Outline(module, f));
         module.Functions.AddRange(made);
         Listed(module, made);
+        _localContent = new(StringComparer.Ordinal);
+        _localData = null;
+        _localFunctions = null;
     }
 
     // This run's stubs by name, with the digest each was named by (null for
@@ -90,7 +95,9 @@ public sealed class ThrowOutline : IModulePass
     // What each of the unit's own (unexported) data items and functions holds,
     // for a stub naming one: its name is the unit's, its content is what the
     // stub means.
-    private Dictionary<string, byte[]>? _localContent;
+    private Dictionary<string, byte[]> _localContent = new(StringComparer.Ordinal);
+    private Dictionary<string, DataItem>? _localData;
+    private Dictionary<string, Function>? _localFunctions;
 
     /// <summary>
     /// A STUB IN THE IMAGE'S EXPORT LISTS AS THE FUNCTION IT CAME OUT OF
@@ -121,45 +128,76 @@ public sealed class ThrowOutline : IModulePass
     /// <summary>
     /// WHAT A STUB IS, hashed: its body as written placeless (IrFunctionCodec:
     /// no lines, no file), and the content of every one of the unit's own
-    /// data items and functions it names -- a string literal another unit
-    /// numbers alike and fills otherwise is another stub. SHA-256, all of it
-    /// taken into account: a name that is the same in two units is one body.
+    /// data items and functions it names, and of every one of the unit's own
+    /// those name in turn -- a string literal another unit numbers alike and
+    /// fills otherwise, or a local function calling one, is another stub.
+    /// SHA-256, all of it: a name that is the same in two units is one body.
+    /// The unit's own items read once each, only where a stub names them.
     /// </summary>
     private byte[] Digest(Module module, Function probe)
     {
-        if (_localContent is null)
+        if (_localData is null || _localFunctions is null)
         {
-            _localContent = new(StringComparer.Ordinal);
-            foreach (DataItem d in module.Data)
-                if (!d.Exported)
-                {
-                    using MemoryStream bytes = new();
-                    using (BinaryWriter w = new(bytes, System.Text.Encoding.UTF8, leaveOpen: true))
-                    {
-                        w.Write(d.Bytes.Length); w.Write(d.Bytes);
-                        foreach (DataReloc r in d.Relocs.OrderBy(r => r.Offset)) { w.Write(r.Offset); w.Write(r.Symbol); w.Write(r.Addend); }
-                    }
-                    _localContent[d.Name] = bytes.ToArray();
-                }
-            foreach (Function g in module.Functions)
-                if (!g.Exported) _localContent[g.Name] = Corsac.Lang.Metadata.IrFunctionCodec.Write(g, placeless: true);
+            _localData = new(StringComparer.Ordinal);
+            foreach (DataItem d in module.Data) if (!d.Exported) _localData.TryAdd(d.Name, d);
+            _localFunctions = new(StringComparer.Ordinal);
+            foreach (Function g in module.Functions) if (!g.Exported) _localFunctions.TryAdd(g.Name, g);
         }
         using System.Security.Cryptography.IncrementalHash hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
         hash.AppendData(Corsac.Lang.Metadata.IrFunctionCodec.Write(probe, placeless: true));
+        // The unit's own items it names, and theirs, each once, in name order
+        // level by level.
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        SortedSet<string> level = Named(probe);
+        while (level.Count > 0)
+        {
+            SortedSet<string> next = new(StringComparer.Ordinal);
+            foreach (string n in level)
+            {
+                if (!seen.Add(n) || Content(n, next) is not { } content) continue;
+                hash.AppendData(System.Text.Encoding.UTF8.GetBytes(n));
+                hash.AppendData(content);
+            }
+            level = next;
+        }
+        return hash.GetHashAndReset();
+    }
+
+    /// <summary>The symbols a function names: its callees and every symbol operand.</summary>
+    private static SortedSet<string> Named(Function g)
+    {
         SortedSet<string> named = new(StringComparer.Ordinal);
-        foreach (Block b in probe.Blocks)
+        foreach (Block b in g.Blocks)
             foreach (Instr i in b.Instrs)
             {
                 if (i.Callee is { } callee) named.Add(callee);
                 foreach (Operand o in i.Operands) if (o is SymOperand { Name: var n }) named.Add(n);
             }
-        foreach (string n in named)
-            if (_localContent.TryGetValue(n, out byte[]? content))
+        return named;
+    }
+
+    /// <summary>One of the unit's own items, as bytes, and the unit's own names it names into `more`; null for anything else.</summary>
+    private byte[]? Content(string name, SortedSet<string> more)
+    {
+        if (_localData!.TryGetValue(name, out DataItem? d))
+        {
+            foreach (DataReloc r in d.Relocs) more.Add(r.Symbol);
+            if (_localContent.TryGetValue(name, out byte[]? known)) return known;
+            using MemoryStream bytes = new();
+            using (BinaryWriter w = new(bytes, System.Text.Encoding.UTF8, leaveOpen: true))
             {
-                hash.AppendData(System.Text.Encoding.UTF8.GetBytes(n));
-                hash.AppendData(content);
+                w.Write(d.Bytes.Length); w.Write(d.Bytes);
+                foreach (DataReloc r in d.Relocs.OrderBy(r => r.Offset)) { w.Write(r.Offset); w.Write(r.Symbol); w.Write(r.Addend); }
             }
-        return hash.GetHashAndReset();
+            return _localContent[name] = bytes.ToArray();
+        }
+        if (_localFunctions!.TryGetValue(name, out Function? g))
+        {
+            more.UnionWith(Named(g));
+            return _localContent.TryGetValue(name, out byte[]? known) ? known
+                : _localContent[name] = Corsac.Lang.Metadata.IrFunctionCodec.Write(g, placeless: true);
+        }
+        return null;
     }
 
     private static bool Candidate(Function f)
@@ -283,12 +321,12 @@ public sealed class ThrowOutline : IModulePass
                 Inline.Expand(fn, entry, 0, entry.Instrs[0], body);
                 return fn;
             }
-            // Named by the first half of the digest; where that name is taken
-            // by another body (a digest that differs past it), by all of it.
+            // Named by the first half of the digest, 128 bits. Two bodies of
+            // one name would be one function to the link: refused, never merged.
             byte[] digest = Digest(module, Made(f.Name + StubMark));
             string named = f.Name + StubMark + Convert.ToHexString(digest, 0, 16);
             if (_stubs.TryGetValue(named, out var holder) && holder.Digest is { } other && !other.AsSpan().SequenceEqual(digest))
-                named = f.Name + StubMark + Convert.ToHexString(digest);
+                throw new InvalidOperationException($"{f.Name}: two moved throws of different bodies hash to one name, {named}");
             // TWO THROWS OF ONE BODY -- a span's two range checks, each the
             // same refusal -- are one function, as any two copies of it are.
             // (Its own work's line is the first's: the call's own line is each

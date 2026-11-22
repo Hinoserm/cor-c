@@ -13,8 +13,8 @@ using Block = Corsac.Lang.Ir.Block;
 /// that word, a load of the method from the vtable, and a call through it.
 /// No managed code writes an object's vtable word after its making, so where
 /// every write of word 0 of the slot in the function is that one vtable, or
-/// a memset of the slot to zero (the slot as it starts, which a guard tests
-/// before any such call), the word holds that vtable or nothing, and the
+/// a memset or a whole-word store of zero (the slot as it starts, which a
+/// guard tests before any such call), the word holds that vtable or nothing, and the
 /// method is the one the descriptor holds in that slot. Asked by the region
 /// passes, which otherwise took the call for one through a method read out
 /// of a descriptor -- called blind, every method of every class at that
@@ -60,16 +60,23 @@ internal static class FrameVtable
     }
 
     /// <summary>The slot an address is, directly or through copies; null for anything else.</summary>
-    private static FrameSlot? SlotOf(Operand o, Func<VReg, Instr?> single)
+    private static FrameSlot? SlotOf(Operand o, Func<VReg, Instr?> single) => SlotOf(o, single, out _);
+
+    /// <summary>The same, saying whether the copies went further than it follows (`lost`).</summary>
+    private static FrameSlot? SlotOf(Operand o, Func<VReg, Instr?> single, out bool lost)
     {
-        for (int hops = 0; hops < 8; hops++)
+        lost = false;
+        for (int hops = 0; hops < MostCopies; hops++)
         {
             if (o is SlotOperand s) return s.Slot;
             if (o is not RegOperand { Reg: var r } || single(r) is not { Op: Opcode.Copy, Operands: [var from] }) return null;
             o = from;
         }
+        lost = true;
         return null;
     }
+
+    private const int MostCopies = 64;
 
     /// <summary>
     /// The one vtable every write of the slot's word 0 stores (zeroing stores
@@ -88,13 +95,24 @@ internal static class FrameVtable
             foreach (Instr i in b.Instrs)
             {
                 bool names = false;
-                for (int k = 0; k < i.Operands.Count && !names; k++) names = SlotOf(i.Operands[k], single) is { } at && ReferenceEquals(at, slot);
+                for (int k = 0; k < i.Operands.Count && !names; k++)
+                {
+                    names = SlotOf(i.Operands[k], single, out bool lost) is { } at && ReferenceEquals(at, slot);
+                    // Copies further than followed: a write through them unseen.
+                    if (lost) return null;
+                }
                 if (!names) continue;
                 switch (i.Op)
                 {
+                    // A copy into a register written elsewhere too is a join:
+                    // a write through it is not seen as the slot's.
+                    case Opcode.Copy when i.Dest is not { } d || !ReferenceEquals(single(d), i):
+                        return null;
                     case Opcode.Copy or Opcode.Load or Opcode.Call or Opcode.CallIndirect:
                         continue;
-                    // Moved a word or more on: a field's address, past word 0.
+                    // Moved a word or more on: a field's address, past word 0
+                    // (lowering writes a field at its own offset, never back
+                    // from a field's address to the object's start).
                     case Opcode.Add when i.Operands is [_, ImmOperand { Value: var by }] && by >= word:
                         continue;
                     case Opcode.Store or Opcode.MemSet or Opcode.MemCopy when SlotOf(i.Operands[0], single) is not { } into || !ReferenceEquals(into, slot):
@@ -104,12 +122,12 @@ internal static class FrameVtable
                         return null;
                     case Opcode.Store when i.Offset >= word || i.Offset + i.Size <= 0:
                         continue;
-                    case Opcode.Store when i.Offset == 0 && i.Operands[1] is SymOperand { Name: var name, Offset: var at }
+                    case Opcode.Store when i.Offset == 0 && i.Size >= word && i.Operands[1] is SymOperand { Name: var name, Offset: var at }
                                            && name.StartsWith("t_", StringComparison.Ordinal):
                         if (found is { } had && (had.Name != name || had.At != at)) return null;
                         found = (name, at);
                         continue;
-                    case Opcode.Store when i.Offset == 0 && i.Operands[1] is ImmOperand { Value: 0 }:
+                    case Opcode.Store when i.Offset == 0 && i.Size >= word && i.Operands[1] is ImmOperand { Value: 0 }:
                         continue;
                     case Opcode.MemSet when i.Operands[1] is ImmOperand { Value: 0 }:
                         continue;

@@ -7,7 +7,8 @@ namespace Corsac.Lang.X64;
 ///   - a jump to a block that holds nothing but another jump goes straight
 ///     to that jump's target (threading), however long the chain;
 ///   - `jcc next; jmp other` becomes `j!cc other` and falls through;
-///   - a jump to the very next block is dropped: control falls into it.
+///   - a jump to the very next block is dropped: control falls into it;
+///   - a block nothing reaches goes (Unreachable).
 ///
 /// The selector writes every branch as a conditional jump and an
 /// unconditional one, so that nothing depends on block order; this is where
@@ -55,6 +56,52 @@ internal static class Peephole
                 s.Add(new MInstr(MOp.Jcc, new MLabel(other)) { Cond = jcc.Cond.Negate(), Line = jcc.Line });
             }
         }
+        Unreachable(m);
+    }
+
+    /// <summary>
+    /// A BLOCK NOTHING REACHES -- no jump, no fall-through, no jump table, no
+    /// label taken, no landing pad -- is never run, and goes, as the x86
+    /// backend's (X86.Peephole.Unreachable): threading left behind a block of
+    /// one `jmp` laid out after the function's `ret`, which a loop whose test
+    /// was copied to its bottom no longer reaches (freestanding test 24).
+    /// The entry and every landing pad are roots, and every block whose
+    /// address an instruction takes; a function with an indirect jump keeps
+    /// all its blocks, any of which it may reach.
+    /// </summary>
+    private static void Unreachable(MFunction m)
+    {
+        int n = m.Blocks.Count;
+        if (n < 2) return;
+        foreach (MBlock block in m.Blocks)
+            foreach (MInstr i in block.Instrs)
+                if (i.Op == MOp.JmpInd) return;
+        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+        for (int b = 0; b < n; b++) index[m.Blocks[b]] = b;
+        bool[] reached = new bool[n];
+        Stack<int> work = new();
+        void Root(MBlock? block)
+        {
+            if (block is not null && index.TryGetValue(block, out int at) && !reached[at]) { reached[at] = true; work.Push(at); }
+        }
+        Root(m.Blocks[0]);
+        foreach (MBlock block in m.Blocks)
+        {
+            if (block.Source is { IsLandingPad: true }) Root(block);
+            foreach (MInstr i in block.Instrs)
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MMem { Label: { } table }) Root(table);
+                    else if (o is MLabel { Target: var taken } && i.Op is not (MOp.Jmp or MOp.Jcc)) Root(taken);
+                }
+        }
+        while (work.Count > 0)
+            foreach (MBlock to in m.Successors(work.Pop())) Root(to);
+        if (Array.TrueForAll(reached, x => x)) return;
+        List<MBlock> kept = new(n);
+        for (int b = 0; b < n; b++) if (reached[b]) kept.Add(m.Blocks[b]);
+        m.Blocks.Clear();
+        m.Blocks.AddRange(kept);
     }
 
     /// <summary>
