@@ -1,0 +1,64 @@
+// test: dateonly_timeonly_format_as_dotnet
+// expect-exit: 0
+// expect-output:
+// D[] 03/05/2024
+// D[d] 03/05/2024
+// D[D] Tuesday, 05 March 2024
+// D[m] March 05
+// D[M] March 05
+// D[o] 2024-03-05
+// D[O] 2024-03-05
+// D[r] Tue, 05 Mar 2024
+// D[R] Tue, 05 Mar 2024
+// D[y] 2024 March
+// D[Y] 2024 March
+// D[t] FormatException
+// D[s] FormatException
+// D[yyyy/MM/dd] 2024/03/05
+// D[yyyy 'mm' \h] 2024 mm h
+// D[dd HH] FormatException
+// D[yyyy 'mm] FormatException
+// D[MM\] FormatException
+// T[] 06:07
+// T[t] 06:07
+// T[T] 06:07:08
+// T[o] 06:07:08.0090000
+// T[O] 06:07:08.0090000
+// T[r] 06:07:08
+// T[R] 06:07:08
+// T[d] FormatException
+// T[s] FormatException
+// T[HH-mm-ss.fff] 06-07-08.009
+// T[HH 'dd' \y] 06 dd y
+// T[HH/mm] FormatException
+// T[hh:mm tt] 06:07 AM
+// T[HH\] FormatException
+// 03/05/2024 06:07 2024-03-05 06:07:08.0090000 03/05/2024 06:07
+// Tue, 05 Mar 2024 | 06:07:08 | 2024.03.05 06.07
+//
+// A DateOnly and a TimeOnly format as .NET's: each its own standard
+// formats (o and r fixed, d D m y for a day, t T for a time, any other a
+// FormatException), a picture refused where it asks for the other half (a
+// day's hour, a time's day) outside its quotes, or leaves a quote or a
+// backslash open; no format the short one; IFormattable and interpolation
+// the same. Invariant culture. From .NET 10 (probe ~/tmp/dn/dofmt).
+
+using System;
+using System.Globalization;
+static class Program
+{
+    static string Try(Func<string> f) { try { return f(); } catch (FormatException) { return "FormatException"; } }
+    static int Main()
+    {
+        CultureInfo inv = CultureInfo.InvariantCulture;
+        DateOnly d = new DateOnly(2024, 3, 5); TimeOnly t = new TimeOnly(6, 7, 8, 9);
+        foreach (string f in new[] { "", "d", "D", "m", "M", "o", "O", "r", "R", "y", "Y", "t", "s", "yyyy/MM/dd", "yyyy 'mm' \\h", "dd HH", "yyyy 'mm", "MM\\" })
+            Console.WriteLine("D[" + f + "] " + Try(() => d.ToString(f, inv)));
+        foreach (string f in new[] { "", "t", "T", "o", "O", "r", "R", "d", "s", "HH-mm-ss.fff", "HH 'dd' \\y", "HH/mm", "hh:mm tt", "HH\\" })
+            Console.WriteLine("T[" + f + "] " + Try(() => t.ToString(f, inv)));
+        Console.WriteLine(d.ToString((string?)null, inv) + " " + t.ToString((string?)null, inv) + " " + d.ToString("o") + " " + t.ToString("o") + " " + d.ToString(inv) + " " + t.ToString(inv));
+        IFormattable fd = d, ft = t;
+        Console.WriteLine(fd.ToString("R", inv) + " | " + ft.ToString("R", inv) + " | " + $"{d:yyyy.MM.dd} {t:HH.mm}");
+        return 0;
+    }
+}

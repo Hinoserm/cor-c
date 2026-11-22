@@ -75,17 +75,28 @@ public struct DateOnly : IComparable, IComparable<DateOnly>, IEquatable<DateOnly
     public override bool Equals(object? value) { return value is DateOnly other && day == other.DayNumber; }
     public override int GetHashCode() { return day; }
 
-    /// THE INVARIANT SHORT DATE, "MM/dd/yyyy", which is what .NET prints for a
-    /// DateOnly nobody gave a format to.
-    public string ToString() { return ToString("MM/dd/yyyy"); }
+    /// THE SHORT DATE, "d", of the culture in use, as .NET prints a DateOnly
+    /// nobody gave a format to.
+    public string ToString() { return ToString(null, null); }
+    public string ToString(string? format) { return ToString(format, null); }
+    public string ToString(IFormatProvider? provider) { return ToString(null, provider); }
 
-    /// DateTime's picture, over midnight of this day -- so yyyy, MM, dd and the
-    /// rest mean exactly what they mean there.
-    public string ToString(string format) { return ToDateTime().ToString(format); }
-
-    /// IFormattable's: DateTime's picture in the provider's culture; none is the short date.
+    /// AS .NET FORMATS A DAY: the date's own standard formats -- d, D, m, M,
+    /// y, Y in the provider's culture, o and r fixed (2024-03-05, Tue, 05 Mar
+    /// 2024) -- and any other refused; a picture is DateTime's over midnight
+    /// of this day, refused where it asks for a time (h H m s f F t z K :).
     public string ToString(string? format, IFormatProvider? provider) {
-        return string.IsNullOrEmpty(format) ? ToString() : ToDateTime().ToString(format, provider);
+        if (string.IsNullOrEmpty(format)) { format = "d"; }
+        if (format.Length == 1) {
+            switch (format[0]) {
+                case 'o': case 'O': return ToDateTime().ToString("yyyy'-'MM'-'dd", System.Globalization.CultureInfo.InvariantCulture);
+                case 'r': case 'R': return ToDateTime().ToString("ddd, dd MMM yyyy", System.Globalization.CultureInfo.InvariantCulture);
+                case 'd': case 'D': case 'm': case 'M': case 'y': case 'Y': return ToDateTime().ToString(format, provider);
+                default: throw new FormatException("Input string was not in a correct format.");
+            }
+        }
+        if (!DateParts.PictureLeavesOut(format, "hHmsfFtzK:")) { throw new FormatException("Input string was not in a correct format."); }
+        return ToDateTime().ToString(format, provider);
     }
 }
 
@@ -163,15 +174,26 @@ public struct TimeOnly : IComparable, IComparable<TimeOnly>, IEquatable<TimeOnly
 
     /// "HH:mm", which is the invariant short time and what .NET prints for a
     /// TimeOnly with no format -- the seconds are left out on purpose.
-    public string ToString() { return ToString("HH:mm"); }
+    public string ToString() { return ToString(null, null); }
+    public string ToString(string? format) { return ToString(format, null); }
+    public string ToString(IFormatProvider? provider) { return ToString(null, provider); }
 
-    public string ToString(string format) {
-        return new DateTime(ticks).ToString(format);
-    }
-
-    /// IFormattable's: DateTime's picture in the provider's culture; none is the short time.
+    /// AS .NET FORMATS A TIME OF DAY: t and T in the provider's culture, o
+    /// and r fixed (06:07:08.0090000, 06:07:08), any other refused; a picture
+    /// is DateTime's over this time of the first day, refused where it asks
+    /// for a date (d M y z /).
     public string ToString(string? format, IFormatProvider? provider) {
-        return string.IsNullOrEmpty(format) ? ToString() : new DateTime(ticks).ToString(format, provider);
+        if (string.IsNullOrEmpty(format)) { format = "t"; }
+        if (format.Length == 1) {
+            switch (format[0]) {
+                case 'o': case 'O': return new DateTime(ticks).ToString("HH':'mm':'ss'.'fffffff", System.Globalization.CultureInfo.InvariantCulture);
+                case 'r': case 'R': return new DateTime(ticks).ToString("HH':'mm':'ss", System.Globalization.CultureInfo.InvariantCulture);
+                case 't': case 'T': return new DateTime(ticks).ToString(format, provider);
+                default: throw new FormatException("Input string was not in a correct format.");
+            }
+        }
+        if (!DateParts.PictureLeavesOut(format, "dMyz/")) { throw new FormatException("Input string was not in a correct format."); }
+        return new DateTime(ticks).ToString(format, provider);
     }
 
     private static long Wrap(long value) {

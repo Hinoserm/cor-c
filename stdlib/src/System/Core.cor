@@ -28740,6 +28740,27 @@ public partial struct DateTimeOffset : IComparable, IComparable<DateTimeOffset>,
 }
 
 static class DateParts {
+    /// WHETHER A PICTURE ASKS NONE OF `refused` -- a DateOnly's no time, a
+    /// TimeOnly's no date -- outside its quoted text, as .NET checks one: a
+    /// backslash takes the character after it, a quote runs to its pair, and
+    /// either left open is no picture at all.
+    internal static bool PictureLeavesOut(string picture, string refused) {
+        for (int i = 0; i < picture.Length; i++) {
+            char c = picture[i];
+            if (c == '\\') {
+                if (i == picture.Length - 1) { return false; }
+                i++;
+            } else if (c == '\'' || c == '"') {
+                i++;
+                while (i < picture.Length && picture[i] != c) { i++; }
+                if (i >= picture.Length) { return false; }
+            } else if (refused.IndexOf(c) >= 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// THE INVARIANT CULTURE'S NAMES, which are the English ones -- and the
     /// only ones this machine has. .NET spells them in DateTimeFormatInfo; a
     /// program asking a date to write itself as "dddd" arrives here.
