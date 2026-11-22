@@ -4909,6 +4909,38 @@ public sealed partial class Binder
     /// the bare name IEnumerable is the non-generic interface -- a different
     /// type, which the bare name tried first found instead.
     /// </summary>
+    /// <summary>
+    /// A template's written base, resolved where the template is written --
+    /// its namespace, the types it is inside, its file's usings -- not where
+    /// the call asking is (WrittenAt's way). False where the template is no
+    /// type this binder holds.
+    /// </summary>
+    private bool FindBaseOf(TypeDecl template, TypeRef b, out TypeSymbol? based)
+    {
+        if (!_r.Types.TryGetValue(TypeKey(template), out TypeSymbol? owner))
+        {
+            based = null;
+            return false;
+        }
+        TypeSymbol? scope = _scope, lexical = _lexicalType, self = _thisType;
+        MemberDecl? member = _member;
+        _thisType = null;
+        _scope = owner;
+        _lexicalType = owner;
+        _member = null;
+        try
+        {
+            return FindBase(b, out based);
+        }
+        finally
+        {
+            _scope = scope;
+            _lexicalType = lexical;
+            _thisType = self;
+            _member = member;
+        }
+    }
+
     private bool FindBase(TypeRef b, out TypeSymbol? based)
     {
         // A BASE THE COMPILER WROTE (not TypeRef.Written) -- a delegate's
@@ -14492,13 +14524,15 @@ public sealed partial class Binder
                 continue;
             }
 
-            // THE BASE AS ITS INSTANCES NAME IT (TemplateName), as `face` is:
-            // `IShelf<T>` written in Shop's Shelf is Shop.IShelf. Compared by
-            // the written name alone, a namespaced or nested interface never
-            // matched a qualified face. The written name still matches where
-            // nothing resolves it.
-            bool resolved = FindBase(b, out TypeSymbol? holder);
-            if (args.Count == arity && (resolved && holder is not null ? TemplateName(holder) == face || Bare(b.Name) == face : Bare(b.Name) == face))
+            // THE BASE AS ITS INSTANCES NAME IT (TemplateName), as `face` is,
+            // resolved where it is written (FindBaseOf): `IShelf<T>` in Shop's
+            // Shelf is Shop.IShelf, whoever asks. Compared by the written name,
+            // a namespaced or nested interface never matched a qualified face;
+            // resolved from the caller, it was some other IShelf or none. The
+            // written name only where nothing resolves it.
+            bool resolved = FindBaseOf(template, b, out TypeSymbol? holder);
+            string named = resolved && holder is not null ? TemplateName(holder) : Bare(b.Name);
+            if (named == face && args.Count == arity)
             {
                 return args;
             }
