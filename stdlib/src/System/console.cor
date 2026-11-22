@@ -245,16 +245,23 @@ public static class Console
                 // output is a terminal or a pipe -- and nothing waits in a
                 // buffer for a fork to copy into the child, which printed
                 // it a second time.
+                // AND ONE CALL AT A TIME, as .NET's Console.Out is
+                // (TextWriter.Synchronized): two threads writing at once
+                // tore a line, and two flushing at once wrote one twice.
+                // Made once: two threads asking first make one writer, the
+                // one that wins it.
                 StreamWriter w = new StreamWriter(new FileStream(Fd.Out, FileAccess.Write, false));
                 w.AutoFlush = true;
-                _out = w;
-                // WHAT IS FLUSHED WHEN THE PROCESS ENDS. The address goes
-                // to the runtime, which is below every library and calls it
-                // on the way out; the platform library that ends the process
-                // cannot name Console, and must not have to.
-                Runtime.OnExit(Sys.AddressOf(Console.Flush));
+                if (System.Threading.Interlocked.CompareExchange(ref _out, TextWriter.Synchronized(w), null) == null)
+                {
+                    // WHAT IS FLUSHED WHEN THE PROCESS ENDS. The address goes
+                    // to the runtime, which is below every library and calls
+                    // it on the way out; the platform library that ends the
+                    // process cannot name Console, and must not have to.
+                    Runtime.OnExit(Sys.AddressOf(Console.Flush));
+                }
             }
-            return _out;
+            return _out!;
         }
     }
 
@@ -266,9 +273,9 @@ public static class Console
             {
                 StreamWriter w = new StreamWriter(new FileStream(Fd.Err, FileAccess.Write, false));
                 w.AutoFlush = true;
-                _error = w;
+                System.Threading.Interlocked.CompareExchange(ref _error, TextWriter.Synchronized(w), null);
             }
-            return _error;
+            return _error!;
         }
     }
 

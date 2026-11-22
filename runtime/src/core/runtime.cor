@@ -499,7 +499,11 @@ public static class Tls
     /// mark cannot yet take the reports (Gc.Report), or 0; one of an older
     /// cycle is nobody's.
     public const int BarrierSegment = 54 * WordSize.Bytes;
-    public const int Bytes = 55 * WordSize.Bytes;
+    /// Nonzero while this thread is a pool worker running work (Scheduler.
+    /// WorkerLoop): a wait it makes then is a worker the queue is without
+    /// (Runtime.BeginBlocking, Scheduler.WorkerBlocks).
+    public const int PoolWork = 55 * WordSize.Bytes;
+    public const int Bytes = 56 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (Corsac.GC.AllocSample): every sixteenth
@@ -1596,11 +1600,17 @@ public static partial class Runtime
 #else
         GcThreads.BeginBlockingWith(Sys.CallerRegister(0), Sys.CallerRegister(1), Sys.CallerRegister(2), 0, 0);
 #endif
+        // A POOL WORKER WAITING IN ITS WORK is one the queue is without:
+        // counted, and another worker asked for if work is waiting and none
+        // is idle (Scheduler.WorkerBlocks). After the registers were written
+        // down; nothing there allocates.
+        if (Sys.ReadAddress(Sys.ThreadBlock() + Tls.PoolWork) != 0) Scheduler.WorkerBlocks();
     }
 
     public static void EndBlocking()
     {
         GcThreads.EndBlocking();
+        if (Sys.ReadAddress(Sys.ThreadBlock() + Tls.PoolWork) != 0) Scheduler.WorkerUnblocks();
     }
 
     /// A stopped thread's stack changed under it: its limit and top, set

@@ -909,8 +909,17 @@ public static class Gir
                     U8((byte)E.Binary);
                     U8((byte)b.Op);
                     Bool(b.PatternNullTest);
+                    Bool(b.PatternConstant);
                     Expr(b.Left);
                     Expr(b.Right);
+                    // AN INTERPOLATED STRING'S PARTS: a count of holes, zero for
+                    // none, then the composite format and each hole.
+                    I32(b.Interpolation?.Holes.Count ?? 0);
+                    if (b.Interpolation is { } parts)
+                    {
+                        Str(parts.Format);
+                        foreach (Expr hole in parts.Holes) Expr(hole);
+                    }
                     break;
 
                 case AssignExpr a2:
@@ -1877,11 +1886,23 @@ public static class Gir
                 {
                     BinOp op = (BinOp)U8();
                     bool pattern = Bool();
+                    bool constant = Bool();
                     Expr left = Need();
+                    Expr right = Need();
+                    int holes = Count();
+                    InterpolatedParts? parts = null;
 
+                    if (holes > 0)
+                    {
+                        string format = Str();
+                        List<Expr> written = new(holes);
+
+                        for (int i = 0; i < holes; i++) written.Add(Need());
+                        parts = new InterpolatedParts(format, written);
+                    }
                     return new BinaryExpr
                     {
-                        Op = op, Left = left, Right = Need(), PatternNullTest = pattern,
+                        Op = op, Left = left, Right = right, PatternNullTest = pattern, PatternConstant = constant, Interpolation = parts,
                     };
                 }
 

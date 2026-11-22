@@ -1,0 +1,35 @@
+// test: an interpolated string where a FormattableString or an IFormattable is wanted is FormattableStringFactory.Create of its composite format and its holes
+// expect-exit: 0
+// expect-output:
+// {0,5}|{1:F2}|{{braces}}|{2}
+// 3 42 text
+// 1234.568,002a,2,469.1
+// [000042]
+// string n=42
+//    42|1234.57|{braces}|text
+//
+// Its format keeps each hole's alignment and format and doubles the
+// literal braces; formatted when asked, by the culture asked. Where a
+// string overload is as good, the string wins. Output as .NET 10 says it.
+
+using System;
+using System.Globalization;
+static class Program
+{
+    static string Which(string s) => "string " + s;
+    static string Which(FormattableString f) => "formattable " + f.Format;
+    static string Formatted(IFormattable f) => f.ToString(null, CultureInfo.InvariantCulture);
+    static int Main(string[] args)
+    {
+        double median = 1234.5678;
+        int count = 42;
+        FormattableString f = $"{count,5}|{median:F2}|{{braces}}|{"text"}";
+        Console.WriteLine(f.Format);
+        Console.WriteLine(f.ArgumentCount + " " + f.GetArgument(0) + " " + f.GetArgument(2));
+        Console.WriteLine(FormattableString.Invariant($"{median:F3},{count:x4},{median * 2:N1}"));
+        Console.WriteLine(Formatted($"[{count:D6}]"));
+        Console.WriteLine(Which($"n={count}"));
+        Console.WriteLine(f.ToString(CultureInfo.InvariantCulture));
+        return 0;
+    }
+}

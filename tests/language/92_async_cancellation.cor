@@ -5,8 +5,9 @@
 // requested True
 // canceled before True
 // cancelling
-// cancelled
 // canceled during True
+// resumed outside Cancel True
+// cancelled
 // worker stopped True
 // stable True
 // canceller done
@@ -14,14 +15,14 @@
 // Cancellation. A delay with a token nobody cancels completes normally. A
 // token cancelled before Task.Delay is called gives a canceled task, and
 // awaiting it throws TaskCanceledException. Cancelling while the delay is
-// pending ends it early (the five-second timer never has to fire): Cancel
-// itself returns to its caller first, and the awaiter then gets a
-// TaskCanceledException, caught here as its base OperationCanceledException.
-// A worker polling ThrowIfCancellationRequested stops with
-// OperationCanceledException. How many steps the worker gets through
-// before the canceller runs depends on the scheduler, so the test prints
-// only that it ran at least three and stopped exactly where the
-// canceller saw it.
+// pending ends it early (the five-second timer never has to fire), and the
+// awaiter gets a TaskCanceledException, caught here as its base
+// OperationCanceledException -- resumed OUTSIDE Cancel: a delay's
+// continuations are posted, as .NET's are, where a TaskCompletionSource's
+// run inside the call that completes it. A worker polling
+// ThrowIfCancellationRequested stops with OperationCanceledException; its
+// step and the canceller's look-and-cancel share a lock, so it stops
+// exactly where the canceller saw it, on however many threads they run.
 
 using System;
 using System.Threading;
@@ -31,6 +32,9 @@ static class Program
 {
     static int steps;
     static int observed;
+    static readonly object gate = new object();
+    static int cancellingThread;
+    static bool inCancel;
 
     static void Line(string s)
     {
@@ -42,28 +46,36 @@ static class Program
     {
         await Task.Delay(30);
         Line("cancelling");
+        cancellingThread = Environment.CurrentManagedThreadId;
+        inCancel = true;
         cts.Cancel();
-        Line("cancelled");
+        inCancel = false;
     }
 
     static async Task Worker(CancellationToken token)
     {
         while (true)
         {
-            token.ThrowIfCancellationRequested();
-            steps = steps + 1;
+            lock (gate)
+            {
+                token.ThrowIfCancellationRequested();
+                steps = steps + 1;
+            }
             await Task.Yield();
         }
     }
 
     static async Task Canceller(CancellationTokenSource cts)
     {
-        while (steps < 3)
+        while (Volatile.Read(ref steps) < 3)
         {
             await Task.Yield();
         }
-        observed = steps;
-        cts.Cancel();
+        lock (gate)
+        {
+            observed = steps;
+            cts.Cancel();
+        }
     }
 
     static async Task Main()
@@ -96,8 +108,10 @@ static class Program
         catch (OperationCanceledException e)
         {
             Line("canceled during " + (e is TaskCanceledException));
+            Line("resumed outside Cancel " + !(inCancel && Environment.CurrentManagedThreadId == cancellingThread));
         }
         await soon;
+        Line("cancelled");
 
         CancellationTokenSource stop = new CancellationTokenSource();
         steps = 0;

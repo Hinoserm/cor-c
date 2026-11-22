@@ -10,46 +10,182 @@
 
 public static partial class Scheduler
 {
-    /// Runs posted work on `count` threads from now on. Zero leaves the
-    /// single-threaded event loop alone, which is the default.
-    ///
-    /// Call it once, before the work starts. Pool work may allocate and may
-    /// throw: each worker has a block of its own, and an exception that escapes
-    /// a work item is reported exactly as one on the event loop is.
+    /// Runs posted work on at least `count` threads from now on, started now
+    /// (AtLeast): the pool exists on demand anyway (PoolPosted); this asks
+    /// for workers a program means to use at once. Zero asks for nothing.
+    /// Pool work may allocate and may throw: each worker has a block of its
+    /// own, and an exception that escapes a work item is reported exactly as
+    /// one on the event loop is.
     public static void UseThreads(int count)
     {
         if (count < 0)
         {
             throw new ArgumentOutOfRangeException("count");
         }
-        if (count == 0)
+        AtLeast(count);
+    }
+
+    // ---- the pool on demand -------------------------------------------------
+    //
+    // .NET HAS A POOL, ALWAYS: Task.Run, every continuation, a timer's
+    // callback runs on it, and a program is written expecting that one piece
+    // of work waiting -- on a pipe, a lock, another task -- never stops the
+    // rest. So here, as .NET injects its threads: the first work posted
+    // starts the pool's grower, and the grower -- never the thread that
+    // posts -- adds a worker each time work waits and none is idle, up to one
+    // a processor (Os.ProcessorCount); past that, one more only where every
+    // worker waits in its work (Runtime.BeginBlocking counts them): .NET's
+    // starvation injection, made by the event itself rather than by a clock.
+    // Nothing polls. Until the first worker runs, a thread waiting for a
+    // task runs the queue itself, as the loop always did (RunUntil).
+
+    /// The fewest workers the pool may grow to, whatever the processors.
+    const int MostWorkers = 64;
+    static int _target, _most;
+    static AtomicCell? _grow;
+    static AtomicCell? _starting;
+
+    /// What a thread this runtime started knows of its own stack
+    /// (Thread.StackRoom), for MayRunInline.
+    static partial void StackRoom(ref nuint room)
+    {
+        System.Threading.Thread.StackRoom(ref room);
+    }
+
+    static partial void PoolPosted()
+    {
+        if (_grow is null)
         {
+            // (Once: two first posts race for the start, and one makes it.)
+            if (Starting().CompareExchange(0, 1) == 0) StartPool(Math.Max(1, Os.ProcessorCount()));
             return;
         }
-        if (_workers > 0)
-        {
-            throw new InvalidOperationException("the scheduler already has worker threads");
-        }
+        if (Starved()) Grow();
+    }
 
+    static partial void PoolWorkerBlocks()
+    {
+        if (_blocked is not { } blocked) return;
+        Sys.AtomicAdd32(Atom.At(blocked, Atom.FirstWord), 1);
+        if (Starved()) Grow();
+    }
+
+    static partial void PoolWorkerUnblocks()
+    {
+        if (_blocked is { } blocked) Sys.AtomicAdd32(Atom.At(blocked, Atom.FirstWord), -1);
+    }
+
+    /// Work waits and no worker is idle: fewer workers than processors, or
+    /// every one waiting in its work (and the pool not at its most).
+    static bool Starved()
+        => _count > 0 && _idle is { } idle && _blocked is { } blocked && idle.Value == 0
+           && (_workers < _target || blocked.Value >= _workers && _workers < _most);
+
+    /// Wakes the grower (no allocation: called where a thread is about to wait).
+    static void Grow()
+    {
+        if (_grow is not { } grow) return;
+        nuint at = Atom.At(grow, Atom.FirstWord);
+        Sys.AtomicAdd32(at, 1);
+        Native.Wake(at, 1);
+    }
+
+    /// The counts and the grower, made once; the grower adds the workers.
+    static void StartPool(int target)
+    {
         Gate();
         SignalCell();
-
         // Grown once, here, so that a Post from a worker does not have to
         // allocate with the queue's lock held.
         Reserve(1024);
+        _idle = new AtomicCell();
+        _blocked = new AtomicCell();
+        _leaves = new AtomicCell();
+        _deadlocks = new AtomicCell();
+        _quiet = new AtomicCell();
+        _target = target;
+        _most = Math.Max(MostWorkers, 8 * target);
+        // (Last: the grower and Starved read the counts once this is set.)
+        _grow = new AtomicCell();
+        System.Threading.Thread.Start(new PoolGrower());
+    }
 
-        _workers = count;
+    /// The start's flag, made once (under the queue's lock: the first of
+    /// several posting threads makes it).
+    static AtomicCell Starting()
+    {
+        if (_starting is { } made) return made;
+        AtomicCell fresh = new AtomicCell();
+        AtomicCell gate = Gate();
+        gate.Enter();
+        _starting ??= fresh;
+        AtomicCell starting = _starting;
+        gate.Exit();
+        return starting;
+    }
 
-        for (int i = 0; i < count; i++)
+    /// The grower's body: asleep on its word until work is posted or a
+    /// worker blocks with the pool starved; then, while still starved, one
+    /// more worker each time.
+    internal static void GrowLoop()
+    {
+        nuint at = Atom.At(_grow!, Atom.FirstWord);
+        while (true)
         {
-            System.Threading.Thread.Start(new PoolWorker());
+            int seen = (int)Sys.Read32(at);
+            if (Starved())
+            {
+                AddWorkers(1);
+                continue;
+            }
+            Quiet(1);
+            if (Deadlocked()) Declare();
+            Native.Wait(at, seen);
+            Quiet(-1);
         }
+    }
+
+    static void AddWorkers(int more)
+    {
+        AtomicCell gate = Gate();
+        gate.Enter();
+        _workers = _workers + more;
+        gate.Exit();
+        for (int i = 0; i < more; i++) System.Threading.Thread.Start(new PoolWorker());
+    }
+
+    /// At least `count` workers from now on, started now: the pool made if
+    /// it was not, its aim raised to them (ThreadPool.SetMinThreads, and
+    /// UseThreads, a program's own ask for workers it means to use at once).
+    public static void AtLeast(int count)
+    {
+        if (count <= 0) return;
+        if (_grow is null && Starting().CompareExchange(0, 1) == 0) StartPool(Math.Max(count, Math.Max(1, Os.ProcessorCount())));
+        // (Another thread making the pool: until it has, nothing to add to.)
+        long turns = 0;
+        while (_grow is null) Atom.Turn(ref turns);
+        AtomicCell gate = Gate();
+        gate.Enter();
+        if (count > _target) _target = count;
+        if (8 * count > _most) _most = 8 * count;
+        int more = count - _workers;
+        gate.Exit();
+        if (more > 0) AddWorkers(more);
+    }
+}
+
+/// The body of the pool's grower: one thread, started with the pool, never returns.
+class PoolGrower : Action
+{
+    public void Invoke()
+    {
+        Scheduler.GrowLoop();
     }
 }
 
 /// .NET's own way to ask for a pool of a size, and the one a program
 /// compiled by both can call: SetMinThreads starts the scheduler's workers
-/// (Scheduler.UseThreads), once -- a later call leaves them as they are.
+/// or adds to them (Scheduler.AtLeast).
 /// corc asks for its --jobs this way; an #if !NET around UseThreads was
 /// never compiled, as corc defines NET for the framework it builds for.
 public static partial class ThreadPool
@@ -57,14 +193,14 @@ public static partial class ThreadPool
     public static bool SetMinThreads(int workerThreads, int completionPortThreads)
     {
         if (workerThreads < 0 || completionPortThreads < 0) return false;
-        if (Scheduler.ThreadCount == 0 && workerThreads > 0) Scheduler.UseThreads(workerThreads);
+        Scheduler.AtLeast(workerThreads);
         return true;
     }
 }
 
 public static partial class Scheduler
 {
-    /// How many worker threads UseThreads started: zero for the event loop alone.
+    /// How many worker threads the pool has: zero before its first worker runs.
     public static int ThreadCount => _workers;
 }
 
@@ -416,6 +552,31 @@ public partial class Thread
     // on: the thread block's page, the guard page, and room above them.
     long _requestedStack;
     const int MinimumStack = 65536;
+
+    /// The stack left below this frame on a thread this class started,
+    /// into `room`; left as it is on one it did not (the first thread, a
+    /// library's), whose size it does not know. Its own mapping's, where it
+    /// made one: the block's page and the guard page are its bottom. Else
+    /// the size it asked the platform for.
+    internal static void StackRoom(ref nuint room)
+    {
+        Thread? me = _current;
+        if (me == null || me._adopted)
+        {
+            return;
+        }
+        nuint here = Sys.FramePointer();
+        if (me._stack != 0)
+        {
+            nuint bottom = me._stack + 8192;
+            room = here > bottom ? here - bottom : 0;
+            return;
+        }
+        nuint top = Sys.ReadAddress(Sys.ThreadBlock() + Tls.StackBase);
+        nuint used = top > here ? top - here : 0;
+        nuint size = me.StackSize();
+        room = used < size ? size - used : 0;
+    }
 
     nuint StackSize()
     {

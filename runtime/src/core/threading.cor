@@ -26,11 +26,13 @@
 // Where this differs:
 //   - Awaiters and awaitables are classes, not structs: a struct here is a
 //     heap block copied at every boundary, which buys nothing.
-//   - There is one scheduler and one run queue. Without workers it is a
-//     single-threaded event loop run inside Scheduler.RunUntil (Wait,
-//     Result, RunMain); with them (Scheduler.UseThreads, ThreadPool's
-//     minimum) pool threads pull from the same queue, and idle workers drive
-//     the timers.
+//   - There is one scheduler and one run queue. Where threads are (hosted:
+//     platforms/threads.cor) it has a pool, as .NET does, started by the
+//     first work posted and grown past work that blocks; pool threads pull
+//     from the queue, and idle workers drive the timers. Where there are
+//     none (a kernel, the bootloader), and in a hosted program until the
+//     pool's first worker runs, it is an event loop run inside
+//     Scheduler.RunUntil (Wait, Result, RunMain).
 //
 // THREAD SAFETY IS BUILT IN. Every state transition on a task, a
 // cancellation source and the run queue goes through Sys.Cas / a spin lock
@@ -237,6 +239,11 @@ public class Task
     // it resumes in. Null where the platform flows none (Linux), always.
     AsyncContext? _firstContext;
     List<AsyncContext?>? _moreContexts;
+    // WHAT A THREAD WAITING FOR THE TASK SLEEPS ON (Scheduler.RunUntil with
+    // workers): made by the first such wait, bumped and woken as the task
+    // finishes. Published under the task's lock, so a finish either sees it
+    // or the waiter sees the task finished.
+    AtomicCell? _waitCell;
     System.Threading.Tasks.TaskCreationOptions _options;
     object? _asyncState;
     // The token that canceled it, when one did (TrySetCanceled(token)):
@@ -274,10 +281,23 @@ public class Task
     // ---- what a task is -----------------------------------------------------
 
     /// The options it was made with (TaskCompletionSource's), as .NET
-    /// reports them. A continuation here is always posted to the scheduler,
-    /// never run inline in the completing call, so RunContinuationsAsynchronously
-    /// is already how every task behaves.
-    public System.Threading.Tasks.TaskCreationOptions CreationOptions => _options;
+    /// reports them. RunContinuationsAsynchronously among them: its
+    /// continuations are posted, never run inline by the call completing it
+    /// (Finish).
+    public System.Threading.Tasks.TaskCreationOptions CreationOptions => _options & ~PostsContinuations;
+
+    /// A bit of the options no task reports (CreationOptions leaves it out):
+    /// its continuations are posted, as RunContinuationsAsynchronously's are.
+    /// .NET's Task.Delay is such a task, None to anyone who asks: canceled,
+    /// its awaiter resumes on another thread once Cancel has returned, where
+    /// a TaskCompletionSource canceled by the same token resumes inside it.
+    internal const System.Threading.Tasks.TaskCreationOptions PostsContinuations = (System.Threading.Tasks.TaskCreationOptions)0x40000000;
+
+    /// That bit set (DelayCore).
+    internal void PostContinuations()
+    {
+        _options = _options | PostsContinuations;
+    }
 
     /// The state object it was made with, or null.
     public object? AsyncState => _asyncState;
@@ -780,6 +800,21 @@ public class Task
     internal CancellationToken CanceledBy => _canceledBy;
 
     /// Step one of completing: exactly one caller ever gets true.
+    /// The word a thread waiting for the task sleeps on (_waitCell): made
+    /// outside the lock (no allocation while a spin lock is held), the first
+    /// made kept.
+    internal AtomicCell WaitCell()
+    {
+        if (_waitCell is { } had) return had;
+        AtomicCell made = new AtomicCell();
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
+        Atom.Enter(lockAt);
+        _waitCell ??= made;
+        AtomicCell cell = _waitCell;
+        Atom.Exit(lockAt);
+        return cell;
+    }
+
     public bool TryClaim()
     {
         return Sys.Cas32(Atom.At(this, Atom.FirstWord), Incomplete, Claimed) == Incomplete;
@@ -844,18 +879,43 @@ public class Task
         _more = null;
         _firstContext = null;
         _moreContexts = null;
+        AtomicCell? waiting = _waitCell;
 
         Atom.Exit(lockAt);
 
+        if (waiting != null)
+        {
+            nuint wakeAt = Atom.At(waiting, Atom.FirstWord);
+            Sys.AtomicAdd32(wakeAt, 1);
+            Native.Wake(wakeAt, int.MaxValue);
+        }
+
+        if (first == null && more == null)
+        {
+            return;
+        }
+
+        // THE CONTINUATIONS RUN HERE, in the completing call, as .NET runs an
+        // await's (Task.RunContinuations): the code after the await goes on
+        // on this thread the moment its task is done, with no trip through
+        // the queue and no other thread woken for it. Posted instead where
+        // the task asked (RunContinuationsAsynchronously), where this thread
+        // cannot take them now (Scheduler.MayRunInline: a spin lock held,
+        // too little stack, a kernel's own queue), and for a ContinueWith
+        // not made ExecuteSynchronously (PostedContinuation). In registration
+        // order either way.
+        bool inline = (_options & (System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously | PostsContinuations)) == 0
+                   && Scheduler.MayRunInline();
+
         if (first != null)
         {
-            Scheduler.Post(first, firstContext);
+            Scheduler.Continue(first, firstContext, inline);
         }
         if (more != null)
         {
             for (int i = 0; i < more.Count; i++)
             {
-                Scheduler.Post(more[i], moreContexts != null && i < moreContexts.Count ? moreContexts[i] : null);
+                Scheduler.Continue(more[i], moreContexts != null && i < moreContexts.Count ? moreContexts[i] : null, inline);
             }
         }
     }
@@ -895,8 +955,16 @@ public class Task
         Finish(RanToCompletion);
     }
 
+    /// A continuation never run inline, whatever the task: ContinueWith's
+    /// without ExecuteSynchronously, which .NET schedules.
+    internal void AddPostedContinuation(Action continuation)
+    {
+        AddContinuation(new PostedContinuation(continuation));
+    }
+
     /// Registers a continuation. Posted at once when the task is already
-    /// complete; otherwise kept, in registration order, until it is. The
+    /// complete (as .NET schedules one that loses that race); otherwise
+    /// kept, in registration order, and run when it completes (Finish). The
     /// context it is registered in -- the suspending method's, as .NET
     /// captures ExecutionContext at AwaitUnsafeOnCompleted -- is what it
     /// resumes in (AsyncContext).
@@ -1059,6 +1127,7 @@ public class Task
         }
 
         Task t = new Task();
+        t.PostContinuations();
         DelayCompletion done = new DelayCompletion(t);
 
         if (milliseconds > 0)
@@ -2154,7 +2223,7 @@ public class Continuation : Action
         Task next = Task.Made(ContinuationRules.Creation(options), state);
         Continuation made = new Continuation(antecedent, body, next, token, options);
         if (!ContinuationRules.Lazy(options)) made._start = TaskStart.For(next, token);
-        antecedent.AddContinuation(made);
+        ContinuationRules.Register(antecedent, made, options);
         return next;
     }
 
@@ -2206,7 +2275,7 @@ public class Continuation<TResult> : Action
     {
         Continuation<TResult> made = new Continuation<TResult>(antecedent, body, next, token, options);
         if (!ContinuationRules.Lazy(options)) made._start = TaskStart.For(next, token);
-        antecedent.AddContinuation(made);
+        ContinuationRules.Register(antecedent, made, options);
         return next;
     }
 
@@ -2265,6 +2334,14 @@ static class ContinuationRules
         return (System.Threading.Tasks.TaskCreationOptions)(int)(options & CreationMask);
     }
 
+    /// On the antecedent: run where it completes when ExecuteSynchronously
+    /// asks, else posted (.NET schedules a continuation that does not ask).
+    public static void Register(Task antecedent, Action made, System.Threading.Tasks.TaskContinuationOptions options)
+    {
+        if ((options & System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously) != 0) antecedent.AddContinuation(made);
+        else antecedent.AddPostedContinuation(made);
+    }
+
     /// LazyCancellation: the token is looked at only when the antecedent
     /// completes, not the moment it is canceled.
     public static bool Lazy(System.Threading.Tasks.TaskContinuationOptions options)
@@ -2292,6 +2369,23 @@ static class ContinuationRules
             return false;
         }
         return true;
+    }
+}
+
+/// A continuation always posted, never run where its task completes
+/// (Task.AddPostedContinuation, Scheduler.Continue).
+sealed class PostedContinuation : Action
+{
+    readonly Action _work;
+
+    public PostedContinuation(Action work)
+    {
+        _work = work;
+    }
+
+    public void Invoke()
+    {
+        _work.Invoke();
     }
 }
 
@@ -3870,6 +3964,24 @@ public readonly struct CancellationTokenRegistration : IDisposable, IAsyncDispos
 // ---- the scheduler -----------------------------------------------------------
 
 /// One pending timer: a deadline on the monotonic clock and what to post.
+/// A thread asleep on a task with no deadline (Scheduler.Sleeping): the
+/// cell it sleeps on, which a deadlock seen wakes (Scheduler.Declare), and
+/// the task and token whose end wakes it too (Scheduler.Deadlocked).
+sealed class Sleeper
+{
+    public readonly AtomicCell Cell;
+    public readonly Task Task;
+    public readonly CancellationToken Token;
+    public Sleeper? Next, Previous;
+
+    public Sleeper(AtomicCell cell, Task task, CancellationToken token)
+    {
+        Cell = cell;
+        Task = task;
+        Token = token;
+    }
+}
+
 class TimerEntry
 {
     public long Deadline;
@@ -3914,7 +4026,8 @@ class PoolWorker : Action
     }
 }
 
-/// The single-threaded event loop: a run queue and a timer heap.
+/// The scheduler: a run queue and a timer heap, run by the pool's workers
+/// where there are threads, by the event loop where there are none.
 ///
 /// RUN QUEUE. A growable ring of Action, as Queue<T> is: posting stores one
 /// reference and moves a count, allocating only when the ring doubles. Taken
@@ -3996,11 +4109,11 @@ public static partial class Scheduler
 
     // ---- the thread pool ----------------------------------------------------
     //
-    // Off by default: with no workers this is the single-threaded event loop it
-    // has always been, and every program's ordering is what it was. UseThreads
-    // starts workers that pull from the SAME run queue -- the one behind the
-    // spin lock above -- so nothing else in this file changes: Task.Run posts,
-    // a completion posts its continuations, and whoever is free runs them.
+    // On demand where threads are (threads.cor: PoolPosted): workers that
+    // pull from the SAME run queue -- the one behind the spin lock above --
+    // so nothing else in this file changes: Task.Run posts, a completion
+    // posts its continuations, and whoever is free runs them. Without
+    // threads, the event loop.
     //
     // WAKING. A counter beside the queue, bumped on every Post and futex-woken;
     // an idle worker reads it, re-checks the queue, and sleeps on that exact
@@ -4072,6 +4185,118 @@ public static partial class Scheduler
         Native.Wake(at, 1);
     }
 
+    static void Idle(int by)
+    {
+        if (_idle is { } idle) Sys.AtomicAdd32(Atom.At(idle, Atom.FirstWord), by);
+        Quiet(by);
+    }
+
+    // ---- a deadlock, with workers -------------------------------------------
+    //
+    // NOTHING CAN COMPLETE A TASK when every thread there is waits for
+    // something only another of them could bring: each worker asleep for
+    // want of work, the grower asleep, every other thread asleep on a task
+    // with no deadline (RunUntilWithWorkers), and nothing queued, no timer to
+    // come, no interrupt armed. The loop without workers says so at its end
+    // (RunUntil); here the threads say it together. One count holds them all
+    // (_quiet), and one more counts every thread that left it (_leaves), so
+    // a look that saw the count full and no leave across it saw them all
+    // quiet at once: a thread leaves only when woken, and nothing but a
+    // thread that is not quiet, a post or a timer wakes one -- and a waiter
+    // woken but not yet gone shows by its task or its token, looked at last.
+    // The last to
+    // go quiet sees it (Deadlocked), and wakes every waiter (Declare), each
+    // of which throws, as the loop's one waiter does.
+
+    /// The cells made with the pool (UseThreads), before its first worker.
+    static AtomicCell? _quiet, _leaves, _deadlocks;
+
+    /// The threads asleep on a task with no deadline, linked under the gate.
+    static Sleeper? _sleeping;
+
+    /// A thread going quiet (by 1) or leaving it (by -1), and whoever waits
+    /// for the pool to settle (RunUntilIdle) woken to look again.
+    internal static void Quiet(int by)
+    {
+        if (_quiet is not { } quiet || _leaves is not { } leaves) return;
+        nuint at = Atom.At(quiet, Atom.FirstWord);
+        Sys.AtomicAdd32(at, by);
+        // THE LEAVE COUNTED AFTER THE COUNT IS DOWN, never before: a look
+        // (Deadlocked) that read the leaves, then the count still full, then
+        // the queue this thread has since emptied, saw no leave across it
+        // when the leave came first, and called a wake in flight a deadlock.
+        // After, a thread that leaves once the count was read full has its
+        // leave counted before anything it goes on to do.
+        if (by < 0) Sys.AtomicAdd32(Atom.At(leaves, Atom.FirstWord), 1);
+        if (Sys.Read32(Atom.At(quiet, Atom.SecondWord)) != 0) Native.Wake(at, int.MaxValue);
+    }
+
+    /// Whether every thread is quiet with nothing to come (above). Asked by
+    /// a thread that has just gone quiet itself, before it sleeps.
+    static bool Deadlocked()
+    {
+        if (_quiet is not { } quiet || _leaves is not { } leaves || _sleeping == null) return false;
+        nuint leavesAt = Atom.At(leaves, Atom.FirstWord);
+        int left = (int)Sys.Read32(leavesAt);
+        if ((nuint)(int)Sys.Read32(Atom.At(quiet, Atom.FirstWord)) != GcThreads.Count()) return false;
+        if (_count != 0 || InterruptCompletions.Armed > 0) return false;
+        DropCanceledTimers();
+        if (_timerCount != 0 || _count != 0) return false;
+        // AND NO WAITER ALREADY WOKEN: one whose task has completed, or whose
+        // token is canceled, is on its way out and counted quiet still -- the
+        // worker that completed it may be the very thread looking, gone idle
+        // since. Looked at after the count was read full, any such wake came
+        // before, from a thread then not quiet, and shows here.
+        bool waking = false;
+        AtomicCell gate = Gate();
+        gate.Enter();
+        for (Sleeper? s = _sleeping; s != null && !waking; s = s.Next)
+        {
+            waking = s.Task.IsCompleted || s.Token.IsCancellationRequested;
+        }
+        gate.Exit();
+        return !waking && (int)Sys.Read32(leavesAt) == left;
+    }
+
+    /// A deadlock seen: every sleeping waiter woken to throw it.
+    static void Declare()
+    {
+        Sys.AtomicAdd32(Atom.At(_deadlocks!, Atom.FirstWord), 1);
+        AtomicCell gate = Gate();
+        gate.Enter();
+        for (Sleeper? s = _sleeping; s != null; s = s.Next)
+        {
+            nuint at = Atom.At(s.Cell, Atom.FirstWord);
+            Sys.AtomicAdd32(at, 1);
+            Native.Wake(at, int.MaxValue);
+        }
+        gate.Exit();
+    }
+
+    /// A waiter on its sleeping list: on while it sleeps, quiet meanwhile.
+    static void Sleeping(Sleeper s, bool on)
+    {
+        AtomicCell gate = Gate();
+        gate.Enter();
+        if (on)
+        {
+            s.Next = _sleeping;
+            s.Previous = null;
+            if (_sleeping != null) _sleeping.Previous = s;
+            _sleeping = s;
+        }
+        else
+        {
+            if (s.Previous != null) s.Previous.Next = s.Next;
+            else _sleeping = s.Next;
+            if (s.Next != null) s.Next.Previous = s.Previous;
+            s.Next = null;
+            s.Previous = null;
+        }
+        gate.Exit();
+        Quiet(on ? 1 : -1);
+    }
+
     /// A worker: run whatever is queued, and sleep on the signal word when
     /// there is nothing. It never returns; the process ends through
     /// exit_group(2), which takes every thread with it.
@@ -4089,8 +4314,11 @@ public static partial class Scheduler
             {
                 // RunOne, like the event loop: the handler chain is this
                 // thread's own, so a work item that throws is caught here and
-                // reported rather than taking the process with it.
+                // reported rather than taking the process with it. Marked
+                // meanwhile: a wait it makes is the pool's to make up for.
+                Sys.WriteAddress(Sys.ThreadBlock() + Tls.PoolWork, 1);
                 RunOne(work, context);
+                Sys.WriteAddress(Sys.ThreadBlock() + Tls.PoolWork, 0);
                 continue;
             }
 
@@ -4116,11 +4344,16 @@ public static partial class Scheduler
                 long due = NextDeadline();
                 if (due >= 0)
                 {
+                    Idle(1);
                     Native.WaitFor(at, seen, due > now ? due - now : 1);
+                    Idle(-1);
                     continue;
                 }
             }
+            Idle(1);
+            if (Deadlocked()) Declare();
             Native.Wait(at, seen);
+            Idle(-1);
         }
     }
 
@@ -4173,7 +4406,87 @@ public static partial class Scheduler
         {
             WakeOneWorker();
         }
+        // THE POOL ON DEMAND: where threads are (threads.cor), the first work
+        // posted starts the workers, as .NET always has a pool; a worker more
+        // where every one waits in its work. With no threads (a kernel, the
+        // bootloader) there is no such method, and no call.
+        PoolPosted();
     }
+
+    static partial void PoolPosted();
+    static partial void PoolWorkerBlocks();
+    static partial void PoolWorkerUnblocks();
+    static partial void StackRoom(ref nuint room);
+
+    /// A completed task's continuation: run now, on this thread, when
+    /// `inline` (Task.Finish asked MayRunInline) and it may be, else posted.
+    /// Run in its context as posted work is (RunPosted), but INSIDE THE RUN
+    /// THAT COMPLETED THE TASK -- the same thread to the locks it takes, as
+    /// .NET's inline continuation is -- and what escapes it is unhandled, as
+    /// it would be on a worker.
+    internal static void Continue(Action work, AsyncContext? context, bool inline)
+    {
+        if (!inline || work is PostedContinuation)
+        {
+            Post(work, context);
+            return;
+        }
+        Exception? failed = RunPosted(work, context);
+        if (failed != null)
+        {
+            AsyncRuntime.Unhandled(failed);
+        }
+    }
+
+    /// Whether this thread may run a continuation where it completes a task.
+    /// Not where a kernel installed PostHook: its continuations run from its
+    /// own queue, never inside whatever completed the task (an interrupt's
+    /// drain, another process's call). Not with a spin lock held
+    /// (Tls.PreemptCount): the continuation could ask for the same one, and
+    /// nothing may be made under one. And not without the room .NET asks
+    /// for (RuntimeHelpers.TryEnsureSufficientExecutionStack: 64 KB, 128 KB
+    /// in long mode) left on the stack, or a chain of awaits each completing
+    /// the next would run off its end: posted, the chain starts again at the
+    /// top of a worker's.
+    internal static bool MayRunInline()
+    {
+        if (Platform.PostHook != 0)
+        {
+            return false;
+        }
+        nuint block = Sys.ThreadBlock();
+        if (block == 0 || Sys.ReadAddress(block + Tls.PreemptCount) != 0)
+        {
+            return false;
+        }
+        // THE ROOM LEFT: what the platform knows of this thread's stack
+        // (StackRoom, threads.cor), or else the least stack a first thread
+        // is given anywhere this runs, less what is used of it.
+        nuint top = Sys.ReadAddress(block + Tls.StackBase);
+        nuint here = Sys.FramePointer();
+        nuint used = top > here ? top - here : 0;
+        nuint room = used < AssumedStack ? AssumedStack - used : 0;
+        StackRoom(ref room);
+        return room >= InlineRoom;
+    }
+
+    /// The least stack a program's first thread has (Windows' default of
+    /// one megabyte; Linux gives eight).
+    const int AssumedStack = 1048576;
+
+#if TARGET_64BIT
+    const int InlineRoom = 131072;
+#else
+    const int InlineRoom = 65536;
+#endif
+
+    /// A pool worker about to wait in its work, and back (Runtime.BeginBlocking).
+    internal static void WorkerBlocks() => PoolWorkerBlocks();
+    internal static void WorkerUnblocks() => PoolWorkerUnblocks();
+
+    /// How many pool workers sleep for want of work, and how many wait in
+    /// their work (a call, a lock, a sleep): made with the pool (UseThreads).
+    static AtomicCell? _idle, _blocked;
 
     /// How many items are waiting to run.
     public static int Pending => _count;
@@ -4375,6 +4688,14 @@ public static partial class Scheduler
 
         while (!task.IsCompleted)
         {
+            // OTHER THREADS, AND THREADS TO BE HAD (threads.cor): the pool, and
+            // its wait -- asleep on the task -- rather than this loop's look
+            // every OthersPollNanos at what another thread may have brought.
+            if (GcThreads.Others())
+            {
+                PoolPosted();
+                if (_workers > 0) return RunUntilWithWorkers(task, deadline, cancellationToken);
+            }
             // The time first: .NET's Wait(0) with a canceled token answers
             // false, and only a wait with time left looks at the token.
             if (deadline != NoDeadline && Clock.Now() >= deadline)
@@ -4516,54 +4837,66 @@ public static partial class Scheduler
 
     /// Waiting for a task while workers run the queue. The queue is theirs --
     /// this thread taking an item could block on something only a worker can
-    /// finish -- but the timers stay here, because the timer heap is driven by
-    /// whoever sleeps on the clock and that is still this thread.
-    ///
-    /// It polls rather than sleeping on the task's own word: a futex wait on
-    /// the state word would make every completion pay for a wake. The interval
-    /// is short enough not to show up beside the work and long enough not to
-    /// spin a processor.
-    ///
-    /// The deadline and the token are RunUntil's, looked at on every poll.
+    /// finish. This thread sleeps on the task's own word (Task.WaitCell)
+    /// until the task finishes, the deadline or the next timer comes, or the
+    /// token is canceled (which wakes it) -- never a sleep of a fixed slice
+    /// to look again. The timers that come due meanwhile it posts itself, as
+    /// the loop did: a worker idle posts them too, but every worker may be
+    /// busy. Asleep with no deadline it is quiet, and a deadlock seen while
+    /// it sleeps (Declare) wakes it to throw.
     static bool RunUntilWithWorkers(Task task, long deadline, CancellationToken cancellationToken)
     {
-        const long PollNanos = OthersPollNanos;
-
-        while (!task.IsCompleted)
+        AtomicCell waiting = task.WaitCell();
+        nuint at = Atom.At(waiting, Atom.FirstWord);
+        Sleeper? sleeper = null;
+        CancellationTokenRegistration woken = cancellationToken.CanBeCanceled
+            ? cancellationToken.Register(() => { Sys.AtomicAdd32(at, 1); Native.Wake(at, int.MaxValue); })
+            : default(CancellationTokenRegistration);
+        try
         {
-            DropCanceledTimers();
-
-            long now = Clock.Now();
-
-            if (now >= deadline)
+            while (true)
             {
-                return false;
+                int seen = (int)Sys.Read32(at);
+                if (task.IsCompleted) return true;
+                DropCanceledTimers();
+                long now = Clock.Now();
+                if (now >= deadline) return false;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_timerCount > 0) PostDueTimers(now);
+                if (task.IsCompleted) return true;
+                long until = deadline;
+                TimerEntry? next = _timerCount > 0 ? _timers[0] : null;
+                if (next != null && next.Deadline > now && next.Deadline < until) until = next.Deadline;
+                if (until != NoDeadline)
+                {
+                    Native.WaitFor(at, seen, until > now ? until - now : 1);
+                    continue;
+                }
+                sleeper ??= new Sleeper(waiting, task, cancellationToken);
+                int declared = (int)Sys.Read32(Atom.At(_deadlocks!, Atom.FirstWord));
+                Sleeping(sleeper, true);
+                if (Deadlocked()) Declare();
+                Native.Wait(at, seen);
+                Sleeping(sleeper, false);
+                if (!task.IsCompleted && (int)Sys.Read32(Atom.At(_deadlocks!, Atom.FirstWord)) != declared)
+                {
+                    throw new InvalidOperationException("deadlock: nothing can complete this task");
+                }
             }
-            cancellationToken.ThrowIfCancellationRequested();
-            if (_timerCount > 0)
-            {
-                PostDueTimers(now);
-            }
-
-            if (task.IsCompleted)
-            {
-                return true;
-            }
-
-            long until = Sooner(now + PollNanos, deadline);
-            TimerEntry? next = _timers[0];
-
-            if (_timerCount > 0 && next != null && next.Deadline > now && next.Deadline < until)
-            {
-                until = next.Deadline;
-            }
-            Clock.SleepUntil(until);
         }
-        return true;
+        finally
+        {
+            woken.Dispose();
+        }
     }
 
     /// Runs everything queued, and every timer, until there is nothing left
-    /// at all. For programs that post work without a task to wait on.
+    /// at all. For programs that post work without a task to wait on. WITH
+    /// WORKERS, NOTHING LEFT INCLUDES THEIRS: not done until every worker is
+    /// idle too, the item one took still running being work left. Asleep
+    /// meanwhile on the quiet count (Quiet), which every worker going idle
+    /// changes, or until the next timer -- a watcher counted on the count's
+    /// second word, so a worker wakes only where somebody watches.
     public static void RunUntilIdle()
     {
         Gate();
@@ -4581,21 +4914,36 @@ public static partial class Scheduler
 
             DropCanceledTimers();
 
-            if (_timerCount == 0)
-            {
-                return;
-            }
-
             long now = Clock.Now();
 
-            PostDueTimers(now);
-
-            TimerEntry? next = _timers[0];
-
-            if (_count == 0 && _timerCount > 0 && next != null && next.Deadline > now)
+            if (_timerCount > 0)
             {
-                Clock.SleepUntil(next.Deadline);
+                PostDueTimers(now);
+                if (_count > 0) continue;
             }
+
+            TimerEntry? next = _timerCount > 0 ? _timers[0] : null;
+            long due = next != null && next.Deadline > now ? next.Deadline : NoDeadline;
+
+            if (_workers == 0 || _idle is not { } idle || _quiet is not { } quiet)
+            {
+                if (_timerCount == 0) return;
+                if (_count == 0 && due != NoDeadline) Clock.SleepUntil(due);
+                continue;
+            }
+
+            nuint at = Atom.At(quiet, Atom.FirstWord);
+            nuint watchers = Atom.At(quiet, Atom.SecondWord);
+            int seen = (int)Sys.Read32(at);
+            Sys.AtomicAdd32(watchers, 1);
+            bool settled = _count == 0 && _timerCount == 0 && idle.Value >= _workers;
+            if (!settled && _count == 0)
+            {
+                if (due == NoDeadline) Native.Wait(at, seen);
+                else Native.WaitFor(at, seen, due - now);
+            }
+            Sys.AtomicAdd32(watchers, -1);
+            if (settled) return;
         }
     }
 
@@ -7266,9 +7614,13 @@ namespace System.Threading
         CancellationTokenRegistration _registration;
         CancellationToken _token;
 
+        // GRANTED UNDER THE SEMAPHORE'S SPIN LOCK (Release), so its awaits
+        // are posted, never run inline there, as .NET's waiter task is made
+        // RunContinuationsAsynchronously for the same reason.
         public SemaphoreWaiter(SemaphoreSlim owner)
         {
             _owner = owner;
+            _task.SetCreation(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously, null);
         }
 
         public Task<bool> Task => _task;

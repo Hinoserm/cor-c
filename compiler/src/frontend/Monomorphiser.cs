@@ -4368,6 +4368,7 @@ public sealed class Monomorphiser
                 {
                     Op = b.Op, Left = Rewrite(b.Left, map), Right = Rewrite(b.Right, map),
                     PatternNullTest = b.PatternNullTest, PatternConstant = b.PatternConstant,
+                    Interpolation = b.Interpolation?.Copied(h => Rewrite(h, map)),
                     Line = b.Line, Col = b.Col,
                 };
 

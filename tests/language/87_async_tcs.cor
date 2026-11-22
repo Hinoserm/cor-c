@@ -5,22 +5,23 @@
 // producer start
 // main waiting
 // producer setting
-// producer set
 // w1 got 21
+// producer set
 // results 21 42 63
 // many 21000
 // wb waiting
 // failer setting
-// failer done
 // wb failed tcs failed
+// failer done
 // again tcs failed
 // same True
 // many failed 100
 //
 // TaskCompletionSource: a task completed by other async code. Three
 // awaiters wait on the same task (a printing waiter, a silent one, and
-// Main itself); setting the result does not run them inline -- the
-// producer carries on to its next line first -- and each sees the value.
+// Main itself); setting the result runs their continuations inline, as
+// .NET does -- the waiter prints before the producer's next line -- and
+// each sees the value.
 // An already-completed task is then awaited a thousand times. SetException
 // faults the task: its awaiter gets the exception, and awaiting the same
 // faulted task again (many times) rethrows the same exception object.

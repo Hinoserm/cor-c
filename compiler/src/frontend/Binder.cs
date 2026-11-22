@@ -8899,10 +8899,31 @@ public sealed partial class Binder
             return;
         }
 
+        // AN INTERPOLATED STRING WHERE A FormattableString OR AN IFormattable IS
+        // WANTED is FormattableStringFactory.Create of its composite format and
+        // its holes (C# 10.2.5's interpolated string conversion), not the
+        // string it otherwise joins to.
+        if (at is BinaryExpr { Interpolation: { } parts } interpolated && Formattable(to))
+        {
+            CallExpr made = FormattableCall(parts, interpolated);
+            _r.Rewrites[interpolated] = made;
+            CheckExpr(made);
+            return;
+        }
+
         // Method groups have the same contextual delegate conversion in
         // assignments and returns as in arguments -- static ones, `this`'s,
         // and another object's (bound: MethodGroupLambda). Reuse the closure
         // lowering path rather than treating the unresolved group as void.
+        // (Made already by an earlier look at the same expression -- a
+        // `foreach` peeks at its sequence, `new Func<int>[] { One, Two }`,
+        // before checking it -- the group is that wrapper still.)
+        if (at is Expr madeSource && _r.Rewrites.TryGetValue(madeSource, out Expr? madeWrapper) && madeWrapper is LambdaExpr { GroupIdentity: not null } madeLambda
+            && to.Symbol is { Decl.IsDelegate: true })
+        {
+            CheckLambda(madeLambda, to);
+            return;
+        }
         if (at is Expr methodSource && !_r.Rewrites.ContainsKey(methodSource)
             && _r.Resolved.TryGetValue(methodSource, out Sym? methodSym)
             && (methodSym is MethodGroupSym or CapturedMethodGroupSym || LocalFunctionConverts(methodSource, to))
@@ -9274,11 +9295,32 @@ public sealed partial class Binder
     /// refuses a variable; the rule is about the VALUE, which is why it needs
     /// the expression and not only its type.
     /// </summary>
+    /// <summary>Whether a type is what an interpolated string converts to as well as string: FormattableString, IFormattable.</summary>
+    private static bool Formattable(Type to)
+        => !to.IsArray && to.AsNonNullable().Symbol is { Name: "FormattableString", Kind: TypeKind.Class } or { Name: "IFormattable", Kind: TypeKind.Interface };
+
+    /// <summary>`global::System.Runtime.CompilerServices.FormattableStringFactory.Create(format, holes...)`.</summary>
+    private static CallExpr FormattableCall(InterpolatedParts parts, Node at)
+    {
+        Expr owner = new NameExpr { Name = "System", Global = true, Line = at.Line, Col = at.Col };
+        foreach (string name in new[] { "Runtime", "CompilerServices", "FormattableStringFactory" })
+            owner = new MemberExpr { Target = owner, Name = name, Line = at.Line, Col = at.Col };
+        CallExpr made = new() { Target = new MemberExpr { Target = owner, Name = "Create", Line = at.Line, Col = at.Col }, Line = at.Line, Col = at.Col };
+        made.Args.Add(new LiteralExpr { Kind = Lit.Str, Text = parts.Format, Line = at.Line, Col = at.Col });
+        made.Args.AddRange(parts.Holes);
+        return made;
+    }
+
     private bool Fits(Type had, Type want, Expr? written)
+        // AN INTERPOLATED STRING fits a FormattableString or an IFormattable too.
+        => written is BinaryExpr { Interpolation: not null } && Formattable(want) ? true
         // A CONDITIONAL LEFT TO ITS PARAMETER (Argument) fits what each of
         // its arms fits, an arm that is one of them the same way again.
-        => written is ConditionalExpr deferred && _deferredArms.TryGetValue(deferred, out (Type Then, Type Else) arms)
+        : written is ConditionalExpr deferred && _deferredArms.TryGetValue(deferred, out (Type Then, Type Else) arms)
             ? Fits(arms.Then, want, deferred.Then) && Fits(arms.Else, want, deferred.Else)
+        // A bare collection expression fits what it can become: an array, or
+        // a type of its own (as a plain argument of one: WrittenFits).
+        : written is NewExpr { Collection: true, Type.Name.Length: 0 } ? (want.IsArray || want.Symbol is not null) && !CollectionIntoNothing(written, want)
         : had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
         || (written is not null && (MethodGroupFits(written, want) || LocalFunctionConverts(written, want)))
         || IntegerConstantFits(written, had, want)
@@ -16261,6 +16303,7 @@ public sealed partial class Binder
         {
             Op = b.Op, Left = Spell(b.Left), Right = Spell(b.Right),
             PatternNullTest = b.PatternNullTest, PatternConstant = b.PatternConstant,
+            Interpolation = b.Interpolation?.Copied(Spell),
             Line = b.Line, Col = b.Col, File = b.File,
         },
 
@@ -18564,6 +18607,9 @@ public sealed partial class Binder
                 Type Arm(Expr arm)
                 {
                     if (wantedDelegate is not null && arm is LambdaExpr lambda) return CheckLambda(lambda, wantedDelegate);
+                    // (A bare collection expression has no type until the
+                    // parameter gives it one: it waits with the conditional.)
+                    if (deferring && arm is NewExpr { Collection: true, Type.Name.Length: 0 }) return Type.Error;
                     ConditionalExpr? outer = _argumentConditional;
                     if (deferring) _argumentConditional = arm as ConditionalExpr;
                     Type had;
@@ -18593,7 +18639,8 @@ public sealed partial class Binder
 
                 Forget(whenFalse);
 
-                if (deferring && (Deferred(c2.Then) || Deferred(c2.Else)))
+                if (deferring && (Deferred(c2.Then) || Deferred(c2.Else)
+                    || c2.Then is NewExpr { Collection: true, Type.Name.Length: 0 } || c2.Else is NewExpr { Collection: true, Type.Name.Length: 0 }))
                 {
                     _deferredArms[c2] = (a2, b2);
                     return Type.Any;
@@ -24516,6 +24563,7 @@ public sealed partial class Binder
             if (had.Dynamic && !want.IsPointer) return true;
             if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
             if (CollectionIntoNothing(written, want)) return false;
+            if (written is BinaryExpr { Interpolation: not null } && Formattable(want)) return true;
             // `null!` IS STILL THE NULL LITERAL to what it can be passed as:
             // the `!` silences the warning, not the conversion, so
             // `"abc".IndexOf(null!, 0, 0)` is IndexOf(string, int, int) and
@@ -25247,6 +25295,10 @@ public sealed partial class Binder
                 // A DYNAMIC ARGUMENT converts to anything, at run time.
                 if (args[i].Dynamic && !want.IsPointer) continue;
                 if (i < c.Args.Count && c.Args[i] is LambdaExpr valued && !LambdaValueFits(m, want, valued)) return false;
+                // AN INTERPOLATED STRING into a FormattableString or an
+                // IFormattable (C# 10.2.5), as WrittenFits has it: a string
+                // overload beside it is still the better one (BetterConversion).
+                if (i < c.Args.Count && c.Args[i] is BinaryExpr { Interpolation: not null } && Formattable(want)) continue;
                 if (NullableIntoValue(args[i], want)) return false;
                 // `null!` is still the null literal, here as in WrittenFits.
                 if (i < c.Args.Count && c.Args[i] is SuppressExpr { Operand: LiteralExpr { Kind: Lit.Null } }

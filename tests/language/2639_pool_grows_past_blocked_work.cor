@@ -1,0 +1,71 @@
+// test: the thread pool, as .NET has one: started by the first work, grown past work that blocks, an asynchronous read of a blocking stream on it, a wait woken by the task it waits for
+// expect-exit: 0
+// expect-output:
+// both ran
+// True 12
+// read waits
+// 3
+// True 7
+//
+// Two pieces of work each blocked until the other runs need two workers
+// at once, whatever the processors: the pool grows past a worker waiting
+// in its work. A stream that does not override ReadAsync reads on the
+// pool, so the caller goes on. Output as .NET 10 says it, on one processor.
+
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+static class Program
+{
+    static int Main()
+    {
+        // Two pieces of work, each blocked until the other has run: the pool
+        // must run both at once, whatever the processors.
+        using ManualResetEventSlim first = new(false), second = new(false);
+        Task a = Task.Run(() => { first.Set(); second.Wait(); });
+        Task b = Task.Run(() => { first.Wait(); second.Set(); });
+        Console.WriteLine(Task.WaitAll(new[] { a, b }, 20000) ? "both ran" : "starved");
+
+        // Many blocked at once, freed by the last.
+        using ManualResetEventSlim go = new(false);
+        int done = 0;
+        Task[] waiting = new Task[12];
+        for (int i = 0; i < waiting.Length; i++) waiting[i] = Task.Run(() => { go.Wait(); Interlocked.Increment(ref done); });
+        Task freeing = Task.Run(() => go.Set());
+        Console.WriteLine(Task.WaitAll(waiting, 20000) + " " + done);
+
+        // An asynchronous read of a stream that blocks (the base class's)
+        // does not hold the caller: the write that ends it runs meanwhile.
+        BlockingStream pipe = new();
+        Task<int> read = pipe.ReadAsync(new byte[4], 0, 4);
+        Console.WriteLine(read.IsCompleted ? "read held the caller" : "read waits");
+        pipe.Release(3);
+        Console.WriteLine(read.Result);
+
+        // A wait on a task another thread completes, with a deadline and without.
+        TaskCompletionSource<int> later = new();
+        Thread setter = new(() => { Thread.Sleep(50); later.SetResult(7); });
+        setter.Start();
+        Console.WriteLine(later.Task.Wait(20000) + " " + later.Task.Result);
+        setter.Join();
+        return 0;
+    }
+}
+
+sealed class BlockingStream : Stream
+{
+    readonly SemaphoreSlim _ready = new(0);
+    int _count;
+    public void Release(int count) { _count = count; _ready.Release(); }
+    public override int Read(byte[] buffer, int offset, int count) { _ready.Wait(); return Math.Min(count, _count); }
+    public override bool CanRead => true;
+    public override bool CanWrite => false;
+    public override bool CanSeek => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+}

@@ -26,13 +26,18 @@
 // main after x
 //
 // Suspension order. An async method runs synchronously up to its first
-// await of an incomplete task (Task.Yield), then returns to its caller,
-// which carries on; the rest of the method runs later from the run queue.
-// Covers a suspension two calls deep (the outer method resumes only after
-// the inner one finished), two methods started before either resumes, and
-// two loops yielding in turn. Continuations are posted to a FIFO queue, so
-// resumptions happen in the order the awaits were reached.
+// await of an incomplete task, then returns to its caller, which carries
+// on; the rest of the method runs when that task completes -- inline, in
+// the call that completes it, as .NET runs an await's continuation. Each
+// await here is of a task Main completes, so the order is Main's to say
+// (yields would resume side by side on the pool's threads, in no one
+// order, under .NET as here). Covers a suspension two calls deep (the
+// outer method resumes only after the inner one finished), two methods
+// started before either resumes, and two loops taking turns: each turn a
+// task queued, the queue completed in order.
 
+using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 static class Program
@@ -43,25 +48,34 @@ static class Program
         Sys.PrintLine();
     }
 
-    static async Task Inner()
+    static async Task Inner(Task resume)
     {
         Line("inner before");
-        await Task.Yield();
+        await resume;
         Line("inner after");
     }
 
-    static async Task Outer()
+    static async Task Outer(Task resume)
     {
         Line("outer before");
-        await Inner();
+        await Inner(resume);
         Line("outer after");
     }
 
-    static async Task Worker(string name)
+    static async Task Worker(string name, Task resume)
     {
         Line(name + " before");
-        await Task.Yield();
+        await resume;
         Line(name + " after");
+    }
+
+    static readonly Queue<TaskCompletionSource> Turns = new Queue<TaskCompletionSource>();
+
+    static Task Turn()
+    {
+        TaskCompletionSource turn = new TaskCompletionSource();
+        Turns.Enqueue(turn);
+        return turn.Task;
     }
 
     static async Task Steps(string name, int n)
@@ -69,22 +83,28 @@ static class Program
         for (int i = 0; i < n; i++)
         {
             Line(name + i);
-            await Task.Yield();
+            await Turn();
         }
         Line(name + " end");
     }
 
     static async Task Main()
     {
-        Task o = Outer();
+        TaskCompletionSource inner = new TaskCompletionSource();
+        Task o = Outer(inner.Task);
         Line("main between");
+        inner.SetResult();
         await o;
         Line("main end");
 
-        Task a = Worker("a");
+        TaskCompletionSource resumeA = new TaskCompletionSource();
+        TaskCompletionSource resumeB = new TaskCompletionSource();
+        Task a = Worker("a", resumeA.Task);
         Line("main got a");
-        Task b = Worker("b");
+        Task b = Worker("b", resumeB.Task);
         Line("main got b");
+        resumeA.SetResult();
+        resumeB.SetResult();
         await a;
         Line("main awaited a");
         await b;
@@ -92,6 +112,7 @@ static class Program
 
         Task x = Steps("x", 3);
         Task y = Steps("y", 2);
+        while (Turns.Count > 0) Turns.Dequeue().SetResult();
         await y;
         Line("main after y");
         await x;

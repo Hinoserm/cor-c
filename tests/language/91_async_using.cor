@@ -41,7 +41,8 @@
 // the end of the block, an exception thrown after resumption, a return
 // after resumption, continue in a loop whose body awaits, and an exception
 // arriving through an awaited faulted task. Two methods suspended inside
-// their using blocks at the same time close in the order they resume.
+// their using blocks at the same time close in the order they resume,
+// which is the order the tasks they wait for complete.
 
 using System;
 using System.Threading.Tasks;
@@ -136,10 +137,13 @@ static class Program
         }
     }
 
-    static async Task Held(string n)
+    // SUSPENDED ON A TASK THE CALLER COMPLETES, so the two resume one at a
+    // time and in the order it says: two yields resumed side by side on the
+    // pool's threads, and closed in either order -- .NET's too.
+    static async Task Held(string n, Task resume)
     {
         using var r = new Res(n);
-        await Task.Yield();
+        await resume;
     }
 
     static async Task Main()
@@ -171,8 +175,12 @@ static class Program
             Line("caught " + e.Message);
         }
 
-        Task h1 = Held("h1");
-        Task h2 = Held("h2");
+        TaskCompletionSource first = new TaskCompletionSource();
+        TaskCompletionSource second = new TaskCompletionSource();
+        Task h1 = Held("h1", first.Task);
+        Task h2 = Held("h2", second.Task);
+        first.SetResult();
+        second.SetResult();
         await h1;
         await h2;
         Line("done");

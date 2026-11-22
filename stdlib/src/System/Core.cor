@@ -12316,6 +12316,30 @@ public interface IAsyncEnumerator<out T> : System.IAsyncDisposable {
 
 namespace System.Runtime.CompilerServices {
 
+/// What an interpolated string converted to a FormattableString is made by
+/// (the compiler's call: Binder.FormattableCall), as .NET's.
+public static class FormattableStringFactory
+{
+    public static FormattableString Create(string format, params object?[] arguments)
+    {
+        if (format == null) throw new ArgumentNullException(nameof(format));
+        if (arguments == null) throw new ArgumentNullException(nameof(arguments));
+        return new Composite(format, arguments);
+    }
+
+    sealed class Composite : FormattableString
+    {
+        readonly string _format;
+        readonly object?[] _arguments;
+        public Composite(string format, object?[] arguments) { _format = format; _arguments = arguments; }
+        public override string Format => _format;
+        public override object?[] GetArguments() => _arguments;
+        public override int ArgumentCount => _arguments.Length;
+        public override object? GetArgument(int index) => _arguments[index];
+        public override string ToString(IFormatProvider? formatProvider) => string.Format(formatProvider, _format, _arguments);
+    }
+}
+
 /// Where an async iterator is: not started, running a step (or waiting in
 /// one), stopped at a yield, or finished -- which is also where an
 /// enumerable is before it is first enumerated.
@@ -12502,14 +12526,25 @@ class AsyncIterator<T> : IAsyncEnumerator<T> {
     }
 
     // Says the step waits, its caller's task already in place; false when
-    // the body got to a yield first.
+    // the body got to a yield first. AND THE END LOOKED FOR AGAIN once the
+    // step is marked waiting: the body's task may have completed between
+    // registering Ended and the mark -- its continuation run on the thread
+    // that completed it -- when Ended found the step still running and left
+    // it, and the step's task was never answered. Ended's own exchange
+    // (Waiting to Ended) answers it once, whichever call gets there.
     bool Wait() {
         if (_ended == null) {
             Action ended = Ended;
             _ended = ended;
             _task!.AddContinuation(ended);
         }
-        return System.Threading.Interlocked.CompareExchange(ref _step, (int)AsyncIteratorStep.Waiting, (int)AsyncIteratorStep.Running) == (int)AsyncIteratorStep.Running;
+        if (System.Threading.Interlocked.CompareExchange(ref _step, (int)AsyncIteratorStep.Waiting, (int)AsyncIteratorStep.Running) != (int)AsyncIteratorStep.Running) {
+            return false;
+        }
+        if (_task!.IsCompleted) {
+            Ended();
+        }
+        return true;
     }
 
     // The body's task completed. A step waiting for it is answered: false,
@@ -22165,6 +22200,35 @@ public class TypeInitializationException : SystemException
 public interface IFormattable
 {
     string ToString(string? format, IFormatProvider? formatProvider);
+}
+
+/// .NET's: a composite format and the arguments its holes take, which an
+/// interpolated string becomes where one is wanted in place of the string
+/// (FormattableStringFactory.Create): formatted when asked, by the culture
+/// asked -- Invariant's, a protocol's, or the current one.
+public abstract class FormattableString : IFormattable
+{
+    public abstract string Format { get; }
+    public abstract object?[] GetArguments();
+    public abstract int ArgumentCount { get; }
+    public abstract object? GetArgument(int index);
+    public abstract string ToString(IFormatProvider? formatProvider);
+
+    string IFormattable.ToString(string? ignored, IFormatProvider? formatProvider) => ToString(formatProvider);
+
+    public override string ToString() => ToString(System.Globalization.CultureInfo.CurrentCulture);
+
+    public static string Invariant(FormattableString formattable)
+    {
+        if (formattable == null) throw new ArgumentNullException(nameof(formattable));
+        return formattable.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    public static string CurrentCulture(FormattableString formattable)
+    {
+        if (formattable == null) throw new ArgumentNullException(nameof(formattable));
+        return formattable.ToString(System.Globalization.CultureInfo.CurrentCulture);
+    }
 }
 
 /// .NET's ISpanFormattable: a value that writes its text into chars, as

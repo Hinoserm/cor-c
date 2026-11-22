@@ -62,10 +62,11 @@ public enum SeekOrigin
 }
 
 /// The .NET Stream: what every source and sink of bytes looks like.
-/// ReadAsync/WriteAsync complete synchronously here -- the scheduler is
-/// single-threaded and the descriptors block -- which is legal for a
-/// Stream and what .NET's base class does for a stream that does not
-/// override them.
+/// ReadAsync/WriteAsync, where a stream does not override them, make the
+/// call on the pool, as .NET's base class does: a read that blocks -- a
+/// pipe's, a socket's -- blocks a worker, never the caller, and the pool
+/// grows past a worker so waiting (Scheduler). A stream that never blocks
+/// (MemoryStream) answers at once by its own override.
 public abstract class Stream : IDisposable, IAsyncDisposable
 {
     public abstract bool CanRead { get; }
@@ -225,8 +226,7 @@ public abstract class Stream : IDisposable, IAsyncDisposable
     public virtual Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<int>(cancellationToken);
-        try { return Task.FromResult(Read(buffer, offset, count)); }
-        catch (Exception e) { return Task.FromException<int>(e); }
+        return Task.Run(() => Read(buffer, offset, count), cancellationToken);
     }
 
     public Task WriteAsync(byte[] buffer, int offset, int count)
@@ -237,26 +237,28 @@ public abstract class Stream : IDisposable, IAsyncDisposable
     public virtual Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
-        try { Write(buffer, offset, count); return Task.CompletedTask; }
-        catch (Exception e) { return Task.FromException(e); }
+        return Task.Run(() => Write(buffer, offset, count), cancellationToken);
     }
 
     /// Into a window of memory, as many bytes as are ready; 0 at the end.
     public virtual System.Threading.Tasks.ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        byte[] into = new byte[buffer.Length];
-        int n = Read(into, 0, into.Length);
-        for (int i = 0; i < n; i++) buffer.Span[i] = into[i];
-        return new System.Threading.Tasks.ValueTask<int>(n);
+        return new System.Threading.Tasks.ValueTask<int>(Task.Run(() =>
+        {
+            byte[] into = new byte[buffer.Length];
+            int n = Read(into, 0, into.Length);
+            Span<byte> to = buffer.Span;
+            for (int i = 0; i < n; i++) to[i] = into[i];
+            return n;
+        }, cancellationToken));
     }
 
     public virtual System.Threading.Tasks.ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         byte[] bytes = buffer.ToArray();
-        Write(bytes, 0, bytes.Length);
-        return default;
+        return new System.Threading.Tasks.ValueTask(Task.Run(() => Write(bytes, 0, bytes.Length), cancellationToken));
     }
 
     public Task CopyToAsync(Stream destination) => CopyToAsync(destination, 81920, CancellationToken.None);
@@ -827,6 +829,21 @@ sealed class NullStream : Stream
     public override long Seek(long offset, SeekOrigin origin) => 0;
     public override int Read(byte[] buffer, int offset, int count) => 0;
     public override void Write(byte[] buffer, int offset, int count) { }
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        => cancellationToken.IsCancellationRequested ? Task.FromCanceled<int>(cancellationToken) : Task.FromResult(0);
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        => cancellationToken.IsCancellationRequested ? Task.FromCanceled(cancellationToken) : Task.CompletedTask;
+    public override System.Threading.Tasks.ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return new System.Threading.Tasks.ValueTask<int>(0);
+    }
+    public override System.Threading.Tasks.ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return default;
+    }
+
 }
 
 public class MemoryStream : Stream, IOwnsStorage
@@ -1065,6 +1082,39 @@ public class MemoryStream : Stream, IOwnsStorage
         _lent = true;
         return _bytes;
     }
+    // NEVER BLOCKS: what is read or written is the array's, at once, as
+    // .NET's MemoryStream answers -- no worker for it.
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<int>(cancellationToken);
+        try { return Task.FromResult(Read(buffer, offset, count)); }
+        catch (Exception e) { return Task.FromException<int>(e); }
+    }
+
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
+        try { Write(buffer, offset, count); return Task.CompletedTask; }
+        catch (Exception e) { return Task.FromException(e); }
+    }
+
+    public override System.Threading.Tasks.ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        byte[] into = new byte[buffer.Length];
+        int n = Read(into, 0, into.Length);
+        Span<byte> to = buffer.Span;
+        for (int i = 0; i < n; i++) to[i] = into[i];
+        return new System.Threading.Tasks.ValueTask<int>(n);
+    }
+
+    public override System.Threading.Tasks.ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        byte[] bytes = buffer.ToArray();
+        Write(bytes, 0, bytes.Length);
+        return default;
+    }
 }
 
 /// .NET's TextWriter: characters out, in whatever encoding the writer
@@ -1094,6 +1144,16 @@ public abstract class TextWriter : IDisposable
 
     /// A writer that keeps nothing: what .NET's TextWriter.Null is.
     public static readonly TextWriter Null = new NullTextWriter();
+
+    /// `writer` with every call made one at a time, under the one lock, as
+    /// .NET's SyncTextWriter makes them: what Console.Out and Console.Error
+    /// are, so lines written from two threads come out whole and once.
+    /// Already such a writer, it is itself.
+    public static TextWriter Synchronized(TextWriter writer)
+    {
+        if (writer == null) throw new ArgumentNullException("writer");
+        return writer is SyncTextWriter ? writer : new SyncTextWriter(writer);
+    }
 
     public abstract void Write(char value);
 
@@ -1324,6 +1384,69 @@ public abstract class TextWriter : IDisposable
     {
         Flush();
     }
+}
+
+/// TextWriter.Synchronized's writer: each call to the one it wraps made
+/// under this writer's lock, the whole call, as .NET's SyncTextWriter makes
+/// it.
+sealed class SyncTextWriter : TextWriter
+{
+    readonly TextWriter _inner;
+
+    public SyncTextWriter(TextWriter inner)
+    {
+        _inner = inner;
+    }
+
+    public override string NewLine
+    {
+        get { lock (this) { return _inner.NewLine; } }
+        set { lock (this) { _inner.NewLine = value; } }
+    }
+
+    public override Encoding Encoding => _inner.Encoding;
+    public override IFormatProvider FormatProvider => _inner.FormatProvider;
+
+    public override void Write(char value) { lock (this) { _inner.Write(value); } }
+    public override void Write(char[]? buffer) { lock (this) { _inner.Write(buffer); } }
+    public override void Write(char[] buffer, int index, int count) { lock (this) { _inner.Write(buffer, index, count); } }
+    public override void Write(bool value) { lock (this) { _inner.Write(value); } }
+    public override void Write(int value) { lock (this) { _inner.Write(value); } }
+    public override void Write(uint value) { lock (this) { _inner.Write(value); } }
+    public override void Write(long value) { lock (this) { _inner.Write(value); } }
+    public override void Write(ulong value) { lock (this) { _inner.Write(value); } }
+    public override void Write(float value) { lock (this) { _inner.Write(value); } }
+    public override void Write(double value) { lock (this) { _inner.Write(value); } }
+    public override void Write(string? value) { lock (this) { _inner.Write(value); } }
+    public override void Write(object? value) { lock (this) { _inner.Write(value); } }
+    public override void Write(StringBuilder? value) { lock (this) { _inner.Write(value); } }
+    public override void Write(string format, object? arg0) { lock (this) { _inner.Write(format, arg0); } }
+    public override void Write(string format, object? arg0, object? arg1) { lock (this) { _inner.Write(format, arg0, arg1); } }
+    public override void Write(string format, object? arg0, object? arg1, object? arg2) { lock (this) { _inner.Write(format, arg0, arg1, arg2); } }
+    public override void Write(string format, params object?[] arg) { lock (this) { _inner.Write(format, arg); } }
+    public override void WriteLine() { lock (this) { _inner.WriteLine(); } }
+    public override void WriteLine(char value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(char[]? buffer) { lock (this) { _inner.WriteLine(buffer); } }
+    public override void WriteLine(char[] buffer, int index, int count) { lock (this) { _inner.WriteLine(buffer, index, count); } }
+    public override void WriteLine(bool value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(int value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(uint value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(long value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(ulong value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(float value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(double value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(string? value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(object? value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(StringBuilder? value) { lock (this) { _inner.WriteLine(value); } }
+    public override void WriteLine(string format, object? arg0) { lock (this) { _inner.WriteLine(format, arg0); } }
+    public override void WriteLine(string format, object? arg0, object? arg1) { lock (this) { _inner.WriteLine(format, arg0, arg1); } }
+    public override void WriteLine(string format, object? arg0, object? arg1, object? arg2) { lock (this) { _inner.WriteLine(format, arg0, arg1, arg2); } }
+    public override void WriteLine(string format, params object?[] arg) { lock (this) { _inner.WriteLine(format, arg); } }
+    public override void Flush() { lock (this) { _inner.Flush(); } }
+    public override void Close() { lock (this) { _inner.Close(); } }
+    public override void Dispose() { lock (this) { _inner.Dispose(); } }
+    public override void Write(ReadOnlySpan<char> buffer) { lock (this) { _inner.Write(buffer); } }
+    public override void WriteLine(ReadOnlySpan<char> buffer) { lock (this) { _inner.WriteLine(buffer); } }
 }
 
 /// TextWriter.Null: every write kept nowhere.

@@ -377,6 +377,9 @@ public sealed class Parser
         string raw = at.Text;
         Expr? built = null;
         StringBuilder literal = new();
+        // The same string as a composite format and its holes (InterpolatedParts).
+        StringBuilder composite = new();
+        List<Expr> holes = new();
         int i = 0;
 
         void Flush()
@@ -385,6 +388,7 @@ public sealed class Parser
             {
                 return;
             }
+            composite.Append(literal.ToString().Replace("{", "{{").Replace("}", "}}"));
 
             Join(new LiteralExpr
             {
@@ -558,6 +562,11 @@ public sealed class Parser
             };
             Expr hole = sub.ParseExpr();
             _hidden = sub._hidden;
+            composite.Append('{').Append(holes.Count);
+            if (alignment is not null) composite.Append(',').Append(alignment);
+            if (format is not null) composite.Append(':').Append(format);
+            composite.Append('}');
+            holes.Add(hole);
 
             if (format is not null)
             {
@@ -573,6 +582,8 @@ public sealed class Parser
         }
 
         Flush();
+
+        if (built is BinaryExpr joined && holes.Count > 0) joined.Interpolation = new InterpolatedParts(composite.ToString(), holes);
 
         // `$""` is the empty string rather than nothing at all.
         return built ?? new LiteralExpr { Kind = Lit.Str, Text = "", Line = at.Line, Col = at.Col };

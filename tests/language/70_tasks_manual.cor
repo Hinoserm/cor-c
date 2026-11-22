@@ -2,9 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // tcs completed False
+// continuation sees 42
 // after SetResult
 // completed True True
-// continuation sees 42
 // result 42
 // TrySetResult again False
 // SetResult again threw
@@ -24,15 +24,15 @@
 // delay waited True
 // delay done True
 // d10
-// d10b
-// d20
+// d40
+// d80
 // whenall done
 // whenall fault One or more errors occurred. (first) (second)
 // whenall empty True
 // whenany picked fast True
 // params all True any True
 // yield completed False
-// yielded
+// yielded posted True
 // posted after
 // pool item
 // inner set
@@ -56,7 +56,8 @@
 // done
 //
 // The task library with no async/await: TaskCompletionSource, continuations
-// registered through GetAwaiter().OnCompleted (posted, never run inline),
+// registered through GetAwaiter().OnCompleted (run inline by the call that
+// completes the task, as .NET runs them; a Yield's posted),
 // Wait running the scheduler, faulted and canceled tasks -- Wait, Result and
 // Exception answering an AggregateException of what faulted or canceled
 // them, GetResult rethrowing the original -- Task.Delay ordering through the
@@ -204,18 +205,21 @@ static class Program
         Line("delay waited " + (elapsed >= 30));
         Line("delay done " + d.IsCompletedSuccessfully);
 
-        Task slow = Task.Delay(20);
+        // Registered latest first, run soonest first: the timer heap's order.
+        // Apart by more than a busy machine's lateness, as the pool's workers
+        // run two timers due at once side by side, in either order.
+        Task slow = Task.Delay(80);
+        Task middle = Task.Delay(40);
         Task fast = Task.Delay(10);
-        Task fast2 = Task.Delay(10);
 
-        slow.GetAwaiter().OnCompleted(new Log("d20"));
+        slow.GetAwaiter().OnCompleted(new Log("d80"));
+        middle.GetAwaiter().OnCompleted(new Log("d40"));
         fast.GetAwaiter().OnCompleted(new Log("d10"));
-        fast2.GetAwaiter().OnCompleted(new Log("d10b"));
 
         Task[] all = new Task[3];
         all[0] = slow;
-        all[1] = fast;
-        all[2] = fast2;
+        all[1] = middle;
+        all[2] = fast;
         Task.WhenAll(all).Wait();
         Line("whenall done");
 
@@ -257,7 +261,16 @@ static class Program
         YieldAwaiter y = Task.Yield().GetAwaiter();
 
         Line("yield completed " + y.IsCompleted);
-        y.OnCompleted(new Log("yielded"));
+        // POSTED, NOT RUN INSIDE OnCompleted: run by another thread, or by
+        // this one once OnCompleted has returned.
+        TaskCompletionSource<bool> yielded = new TaskCompletionSource<bool>();
+        int caller = Thread.CurrentThread.ManagedThreadId;
+        bool calling = true;
+        y.OnCompleted(() => yielded.SetResult(!calling || Thread.CurrentThread.ManagedThreadId != caller));
+        calling = false;
+        Line("yielded posted " + yielded.Task.Result);
+        // And the scheduler run until nothing is left: the item a worker took
+        // run to its end too.
         Scheduler.Post(new Log("posted after"));
         Scheduler.RunUntilIdle();
     }
@@ -268,9 +281,17 @@ static class Program
         Func<Task> giveInner = () => inner.Task;
         Task outer = Task.Run(giveInner);
 
-        ThreadPool.QueueUserWorkItem(new Log("pool item"));
+        // Two items the pool may run side by side: the second waits for the
+        // first, so they print in one order.
+        TaskCompletionSource poolRan = new TaskCompletionSource();
         ThreadPool.QueueUserWorkItem(() =>
         {
+            Line("pool item");
+            poolRan.SetResult();
+        });
+        ThreadPool.QueueUserWorkItem(() =>
+        {
+            poolRan.Task.Wait();
             Line("inner set");
             inner.SetResult();
         });
