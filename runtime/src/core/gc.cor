@@ -10609,8 +10609,91 @@ public static class Gc
     /// found. For finding what keeps a module; nothing calls it otherwise.
     public static long ReferencesIntoReport(nuint low, nuint high, long max)
     {
+        long marked, cut;
+        return ReferencesInto(low, high, max, false, out marked, out cut);
+    }
+
+    // TODO(local to this checkout, NOT PUSHED -- re-apply after the COR-C#
+    // agent's pending runtime work lands; CORSAC86's modules.cor uses it):
+    // CutReferencesInto, ReferencesInto's `cutting`, BlockWordInto's
+    // `described`, and _cutting / _cut.
+    /// THE REFERENCES INTO [low, high) CUT: ReferencesIntoReport's walk, and
+    /// every word of a heap block that its descriptor says is a reference --
+    /// an object's field, a reference array's element -- cleared as it is
+    /// said, so nothing in the heap points into the range after. Statics,
+    /// registered root ranges and blocks no descriptor describes are said
+    /// only: read word by word, a number there is not told from a
+    /// reference. `marked` is what the marking count found, stacks and
+    /// registers included; `cut` the words cleared. Answers the words found
+    /// in statics, roots and the heap; -1 when no collection could be made.
+    /// For a kernel taking a module's image out whatever still points in.
+    ///
+    /// A STRING OF THE RANGE'S OWN -- a literal in a module's read-only data,
+    /// kept by the kernel as a key or a name -- is not cleared: the slot is
+    /// given a copy of it in the heap (`moved`), so a table keeps its key and
+    /// its entry. Found under the lock, copied after it, and put in under it
+    /// again with no collection under way, each only where the slot still
+    /// holds the literal.
+    public static long CutReferencesInto(nuint low, nuint high, long max, out long marked, out long cut, out long moved)
+    {
+        moved = 0;
+        _moveSlots = new nuint[MoveMost];
+        _moveCount = 0;
+        _stringVt = Sys.ReadAddress(Sys.ObjectAddress("x"));
+        long found = ReferencesInto(low, high, max, true, out marked, out cut);
+        nuint count = _moveCount;
+        nuint[] slots = _moveSlots;
+        _moveSlots = null;
+        _moveCount = 0;
+        if (count == 0) return found;
+        // The copies, made with no lock held: each slot's literal as it was
+        // found (another thread may have changed a slot since; checked below).
+        nuint[] from = new nuint[count];
+        object?[] copies = new object?[count];
+        for (nuint i = 0; i < count; i++)
+        {
+            nuint literal = Sys.ReadAddress(slots[i]);
+            if (literal < low || literal >= high || Sys.ReadAddress(literal) != _stringVt) continue;
+            string? text = Sys.ObjectAt(literal) as string;
+            if (text == null) continue;
+            from[i] = literal;
+            copies[i] = new string(text.ToCharArray());
+        }
+        GcLock.Enter();
+        bool quiet = WaitOutAnyCycle();
+        for (nuint i = 0; i < count; i++)
+        {
+            nuint slot = slots[i];
+            object? copy = copies[i];
+            nuint now = Sys.ReadAddress(slot);
+            if (now < low || now >= high) continue;                 // changed meanwhile, to elsewhere
+            if (quiet && copy != null && now == from[i] && Sys.Cas(slot, now, Sys.ObjectAddress(copy)) == now)
+            {
+                Card(slot);
+                moved = moved + 1;
+                continue;
+            }
+            // NO COPY PUT IN (no quiet moment, or the slot holds another of
+            // the range's words now): cleared as any other reference.
+            if (Sys.Cas(slot, now, 0) == now) cut = cut + 1;
+        }
+        GcLock.Exit();
+        return found;
+    }
+
+    static bool _cutting;
+    static long _cut;
+    const int MoveMost = 1024;
+    static nuint[]? _moveSlots;
+    static nuint _moveCount;
+    static nuint _stringVt;
+
+    static long ReferencesInto(nuint low, nuint high, long max, bool cutting, out long marked, out long cut)
+    {
+        marked = 0;
+        cut = 0;
         if (high <= low || !_ready) return 0;
-        long marked = CountReferencesInto(low, high);
+        marked = CountReferencesInto(low, high);
         if (marked < 0) return -1;
         GcLock.Enter();
         if (!WaitOutAnyCycle())
@@ -10648,10 +10731,17 @@ public static class Gc
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
                 if (size < LeastBlock || Beyond(block, size, end)) break;
-                if ((word & FlagFree) == 0) found = BlockReferencesInto(block, size, paged, low, high, max, found);
+                if ((word & FlagFree) == 0)
+                {
+                    _cutting = cutting;
+                    found = BlockReferencesInto(block, size, paged, low, high, max, found);
+                    _cutting = false;
+                }
                 block = block + size;
             }
         }
+        cut = _cut;
+        _cut = 0;
         GcLock.Exit();
         SayNumber("gc refs: words found in statics, roots and the heap ", found);
         SayNumber("gc refs: references the marking counted ", marked);
@@ -10676,7 +10766,7 @@ public static class Gc
         bool described = kind == KindObject && vt != 0 && !InQuarantine(vt) && (Sys.ReadAddress(desc + DescSelfWord * w)) == desc;
         if (!described)
         {
-            for (nuint q = payload; q + w <= end; q = q + w) found = BlockWordInto(payload, size, q, low, high, max, found);
+            for (nuint q = payload; q + w <= end; q = q + w) found = BlockWordInto(payload, size, q, low, high, max, found, false);
             return found;
         }
         nuint flags = Sys.ReadAddress(desc + DescFlagsWord * w);
@@ -10687,7 +10777,7 @@ public static class Gc
             nuint first = payload + Sys.ReadAddress(desc + DescPayloadWord * w);
             nuint last = first + count * w;
             if (last > end || last < first) return found;
-            for (nuint q = first; q < last; q = q + w) found = BlockWordInto(payload, size, q, low, high, max, found);
+            for (nuint q = first; q < last; q = q + w) found = BlockWordInto(payload, size, q, low, high, max, found, true);
             return found;
         }
         nuint map = Sys.ReadAddress(desc + DescRefMapWord * w);
@@ -10697,12 +10787,12 @@ public static class Gc
         {
             nuint bits = Sys.ReadAddress(map + (1 + index / 32) * w) & 0xFFFFFFFF;
             if (((bits >> (int)(index & 31)) & 1) != 0 && payload + (index + 1) * w <= end)
-                found = BlockWordInto(payload, size, payload + index * w, low, high, max, found);
+                found = BlockWordInto(payload, size, payload + index * w, low, high, max, found, true);
         }
         return found;
     }
 
-    static long BlockWordInto(nuint payload, nuint size, nuint q, nuint low, nuint high, long max, long found)
+    static long BlockWordInto(nuint payload, nuint size, nuint q, nuint low, nuint high, long max, long found, bool described)
     {
         nuint word = Sys.ReadAddress(q);
         if (word < low || word >= high) return found;
@@ -10713,6 +10803,25 @@ public static class Gc
             SayNumber("gc refs:   at offset ", q - payload);
             SayNumber("gc refs:   pointing at ", word);
             SayHolderType(payload);
+        }
+        // CUT (CutReferencesInto): a reference by the descriptor's word,
+        // cleared -- a null stored needs no barrier: it points at nothing --
+        // or, a string of the range's own, its slot kept to be given a copy.
+        if (_cutting && described)
+        {
+            nuint[]? moving = _moveSlots;
+            if (moving != null && _moveCount < (nuint)moving.Length && Sys.ReadAddress(word) == _stringVt)
+            {
+                moving[_moveCount] = q;
+                _moveCount = _moveCount + 1;
+                if (found < max) Runtime.WriteLiteral(2, "gc refs:   a string of the range: to be copied\n");
+            }
+            else
+            {
+                Sys.WriteAddress(q, 0);
+                _cut = _cut + 1;
+                if (found < max) Runtime.WriteLiteral(2, "gc refs:   cleared\n");
+            }
         }
         return found + 1;
     }
