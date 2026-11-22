@@ -8712,6 +8712,14 @@ public sealed partial class Binder
            && UserConversion(had, Type.Bool, explicitToo: false) is MethodSymbol toBool
             ? ConvertByOperator(operand, toBool) : had;
 
+    /// <summary>Roslyn's CS8116, at the type: a pattern naming a nullable type, value or reference.</summary>
+    private void NullableTypeInPattern(TypeRef written, Type tested)
+    {
+        Type under = tested.IsNullableValue ? tested.Underlying : tested.AsNonNullable();
+        Error(written,
+            $"CS8116: It is not legal to use nullable type '{under.Shown()}?' in a pattern; use the underlying type '{under.Shown()}' instead.");
+    }
+
     /// <summary>
     /// Whether this is a generic's copy, which C# judged once, over its
     /// parameters: no diagnostic of its own, and a test it can never pass
@@ -19479,6 +19487,7 @@ public sealed partial class Binder
                     if (arm.Type is not null)
                     {
                         Type tested = Resolve(arm.Type, _thisType);
+                        if (arm.Type.NullableInPattern && !InGenericCopy()) NullableTypeInPattern(arm.Type, tested);
 
                         if (tested.Symbol is { } armSymbol)
                         {
@@ -20196,13 +20205,12 @@ public sealed partial class Binder
                 // `o is string?`: a nullable reference type is no type an
                 // object has, and Roslyn refuses it in a type test (CS8650);
                 // `o is int?` asks for a boxed int, and is allowed.
-                // `x is int? y`, `o is string? s`: no pattern names a nullable
-                // type (CS8116), value or reference.
-                if (isx.Written && isx.Binding is not null && isx.Type.Nullable && !InGenericCopy())
+                // `x is int? y`, `{ P: int? }`, `case int?:`: no pattern names a
+                // nullable type (CS8116), value or reference -- only a bare
+                // `x is int?` type test may.
+                if (isx.Type.NullableInPattern && !(isx.Written && isx.Binding is null) && !InGenericCopy())
                 {
-                    Type under = tested.IsNullableValue ? tested.Underlying : tested.AsNonNullable();
-                    Error(isx.Type.Line > 0 ? isx.Type : isx,
-                        $"CS8116: It is not legal to use nullable type '{under.Shown()}?' in a pattern; use the underlying type '{under.Shown()}' instead.");
+                    NullableTypeInPattern(isx.Type, tested);
                 }
                 if (isx.Written && isx.Binding is null && isx.Type.Nullable && tested.IsReference && !tested.IsNullableValue && !InGenericCopy())
                 {
@@ -20222,7 +20230,7 @@ public sealed partial class Binder
                         _r.NullablePatterns.Add(isx);
                         _r.BoxedBindings.Add(isx);
                     }
-                    else if (!tested.IsError)
+                    else if (!tested.IsError && !isx.Type.NullableInPattern)
                     {
                         Error(isx, $"a '{operand}' can only match its held '{operand.Underlying}' value");
                     }

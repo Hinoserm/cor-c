@@ -161,6 +161,13 @@ public sealed class TypeRef : Node
     public int InnerNullable { get => _rare?.InnerNullable ?? 0; init { if (value != 0) Rare.InnerNullable = value; } }
 
     /// <summary>
+    /// A '?' a pattern's type took where `? a : b` could not begin (Parser's
+    /// closingMark): no pattern names a nullable type (Roslyn's CS8116,
+    /// Binder), and only a bare `x is int?` type test may.
+    /// </summary>
+    public bool NullableInPattern { get => _rare?.NullableInPattern ?? false; set { if (value) Rare.NullableInPattern = true; else if (_rare is not null) _rare.NullableInPattern = false; } }
+
+    /// <summary>
     /// What a type-context or dictionary entry stands for when it is not the
     /// type's descriptor: "context", the token a static member of that
     /// instantiation is handed (Lowering.ContextToken). Never merged with a
@@ -307,4 +314,5 @@ internal sealed class TypeRefRare
     public int CanonWhole;
     public string? MadeFor;
     public string? Qualifier;
+    public bool NullableInPattern;
 }

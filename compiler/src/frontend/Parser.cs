@@ -4958,6 +4958,7 @@ public sealed class Parser
         }
 
         int stars = 0;
+        bool patternMark = false;
         int rank = 0;
 
         // WHICH SIDE THE QUESTION MARK CAME DOWN ON, not merely that one did.
@@ -4999,12 +5000,16 @@ public sealed class Parser
             // So is one with a name after it that ends there -- `x is int? y;`,
             // `F(x is int? y, …)` -- a pattern Roslyn then refuses (CS8116,
             // Binder); before `&&` it is still `? a : b`, as Roslyn reads it.
+            // `case int?:` too, which `? a : b` cannot be, and a name before
+            // an arm's `when` (`int? w when …`), as Roslyn reads them.
             bool closingMark = !allowNullable && rank == 0 && stars == 0 && At(Tok.Question)
                                && (Ahead().Kind is Tok.RParen or Tok.RBracket or Tok.RBrace or Tok.Comma or Tok.Semi
-                                      or Tok.AndAnd or Tok.OrOr or Tok.Eq or Tok.NotEq or Tok.End
-                                   || Ahead().Kind == Tok.Ident && Ahead(2).Kind is Tok.RParen or Tok.Comma or Tok.Semi);
+                                      or Tok.AndAnd or Tok.OrOr or Tok.Eq or Tok.NotEq or Tok.Colon or Tok.End
+                                   || Ahead().Kind == Tok.Ident && (Ahead(2).Kind is Tok.RParen or Tok.Comma or Tok.Semi
+                                                                    || Ahead(2).Kind == Tok.Ident && Ahead(2).Text == "when"));
             if ((allowNullable || elementMark || closingMark) && At(Tok.Question))
             {
+                patternMark |= closingMark;
                 _i++;
 
                 if (rank == 0)
@@ -5047,6 +5052,9 @@ public sealed class Parser
         };
 
         type.Arguments.AddRange(bare.Args);
+        // A '?' read as the type's in a pattern (closingMark): Roslyn's
+        // CS8116 everywhere but a bare type test (Binder).
+        if (patternMark) type.NullableInPattern = true;
         return type;
     }
 
@@ -6613,6 +6621,9 @@ public sealed class Parser
                     try
                     {
                         parsed = ParseTypeRef();
+                        // A '?' an arm's type took is a pattern's too: no
+                        // pattern names a nullable type (CS8116, Binder).
+                        if (parsed.Nullable) parsed.NullableInPattern = true;
                     }
                     catch (Exception)
                     {

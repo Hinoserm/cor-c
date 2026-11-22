@@ -1,0 +1,24 @@
+// test: nullable_type_in_any_pattern_refused
+// expect-compile-error: (17,39): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+// expect-compile-error: (18,38): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+// expect-compile-error: (20,45): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+// expect-compile-error: (21,51): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+//
+// A nullable type in any pattern -- a property's, a tuple's, an arm's with
+// a guard, a case label's -- is refused (CS8116, at the type), as Roslyn
+// refuses it; only the bare type test `o is int? && z` may name one, and
+// `b ? x is int? : x` is that test inside a conditional. From .NET 10
+// (probe ~/tmp/dn/patnull).
+
+using System;
+sealed class Box { public int? P; }
+static class Program
+{
+    static bool C(Box b) => b is { P: int? };
+    static bool D(object o) => o is (int?, string);
+    static bool E(object o, bool z) => o is int? && z;
+    static string F(object o) => o switch { int? w when w > 0 => "f", _ => "g" };
+    static string G(object o) { switch (o) { case int?: return "d"; default: return "e"; } }
+    static object H(bool b, object x) => b ? x is int? : x;
+    static int Main() { return 0; }
+}

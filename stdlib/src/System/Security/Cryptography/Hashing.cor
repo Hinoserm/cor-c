@@ -1233,14 +1233,21 @@ public class HMAC : KeyedHashAlgorithm
     {
         byte[] inside = _inner.HashAndReset();
         HashAlgorithm outer = HashAlgorithmName.Make(_algorithm);
-        outer.Append(_outPad, 0, _outPad.Length);
-        outer.Append(inside, 0, inside.Length);
-        byte[] made = outer.HashAndReset();
-        // What it held of the key's outer pad started again by the reset,
-        // its copy of the result wiped; the inner hash too.
-        outer.Dispose();
-        for (int i = 0; i < inside.Length; i++) inside[i] = 0;
-        return made;
+        try
+        {
+            outer.Append(_outPad, 0, _outPad.Length);
+            outer.Append(inside, 0, inside.Length);
+            return outer.HashAndReset();
+        }
+        finally
+        {
+            // The outer hash let go: its state of the key's outer pad was
+            // started again by the reset, and Dispose wipes the copy of the
+            // result it kept. This copy of the inner result wiped too (the
+            // inner hash keeps its own until HMAC's Dispose).
+            outer.Dispose();
+            for (int i = 0; i < inside.Length; i++) inside[i] = 0;
+        }
     }
 }
 
