@@ -3297,6 +3297,18 @@ public sealed partial class Binder
         foreach (var key in _constantDeclarations.Keys.ToList())
             EvaluateOwnConstant(key.Owner, key.Name);
 
+        // THE TYPES EVERY BOX'S AND THE STRING'S DESCRIPTOR NAMES, asked for by
+        // name so that every unit has them before a slot is numbered: a unit's
+        // library declarations arrive as its source names them, and a kernel
+        // unit that named none of them made a b_System_Int32 with no ValueType
+        // in its display and no IConvertible in its slots -- another unit's
+        // was the other, and the link refused the two (Lowering.BoxBases,
+        // ConvertibleSlots).
+        FindMadeType("ValueType", out _);
+        FindMadeType("Enum", out _);
+        FindMadeType("IConvertible", out _);
+        FindMadeType("BoxedConvertible", out _);
+
         // Interface methods get slot numbers FIRST, from one program-wide
         // counter. A call through an interface has no idea which class it will
         // land on, so the slot has to mean the same thing in every class that
@@ -13767,6 +13779,20 @@ public sealed partial class Binder
             case "GetName" when rest.Count == 1:
             case "IsDefined" when rest.Count == 1:
             {
+                // OVER `typeof(E)` THE VALUE IS AN OBJECT, as C# binds it:
+                // answered here only where .NET's answer is the table's -- E's
+                // own value, or for GetName any integer, for IsDefined E's
+                // underlying one exactly -- and anything else is the library's
+                // (Enum.GetName(Type, object)), which refuses as .NET refuses.
+                if (skip == 1)
+                {
+                    Type given = CheckQuietly(rest[0]);
+                    bool own = ReferenceEquals(given.AsNonNullable().Symbol, chosen) && !given.IsNullableValue;
+                    bool number = given.IsInteger && given.Symbol is null && !given.IsNullableValue && !given.IsPointer
+                                  && (named.Name == "GetName" || given.Prim == chosen.EnumUnderlying);
+                    if (given.IsError || !own && !number) return null;
+                }
+
                 Type had = CheckExpr(rest[0]);
 
                 if (!had.IsError && !ReferenceEquals(had.Symbol, chosen) && !had.IsInteger)
@@ -23482,6 +23508,7 @@ public sealed partial class Binder
         }
 
         List<MethodSymbol> group = MethodsOn(owner, m.Name);
+        if (m.Name == "GetValues" && owner.IsEnumClass) _r.EnumValuesOverType = true;
 
         // OBJECT'S OWN STAY IN THE GROUP beside a type's overloads of the
         // name, as C#'s member lookup has them (12.5): a record that writes

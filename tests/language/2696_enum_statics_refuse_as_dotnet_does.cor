@@ -1,0 +1,58 @@
+// test: enum_statics_refuse_as_dotnet_does
+// expect-exit: 0
+// expect-output:
+// True
+// ArgumentException: Enum underlying type and the object must be same type or object must be a String. Type passed in was 'System.Int64'; the enum underlying type was 'System.Int32'.
+// ArgumentException: Enum underlying type and the object must be same type or object must be a String. Type passed in was 'System.Byte'; the enum underlying type was 'System.Int32'.
+// ArgumentException: Enum underlying type and the object must be same type or object must be a String. Type passed in was 'System.Char'; the enum underlying type was 'System.Int32'.
+// InvalidOperationException: Unknown enum type.
+// ArgumentException: Object must be the same type as the enum. The type passed in was 'Other'; the enum type was 'Color'.
+// InvalidOperationException: Unknown enum type.
+// Green
+// Green
+// <null>
+// 1
+// 66
+// ArgumentException: Enum underlying type and the object must be same type or object. Type passed in was 'System.Int64'; the enum underlying type was 'System.Int32'.
+// ArgumentException: Object must be the same type as the enum. The type passed in was 'Other'; the enum type was 'Color'.
+// 5
+// InvalidCastException: Invalid cast from 'Enum' to 'DateTime'.
+// InvalidCastException: Invalid cast from 'Enum' to 'DateTime'.
+// 6
+//
+// WHAT System.Enum's STATICS TAKE AND REFUSE OVER typeof(E), AS .NET 10:
+// GetName and ToObject any integer, a char, a bool, another enum's value;
+// IsDefined and Format only E's own value or its underlying integer exactly
+// (ArgumentException in .NET's words), a bool or a double "Unknown enum
+// type". The compiler answers only the cases the table answers as .NET
+// does (Binder.EnumStatic); the rest are the library's (Enum.Exact, Bits).
+// And an enum through Convert: ToDecimal its number, ToDateTime refused
+// as 'Enum' -- once an endless recursion through the box's IConvertible.
+using System;
+enum Color { Red, Green = 5, Blue }
+enum Other { X = 5 }
+static class P
+{
+    static void T(Func<object?> f) { try { Console.WriteLine(f() ?? "<null>"); } catch (Exception e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); } }
+    static void Main()
+    {
+        T(() => Enum.IsDefined(typeof(Color), 5));
+        T(() => Enum.IsDefined(typeof(Color), 5L));
+        T(() => Enum.IsDefined(typeof(Color), (byte)5));
+        T(() => Enum.IsDefined(typeof(Color), 'a'));
+        T(() => Enum.IsDefined(typeof(Color), true));
+        T(() => Enum.IsDefined(typeof(Color), Other.X));
+        T(() => Enum.IsDefined(typeof(Color), 2.5));
+        T(() => Enum.GetName(typeof(Color), 5L));
+        T(() => Enum.GetName(typeof(Color), Other.X));
+        T(() => Enum.GetName(typeof(Color), 'a'));
+        T(() => Enum.ToObject(typeof(Color), true));
+        T(() => Enum.ToObject(typeof(Color), 'B'));
+        T(() => Enum.Format(typeof(Color), 5L, "G"));
+        T(() => Enum.Format(typeof(Color), Other.X, "G"));
+        T(() => Convert.ToDecimal(Color.Green));
+        T(() => Convert.ToDateTime(Color.Green));
+        T(() => ((IConvertible)Color.Green).ToDateTime(null));
+        T(() => Convert.ChangeType(Color.Blue, typeof(decimal)));
+    }
+}

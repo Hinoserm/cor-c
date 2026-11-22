@@ -3013,7 +3013,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToBoolean(vdecimal); }
         if (value is DateTime vdatetime) { return ToBoolean(vdatetime); }
         if (value.GetType().IsEnum) { return ToBoolean(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToBoolean(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToBoolean(provider); }
         throw NotConvertible(value);
     }
 
@@ -3058,7 +3058,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToChar(vdecimal); }
         if (value is DateTime vdatetime) { return ToChar(vdatetime); }
         if (value.GetType().IsEnum) { return ToChar(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToChar(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToChar(provider); }
         throw NotConvertible(value);
     }
 
@@ -3099,7 +3099,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToSByte(vdecimal); }
         if (value is DateTime vdatetime) { return ToSByte(vdatetime); }
         if (value.GetType().IsEnum) { return ToSByte(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToSByte(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToSByte(provider); }
         throw NotConvertible(value);
     }
 
@@ -3140,7 +3140,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToByte(vdecimal); }
         if (value is DateTime vdatetime) { return ToByte(vdatetime); }
         if (value.GetType().IsEnum) { return ToByte(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToByte(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToByte(provider); }
         throw NotConvertible(value);
     }
 
@@ -3181,7 +3181,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToInt16(vdecimal); }
         if (value is DateTime vdatetime) { return ToInt16(vdatetime); }
         if (value.GetType().IsEnum) { return ToInt16(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToInt16(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToInt16(provider); }
         throw NotConvertible(value);
     }
 
@@ -3222,7 +3222,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToUInt16(vdecimal); }
         if (value is DateTime vdatetime) { return ToUInt16(vdatetime); }
         if (value.GetType().IsEnum) { return ToUInt16(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToUInt16(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToUInt16(provider); }
         throw NotConvertible(value);
     }
 
@@ -3263,7 +3263,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToInt32(vdecimal); }
         if (value is DateTime vdatetime) { return ToInt32(vdatetime); }
         if (value.GetType().IsEnum) { return ToInt32(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToInt32(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToInt32(provider); }
         throw NotConvertible(value);
     }
 
@@ -3304,7 +3304,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToUInt32(vdecimal); }
         if (value is DateTime vdatetime) { return ToUInt32(vdatetime); }
         if (value.GetType().IsEnum) { return ToUInt32(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToUInt32(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToUInt32(provider); }
         throw NotConvertible(value);
     }
 
@@ -3345,7 +3345,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToInt64(vdecimal); }
         if (value is DateTime vdatetime) { return ToInt64(vdatetime); }
         if (value.GetType().IsEnum) { return ToInt64(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToInt64(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToInt64(provider); }
         throw NotConvertible(value);
     }
 
@@ -3386,7 +3386,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToUInt64(vdecimal); }
         if (value is DateTime vdatetime) { return ToUInt64(vdatetime); }
         if (value.GetType().IsEnum) { return ToUInt64(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToUInt64(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToUInt64(provider); }
         throw NotConvertible(value);
     }
 
@@ -3427,7 +3427,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToSingle(vdecimal); }
         if (value is DateTime vdatetime) { return ToSingle(vdatetime); }
         if (value.GetType().IsEnum) { return ToSingle(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToSingle(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToSingle(provider); }
         throw NotConvertible(value);
     }
 
@@ -3468,7 +3468,7 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToDouble(vdecimal); }
         if (value is DateTime vdatetime) { return ToDouble(vdatetime); }
         if (value.GetType().IsEnum) { return ToDouble(EnumUnderlying(value)); }
-        if (value is IConvertible convertible) { return convertible.ToDouble(provider); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToDouble(provider); }
         throw NotConvertible(value);
     }
 
@@ -3511,7 +3511,8 @@ public static class Convert {
         if (value is double vdouble) { return ToDecimal(vdouble); }
         if (value is decimal vdecimal) { return vdecimal; }
         if (value is DateTime vdatetime) { return ToDecimal(vdatetime); }
-        if (value is IConvertible convertible) { return convertible.ToDecimal(provider); }
+        if (value.GetType().IsEnum) { return ToDecimal(EnumUnderlying(value)); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToDecimal(provider); }
         throw NotConvertible(value);
     }
 
@@ -3603,7 +3604,8 @@ public static class Convert {
         if (value is float) { throw Cast("Single", "DateTime"); }
         if (value is double) { throw Cast("Double", "DateTime"); }
         if (value is decimal) { throw Cast("Decimal", "DateTime"); }
-        if (value is IConvertible convertible) { return convertible.ToDateTime(provider); }
+        if (value.GetType().IsEnum) { throw Cast("Enum", "DateTime"); }
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToDateTime(provider); }
         throw NotConvertible(value);
     }
 
@@ -22442,9 +22444,10 @@ public abstract class ValueType
 /// .NET's System.Enum: what every boxed enum is, between its own type and
 /// ValueType. Its instance members read the box they are called on -- the
 /// integer in it by the box's kind (Runtime.BoxKind) -- and its name
-/// through the box's own ToString. The statics that list an enum's members
-/// are the compiler's (Binder.EnumStatic): the members exist where the
-/// enum is compiled.
+/// through the box's own ToString. Its statics are the compiler's where the
+/// enum is written (`typeof(E)`, `<E>`: Binder.EnumStatic) and these below
+/// over a Type in a variable, which read the enum box's record of its
+/// members (Runtime.EnumRecord).
 public abstract class Enum : ValueType, IComparable, IFormattable, IConvertible
 {
     protected Enum() { }
@@ -22523,23 +22526,38 @@ public abstract class Enum : ValueType, IComparable, IFormattable, IConvertible
         }
     }
 
-    // A value given for an enum: one of that enum, or an integer (a char and
-    // a bool as .NET takes them), as its bits. Another enum's value only where
-    // .NET takes its number too (GetName, ToObject, Format), not IsDefined.
-    private static long Bits(Type enumType, object value, string what, bool sameEnum = false) {
+    // A value given for an enum, as its bits, as .NET takes one: GetName and
+    // ToObject any integer, a char, a bool or any enum's value (Bits);
+    // IsDefined and Format only a value of the enum itself or of its
+    // underlying type exactly (Exact) -- IsDefined a name too.
+    private static long Bits(Type enumType, object value, string what) {
         if (value == null) { throw new ArgumentNullException(what); }
-        if (value.GetType().IsEnum) {
-            if (sameEnum && value.GetType() != enumType) {
-                throw new ArgumentException("Object must be the same type as the enum. The type passed in was '" + String.TypeText(value.GetType().FullName) + "'; the enum type was '" + String.TypeText(enumType.FullName) + "'.");
-            }
-            return Number(value);
-        }
+        if (value.GetType().IsEnum) { return Number(value); }
         if (value is char ch) { return ch; }
         if (value is bool flag) { return flag ? 1 : 0; }
         if (value is sbyte || value is byte || value is short || value is ushort || value is int || value is uint || value is long || value is ulong) {
             return Number(value);
         }
         throw new ArgumentException("The value passed in must be an enum base or an underlying type for an enum, such as an Int32.", what);
+    }
+
+    private static long Exact(Type enumType, object value, bool orString) {
+        if (value == null) { throw new ArgumentNullException("value"); }
+        Type given = value.GetType();
+        if (given.IsEnum) {
+            if (given != enumType) {
+                throw new ArgumentException("Object must be the same type as the enum. The type passed in was '" + String.TypeText(given.FullName) + "'; the enum type was '" + String.TypeText(enumType.FullName) + "'.");
+            }
+            return Number(value);
+        }
+        if (!(value is char || value is sbyte || value is byte || value is short || value is ushort || value is int || value is uint || value is long || value is ulong)) {
+            throw new InvalidOperationException("Unknown enum type.");
+        }
+        Type underlying = GetUnderlyingType(enumType);
+        if (given != underlying) {
+            throw new ArgumentException("Enum underlying type and the object must be same type or object" + (orString ? " must be a String" : "") + ". Type passed in was '" + String.TypeText(given.FullName) + "'; the enum underlying type was '" + String.TypeText(underlying.FullName) + "'.");
+        }
+        return Number(value);
     }
 
     /// The enum's names, in the order of their values.
@@ -22550,9 +22568,12 @@ public abstract class Enum : ValueType, IComparable, IFormattable, IConvertible
         return copy;
     }
 
-    /// Its values, as an array of the enum: Color[] for Color.
+    /// Its values, as an array of the enum: Color[] for Color. (Its array's
+    /// descriptor is in the record wherever this is called: Lowering's
+    /// EnumArraysAsked.)
     public static Array GetValues(Type enumType) {
         Members(enumType, out _, out _, out long[] values, out _, out nuint arrayDesc);
+        if (arrayDesc == 0) { throw new InvalidOperationException("Enum.GetValues: this image has no array of '" + String.TypeText(enumType.FullName) + "'."); }
         return (Array)Runtime.NewIntegerArray(arrayDesc, values);
     }
 
@@ -22583,7 +22604,7 @@ public abstract class Enum : ValueType, IComparable, IFormattable, IConvertible
             for (int i = 0; i < names.Length; i++) { if (names[i] == name) { return true; } }
             return false;
         }
-        return Runtime.EnumLabel(names, values, Bits(enumType, value, "value", sameEnum: true)) != null;
+        return Runtime.EnumLabel(names, values, Exact(enumType, value, true)) != null;
     }
 
     /// A value of the enum, boxed, from a number.
@@ -22601,7 +22622,7 @@ public abstract class Enum : ValueType, IComparable, IFormattable, IConvertible
     /// number, X the number in hexadecimal.
     public static string Format(Type enumType, object value, string format) {
         if (format == null) { throw new ArgumentNullException("format"); }
-        return ((Enum)ToObject(enumType, Bits(enumType, value, "value"))).ToString(format);
+        return ((Enum)ToObject(enumType, Exact(enumType, value, false))).ToString(format);
     }
 
     /// The value a name, names joined by commas, or a number is.

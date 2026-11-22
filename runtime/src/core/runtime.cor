@@ -5296,7 +5296,8 @@ public static partial class Runtime
         return Sys.ObjectAt(at)!;
     }
 
-    /// A BOX OF A TYPE ONLY RUN TIME KNOWS -- an enum's, or an integer's --
+    /// A BOX OF A TYPE ONLY RUN TIME KNOWS -- an enum's, or an integer's of a
+    /// fixed width, not a native one --
     /// holding `bits` as its kind keeps it (Enum.ToObject): the descriptor's
     /// size of object, its table, the integer in its payload.
     public static object NewIntegerBox(nuint desc, long bits)
@@ -5311,7 +5312,9 @@ public static partial class Runtime
             case 1: case 2: Sys.Write8(at + payload, unchecked((byte)bits)); break;
             case 3: case 4: Sys.Write16(at + payload, unchecked((ushort)bits)); break;
             case 5: case 6: Sys.Write32(at + payload, unchecked((uint)bits)); break;
-            default: Sys.Write64(at + payload, unchecked((ulong)bits)); break;
+            case 7: case 8: Sys.Write64(at + payload, unchecked((ulong)bits)); break;
+            // Only an enum's or an integer's of a fixed width (BoxKind 1-8).
+            default: throw new ArgumentException("A box of an integer or an enum is wanted.");
         }
         return Sys.ObjectAt(at)!;
     }

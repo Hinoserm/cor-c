@@ -304,8 +304,8 @@ public sealed partial class Lowering
     /// <summary>
     /// The descriptor of a bare `new object()`: an object with nothing in it
     /// but its header, what C# programs make to lock on. It derives from
-    /// nothing and implements nothing, so like a box it has a display of
-    /// itself alone and an empty interface list, and every virtual slot is
+    /// nothing and implements nothing, so it has a display of itself alone
+    /// and an empty interface list, and every virtual slot is
     /// object's own -- ToString answers "System.Object", as .NET does.
     /// Structural and shared, so every unit's bare object is one type.
     /// </summary>
@@ -421,11 +421,12 @@ public sealed partial class Lowering
         item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes(DescriptorName(name)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
-        // The display and the interface list a class descriptor has, at their
-        // smallest: a box derives from object and implements nothing, so the
-        // display holds only itself and the interface array is the terminator
-        // alone. They exist because `is` and `as` read them without knowing
-        // what they are looking at.
+        // The display and the interface list a class descriptor has: a box's
+        // display is its bases (ValueType, and Enum for an enum's: BoxBases)
+        // and itself, and its interface array lists what a boxed struct
+        // implements -- a number's system interfaces are answered by flags
+        // instead (BoxedFaces). They exist because `is` and `as` read them
+        // without knowing what they are looking at.
         DataItem display = new("bd_" + Safe(key), new byte[(bases.Count + 1) * w]) { ReadOnly = true, Exported = false };
         for (int b = 0; b < bases.Count; b++) display.Relocs.Add(new DataReloc(b * w, bases[b], 0));
         display.Relocs.Add(new DataReloc(bases.Count * w, sym, 0));
@@ -462,7 +463,7 @@ public sealed partial class Lowering
             DataItem record = new("be_" + Safe(key), words) { ReadOnly = true, Exported = false };
             record.Relocs.Add(new DataReloc(0, EnumNamesTable(enumType), 0));
             record.Relocs.Add(new DataReloc(w, EnumValuesTable(enumType), 0));
-            record.Relocs.Add(new DataReloc(3 * w, SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
+            if (EnumArraysAsked) record.Relocs.Add(new DataReloc(3 * w, SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
             _m.Data.Add(record);
             item.Relocs.Add(new DataReloc(DescElement * w, record.Name, 0));
         }
@@ -523,6 +524,17 @@ public sealed partial class Lowering
     }
 
     // ---- the system interfaces of a boxed number -----------------------------
+
+    /// <summary>
+    /// WHETHER AN ENUM'S BOX NAMES ITS ARRAY'S DESCRIPTOR (the record's word
+    /// 3): what Enum.GetValues(Type) makes, and what every boxed enum dragged
+    /// in with its array's interface stubs otherwise. In a closed world only
+    /// where some code names that method (BindResult.EnumValuesOverType), and
+    /// always in an open one, where another unit's copy of the descriptor must
+    /// be these bytes too.
+    /// </summary>
+    private bool EnumArraysAsked
+        => !ClosedWorld || _library || PartOfALibrary || SharedObject || Dynamic || _b.EnumValuesOverType;
 
     /// <summary>
     /// The class descriptors a box's display holds before its own: the
@@ -872,14 +884,18 @@ public sealed partial class Lowering
     /// <summary>
     /// IConvertible's slots in a box's or a string's table (BoxedFaces), each
     /// the library's BoxedConvertible routine of its member's name: a static
-    /// whose first parameter is the object, where the interface's `this` is.
-    /// Empty when the library declares no IConvertible.
+    /// whose first parameter is the object, where the interface's `this` is
+    /// -- and its struct result's buffer after its parameters, as the
+    /// interface call passes it. Compiled when the slot is read (SlotNamed):
+    /// one string literal does not bring in Convert. Empty when the library
+    /// declares no IConvertible; a member with no slot or no routine is the
+    /// library's fault, said so.
     /// </summary>
     private List<(int, string)> ConvertibleSlots()
     {
         List<(int, string)> slots = new();
-        if (!_b.Types.TryGetValue("IConvertible", out TypeSymbol? face) || face.Kind != TypeKind.Interface
-            || !_b.Types.TryGetValue("BoxedConvertible", out TypeSymbol? routines))
+        if (!_b.Types.TryGetValue("IConvertible", out TypeSymbol? face) || face.Kind != TypeKind.Interface || !IsLibrary(face)
+            || !_b.Types.TryGetValue("BoxedConvertible", out TypeSymbol? routines) || !IsLibrary(routines))
         {
             return slots;
         }
@@ -890,9 +906,11 @@ public sealed partial class Lowering
             foreach (var ((template, a, m), numbered) in _b.InterfaceFamilySlots)
                 if (a == 0 && m == member && !template.Contains('.') && BoxedFaces.Plain(template) == "IConvertible") { slot = numbered; break; }
             MethodSymbol? routine = routines.Methods.FirstOrDefault(r => r.Static && r.Name == asked.Name && r.Params.Count == asked.Params.Count + 1);
-            if (slot is not int at || routine is null) continue;
-            Require(routine);
-            slots.Add((at, CallLabel(routine)));
+            if (slot is not int at || routine is null)
+            {
+                throw new InvalidOperationException($"IConvertible.{asked.Name}: the class library has no {(slot is null ? "slot" : "BoxedConvertible routine")} for it");
+            }
+            slots.Add((at, SlotNamed(at, CallLabel(routine), () => Require(routine))));
         }
         return slots;
     }

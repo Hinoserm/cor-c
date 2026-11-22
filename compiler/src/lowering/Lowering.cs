@@ -3635,7 +3635,11 @@ public sealed partial class Lowering
         for (int i = 0; i < slots; i++)
         {
             int at = _t.DescriptorBytes + i * w;
-            string? target = SlotTarget(t, i, table[i]);
+            // ValueType's and Enum's fill nothing, object's stubs neither:
+            // Enum's compare slot found Enum.CompareTo (OwnCompare), and with
+            // it every integer's box its Number unboxes, in any program that
+            // boxed an enum.
+            string? target = t.IsBoxBase ? null : SlotTarget(t, i, table[i]);
 
             if (target is not null)
             {
