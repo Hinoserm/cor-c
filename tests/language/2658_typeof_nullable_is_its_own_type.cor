@@ -17,16 +17,23 @@
 // True
 // System.Double
 // True False
+// False
+// Nullable`1 Nullable`1
+// True
+// True
+// True
 // 5 7 5 False
 //
 // typeof(T?) is Nullable`1 of T, a type of its own as in .NET: not equal to
-// typeof(T), named System.Nullable`1[...], a value type; the same through a
-// generic method's T, while a boxed int? is still an int's box.
-// Nullable.GetUnderlyingType answers at run time from the descriptor, and
-// the dynamic binder converts to a T? as to its T.
+// typeof(T), named System.Nullable`1[...], a value type -- of a generic
+// struct and a tuple too; the same through a generic method's T, while a
+// boxed int? is still an int's box. Nullable.GetUnderlyingType answers at
+// run time from the descriptor, and of typeof(Nullable<int>) spelt out; the
+// dynamic binder converts to a T? as to its T.
 // Output from .NET 10 (probe ~/tmp/dn/nullabletype).
 
 using System;
+using System.Collections.Generic;
 
 enum Shade : byte { Dark, Light }
 struct Point { public int X; public Point(int x) { X = x; } }
@@ -58,6 +65,11 @@ static class Program
         Console.WriteLine(Nullable.GetUnderlyingType(typeof(double?)));
         object asObject = typeof(int?);
         Console.WriteLine(asObject.Equals(typeof(int?)) + " " + asObject.Equals(typeof(int)));
+        Console.WriteLine(typeof(KeyValuePair<int, string>?) == typeof(KeyValuePair<int, string>));
+        Console.WriteLine(typeof(KeyValuePair<int, string>?).Name + " " + typeof((int, long)?).Name);
+        Console.WriteLine(Nullable.GetUnderlyingType(typeof(Nullable<int>)) == typeof(int));
+        Console.WriteLine(Under(typeof((int, long)?)) == typeof((int, long)));
+        Console.WriteLine(Of<KeyValuePair<int, string>?>() == typeof(KeyValuePair<int, string>?));
         dynamic five = 5;
         int? n = five;
         dynamic big = 7L;

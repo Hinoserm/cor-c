@@ -7198,8 +7198,12 @@ public sealed partial class Binder
             // finally is open (a generic copy made from inside one) starts
             // outside every finally.
             EnterFunctionBody(lambda: false);
+            _sawRefLocal = false;
             CheckBlock(md.Body);
             LeaveFunctionBody();
+            // A ref local in an async method or an iterator: no use across a suspension (CS9217).
+            if (_sawRefLocal && (_method.Async || md.Body.Iterator)) CheckRefLocalsAcrossSuspensions(md.Body);
+            _sawRefLocal = false;
             // Its calls resolved: CS8763 where it is marked [DoesNotReturn]
             // and can return, as C# has it.
             CheckDoesNotReturn(md);
@@ -10986,8 +10990,13 @@ public sealed partial class Binder
         _lambdaDepth++;
         EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
         HashSet<LocalSym>? assignedBeforeBody = AssignedBefore(lam);
+        bool outerSawRefLocal = _sawRefLocal;
+        _sawRefLocal = false;
         try { Look(lam, closureReturns, final: true); }
         finally { _lambdaDepth--; LeaveFunctionBody(); AssignedAfter(assignedBeforeBody); }
+        // An async or iterator lambda or local function's own ref locals: no use across a suspension (CS9217).
+        if (_sawRefLocal && lam.BlockBody is { } lambdaBody && (lam.Async || lambdaBody.Iterator)) CheckRefLocalsAcrossSuspensions(lambdaBody);
+        _sawRefLocal = outerSawRefLocal;
         _r.FrameSize[body] = _nextSlot;
         PopScope();
         PopScope();
@@ -17064,16 +17073,15 @@ public sealed partial class Binder
                 when !FindType("Enum", out _) && (!BindingProgramCode() || NamespaceInScope("System")) && EnumStatic(asked, wanted) is Type answered:
                 return answered;
 
-            // Nullable.GetUnderlyingType OF A WRITTEN TYPE, answered here: the
-            // T of `typeof(T?)`, and null of any other -- a nullable's Type is
-            // its underlying type's at run time, so only the spelling tells.
+            // Nullable.GetUnderlyingType OF A WRITTEN `typeof(T?)`, answered
+            // here: its T, with no call. Any other Type -- `typeof(Nullable<int>)`
+            // spelt out, one read from a variable -- is asked at run time,
+            // where a Nullable`1 descriptor names its T (NullableDescriptor).
             case CallExpr { Args.Count: 1, Target: MemberExpr { Name: "GetUnderlyingType", Target: NameExpr { Name: "Nullable" } } } underlyingOf
-                when underlyingOf.Args[0] is TypeOfExpr { Type: var spelt }
+                when underlyingOf.Args[0] is TypeOfExpr { Type: { Nullable: true, ArrayRank: 0 } spelt }
                      && !(FindType("Nullable", out TypeSymbol? userNullable) && userNullable?.Decl is { } ownNullable && IsProgramSource(ownNullable)):
             {
-                Expr answer = spelt.Nullable && spelt.ArrayRank == 0
-                    ? new TypeOfExpr { Type = new TypeRef { Name = spelt.Name, Arguments = spelt.Args, Line = spelt.Line, Col = spelt.Col }, Line = underlyingOf.Line, Col = underlyingOf.Col }
-                    : new CastExpr { Type = new TypeRef { Name = "Type", Nullable = true, Line = underlyingOf.Line, Col = underlyingOf.Col }, Operand = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = underlyingOf.Line, Col = underlyingOf.Col }, Line = underlyingOf.Line, Col = underlyingOf.Col };
+                Expr answer = new TypeOfExpr { Type = new TypeRef { Name = spelt.Name, Arguments = spelt.Args, Line = spelt.Line, Col = spelt.Col }, Line = underlyingOf.Line, Col = underlyingOf.Col };
                 _r.Rewrites[underlyingOf] = answer;
                 return CheckExpr(answer);
             }
@@ -19843,6 +19851,29 @@ public sealed partial class Binder
                 // A TYPE ALREADY REFUSED (CS0122, CS0246) has said so once.
                 if (named.IsError) return Type.Error;
 
+                // NULLABLE<T> IS A TYPE OF ITS OWN, as .NET's Nullable`1:
+                // `typeof(int?)` is not `typeof(int)`, and is named
+                // System.Nullable`1[[System.Int32, ...]] -- though a boxed
+                // int? is an int's box, and its GetType typeof(int), as in
+                // .NET. Asked before a type argument only run time knows: a
+                // struct handed to a shared copy (CanonParam) is T, and its
+                // Nullable is no T's. A Nullable of a SHARED struct -- one
+                // whose box only run time names, by the copy's context
+                // (SharedStructUse, StructTypeOfs) or handed in -- can have
+                // no descriptor made ahead: refused, not answered as T's.
+                // (No source of the kernel's or the library's asks one.)
+                if (named.IsNullableValue && named.ArrayRank == 0 && named.PointerDepth == 0)
+                {
+                    Type under = named.Underlying;
+                    if (SharedStructUse(under) || under.CanonParam <= -2)
+                    {
+                        Error(to, $"typeof of '{named}', a Nullable of a struct whose type only run time knows in this shared code, is not supported yet");
+                        return Type.Error;
+                    }
+                    _r.NullableTypeOfs[to] = under;
+                    return Type.TypeHandle;
+                }
+
                 // A TYPE ARGUMENT ONLY RUN TIME KNOWS (Type.CanonParam): a
                 // shared method copy's, handed in as a hidden argument, or a
                 // shared class copy's where no mark reads it (ICanonSlot) --
@@ -19854,25 +19885,6 @@ public sealed partial class Binder
                     _r.RunTimeTypeOfs[to] = named;
                     // Where nothing is handed: the array as the copy spells it.
                     if (named.IsArray) _r.ArrayTypeOfs[to] = named.Element!;
-                    return Type.TypeHandle;
-                }
-
-                // NULLABLE<T> IS A TYPE OF ITS OWN, as .NET's Nullable`1:
-                // `typeof(int?)` is not `typeof(int)`, and is named
-                // System.Nullable`1[[System.Int32, ...]] -- though a boxed
-                // int? is an int's box, and its GetType typeof(int), as in
-                // .NET. A struct shared over this code's parameters has a box
-                // only its context names (StructTypeOfs), and no Nullable of
-                // it can be made ahead: refused, rather than answered as T's.
-                if (named.IsNullableValue && named.ArrayRank == 0 && named.PointerDepth == 0)
-                {
-                    Type under = named.Underlying;
-                    if (under.Symbol is { Kind: TypeKind.Struct } && under.UseArgs is { Count: > 0 })
-                    {
-                        Error(to, $"typeof of '{named}', a Nullable of a struct over this shared code's type parameters, is not supported yet");
-                        return Type.Error;
-                    }
-                    _r.NullableTypeOfs[to] = under;
                     return Type.TypeHandle;
                 }
 
@@ -22948,9 +22960,10 @@ public sealed partial class Binder
 
             // A NULLABLE'S T, the library's own (Nullable.GetUnderlyingType):
             // T's descriptor where the Type is Nullable`1 of it, null for any
-            // other (Lowering.IntrinsicMember). No program's: .NET's Type
-            // has no such member.
-            if (m.Name == "NullableUnderlying$" && target.Prim == Prim.Type && !BindingProgramCode())
+            // other (Lowering.IntrinsicMember). No program's, nor a copy made
+            // of a program's generic: .NET's Type has no such member.
+            if (m.Name == "NullableUnderlying$" && target.Prim == Prim.Type && !BindingProgramCode()
+                && (_scope ?? _thisType)?.Decl is { } libraryOwner && (libraryOwner.File == "<prelude>" || ClassLibrarySide(libraryOwner)))
             {
                 return Type.TypeHandle.AsNullable();
             }

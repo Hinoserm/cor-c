@@ -393,8 +393,8 @@ public static class Interlocked
     }
 
     // .NET's rule for a T that is no reference: a primitive or an enum, the
-    // width it is held in one an atomic has. A Nullable is neither, though
-    // its Type here answers for the value inside it; its zero is null.
+    // width it is held in one an atomic has. A Nullable is neither: its Type
+    // is Nullable`1, no primitive, and its zero is null.
     static int Width<T>()
     {
         if (default(T) == null || !typeof(T).IsPrimitive && !typeof(T).IsEnum)

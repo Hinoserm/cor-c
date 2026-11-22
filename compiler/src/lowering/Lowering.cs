@@ -2056,7 +2056,8 @@ public sealed partial class Lowering
                       DescRefMap = 8, DescGcFlags = 9, DescElement = 10,
                       // An interface's word 8, which only a class's holds a map in: its identity record (ShapeRecord).
                       DescShape = 8,
-                      // A class's word 10, as an array's is its element's; 11 is its owned-field map (Escape).
+                      // A class's word 10, as an array's is its element's and a
+                      // Nullable`1's its T's (TypeFlagNullable); 11 is its owned-field map (Escape).
                       DescTypeContext = 10;
 
     // DescFlags beyond a sequence's 1 and a string's 2: what Type answers.
@@ -2091,8 +2092,9 @@ public sealed partial class Lowering
     private const int TypeFlagMulticastObject = 0x1000000;
 
     // A NULLABLE'S DESCRIPTOR (NullableDescriptor): its element word is T's
-    // own, which Nullable.GetUnderlyingType reads (Runtime.NullableUnderlying).
-    internal const int TypeFlagNullable = 0x2000000;
+    // own, which Nullable.GetUnderlyingType reads (the library-only Type
+    // member NullableUnderlying$, Lowering.IntrinsicMember).
+    private const int TypeFlagNullable = 0x2000000;
 
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
