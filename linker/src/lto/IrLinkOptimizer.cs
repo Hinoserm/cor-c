@@ -488,6 +488,29 @@ public static class IrLinkOptimizer
             body = null;
             return false;
         }
+        // THE UNITS THE ARGUMENT FACTS CHANGE (ArgumentSolver), made again
+        // whatever else they gain: one that defines a function whose
+        // parameters went, which was given a way in, versions or its struct's
+        // words, and one that calls one -- by name, or through a slot that
+        // lost arguments. A closed image prunes every unit, and so made every
+        // one again; a module's link does not, and e1000phy.cor, which
+        // defines E1000Phy.Read and called it only where its own inliner had
+        // taken the calls, was left as its compile made it: no way in
+        // `$entry$2`, which e1000.cor's calls now named, and a parameter
+        // dropped at one end of a call and not the other.
+        HashSet<string>? factFunctions = null, factSlots = null;
+        if (argumentFacts is { IsEmpty: false } changedArguments)
+        {
+            factFunctions = new(changedArguments.Dropped.Keys.Concat(changedArguments.Entries.Keys).Concat(changedArguments.Versions.Keys)
+                .Concat(changedArguments.Splits.Keys), StringComparer.Ordinal);
+            factSlots = new(changedArguments.DroppedSlots.Keys.Concat(changedArguments.UnsetSlots.Keys), StringComparer.Ordinal);
+        }
+        // A call through a slot is in no body's summary (IrArchiveEntry.Calls
+        // holds calls by name): where any slot lost arguments, every unit is
+        // made again, as a closed image's are.
+        bool ArgumentsTouch(IrArchive archive, HashSet<string> definedHere)
+            => factFunctions is not null && (factSlots!.Count > 0 || definedHere.Overlaps(factFunctions)
+               || archive.Entries.Values.Any(entry => entry.Calls.Any(factFunctions.Contains)));
         if (enabled)
             for (int index = 0; index < inputs.Count; index++)
             {
@@ -572,7 +595,7 @@ public static class IrLinkOptimizer
                         imports.Add((call, provider, body)); used += body.Length;
                         (read ??= new(StringComparer.Ordinal)).Add(call);
                     }
-                bool planned = imports.Count > 0 || prune || gains;
+                bool planned = imports.Count > 0 || prune || gains || ArgumentsTouch(archive, defined);
                 // THE ALLOCATION EVERY `new` BECOMES, for each unit made again
                 // here (AllocatorFastPaths): no record calls it -- the calls
                 // are made as the unit is regenerated -- so it is brought in
