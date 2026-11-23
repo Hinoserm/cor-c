@@ -622,17 +622,34 @@ public static class ProjectCompile
         // THE UNITS THAT ARE STALE, asked here on `threads` threads at once
         // (Stale reads only files and opens its own catalog, UnitDependencies),
         // and the current ones claimed before any worker starts -- never asked
-        // again; a stale one is asked once more by the worker that takes it. None: nothing to do. One: the
-        // parent compiles it, its session warm -- a process for one unit is a
-        // start and a cold session for nothing (an edit of one file). Two or
-        // more: worker processes, as many as there are stale units, threads
-        // and free memory for, two gigabytes each (WorkerSpaces) -- one at the
-        // least, so units never share a heap however little memory there is.
-        // Never from a hosted `dotnet corc.dll`, whose path is the host's.
+        // again; a stale one is asked once more by the worker that takes it.
+        //
+        // None stale: nothing to do. One: the parent compiles it, its session
+        // warm -- a process for one unit is a start and a cold session for
+        // nothing (an edit of one file). Two or more: worker processes, as
+        // many as there are stale units, threads and free memory for, two
+        // gigabytes each (WorkerSpaces) -- one at the least, so units never
+        // share a heap however little memory there is. Never from a hosted
+        // `dotnet corc.dll`, whose path is the host's.
         bool mayUseProcesses = pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers;
-        bool[] staleAt = mayUseProcesses
-            ? rest.AsParallel().AsOrdered().WithDegreeOfParallelism(threads).Select(unit => Stale(unit) is not null).ToArray()
-            : Array.Empty<bool>();
+        // The first asked alone, so the kernel index's stamp (DeclarationStamp,
+        // a pass over the whole index) is made once and found by the rest,
+        // not made by `threads` of them at once; any failure but memory's
+        // makes a unit stale, a worker compiling it and writing its receipt
+        // again, never the build's end. threads > 1 here (mayUseProcesses).
+        bool StaleOrUnreadable(Unit unit)
+        {
+            try { return Stale(unit) is not null; }
+            catch (Exception failure) when (failure is not OutOfMemoryException) { return true; }
+        }
+        bool[] staleAt = Array.Empty<bool>();
+        if (mayUseProcesses)
+        {
+            staleAt = new bool[rest.Length];
+            staleAt[0] = StaleOrUnreadable(rest[0]);
+            bool[] others = rest.Skip(1).AsParallel().AsOrdered().WithDegreeOfParallelism(threads).Select(StaleOrUnreadable).ToArray();
+            Array.Copy(others, 0, staleAt, 1, others.Length);
+        }
         int staleCount = staleAt.Count(stale => stale);
         int processes = mayUseProcesses ? Math.Min(Math.Min(threads, staleCount), Corsac.Projects.ProjectCommand.WorkerSpaces()) : 0;
         if (mayUseProcesses && staleCount == 0)
