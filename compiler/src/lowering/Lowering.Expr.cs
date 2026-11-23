@@ -6110,18 +6110,48 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// The division itself: the machine's. On a 32-bit target a 64-bit one is
-    /// the backend's inline where it can be (Select.SelectDivide64) -- by a
-    /// constant, a multiplication by its reciprocal; by a value widened from
-    /// 32 bits, DIV once or twice, as Linux's div_u64_rem and MSVC's
-    /// _aulldiv do -- and the runtime's helper only for a divisor that may
-    /// need all 64 bits, where the processor has no instruction for it.
+    /// The division itself: the machine's. On a 32-bit target a 64-bit one
+    /// asks at run time whether the divisor is its low 32 bits extended, and
+    /// divides inline where it is (Select.SelectDivide64: DIV once or twice,
+    /// as Linux's div_u64_rem and MSVC's _aulldiv do; a constant, once the
+    /// test folds, a multiplication by its reciprocal). The divisor the inline
+    /// division is given is that extension, made here and defined once, so
+    /// the backend's proof of its width holds whatever else the function
+    /// assigns. NOT decided by scanning the function as lowered so far: a
+    /// local's or a parameter's later assignments are not there yet, and a
+    /// loop's `divisor /= 10` was taken for its first value.
     /// </summary>
     private VReg MachineDivide(Node at, Opcode dop, VReg l, VReg r, Type operand)
     {
-        if (l.Type == IrType.I64 && !_t.NativeI64 && NarrowDivisor(r, dop is Opcode.DivS or Opcode.RemS) is Operand inline)
-            return _e.Binary(dop, R(l), inline, IrType.I64);
+        bool signedDivision = dop is Opcode.DivS or Opcode.RemS;
         if (l.Type == IrType.I64 && !_t.NativeI64)
+        {
+            // ASKED AT RUN TIME: a divisor whose 64 bits are its 32 sign- or
+            // zero-extended -- nearly every one -- is divided inline (DIV
+            // once or twice); only a true 64-bit divisor calls the runtime,
+            // whose quotient then fits 32 bits and takes one DIV and a
+            // correction (Runtime.UDivLong). MSVC's _aulldiv makes the same
+            // test, behind a call; here it is at the division.
+            VReg answer = _f.NewReg(IrType.I64, "quotient64");
+            Block fits = _f.NewBlock("div64fits"), wide = _f.NewBlock("div64wide"), joined = _f.NewBlock("div64done");
+            VReg low = _e.Unary(Opcode.Trunc64, R(r), IrType.I32);
+            VReg narrowed = _e.Unary(signedDivision ? Opcode.SExt32 : Opcode.ZExt32, R(low), IrType.I64);
+            _e.Branch(_e.Binary(Opcode.Eq, R(narrowed), R(r), IrType.I32), fits, wide);
+            _e.SetBlock(fits);
+            _e.CopyTo(answer, R(_e.Binary(dop, R(l), R(narrowed), IrType.I64)));
+            _e.Jump(joined);
+            _e.SetBlock(wide);
+            _e.CopyTo(answer, R(RuntimeDivide(at, dop, l, r)));
+            _e.Jump(joined);
+            _e.SetBlock(joined);
+            return answer;
+        }
+        return Canonical(_e.Binary(dop, l, r), operand);
+    }
+
+    /// <summary>A 64-bit division by the runtime's helper, for a divisor of more than 32 bits.</summary>
+    private VReg RuntimeDivide(Node at, Opcode dop, VReg l, VReg r)
+    {
         {
             string helper = dop switch
             {
@@ -6130,7 +6160,6 @@ public sealed partial class Lowering
             MethodSymbol? h = RequireRuntime(at, helper, 2, "64-bit division");
             return h is null ? l : _e.Call(CallLabel(h), IrType.I64, R(l), R(r))!;
         }
-        return Canonical(_e.Binary(dop, l, r), operand);
     }
 
     /// <summary>
@@ -6173,32 +6202,6 @@ public sealed partial class Lowering
         VReg result = _e.Binary(Opcode.Add, low, _e.Binary(Opcode.Shl, R(cross), thirtyTwo, IrType.I64));
         VReg carry = _e.Binary(Opcode.LtU, result, low);
         return (result, _e.Binary(Opcode.Or, both, _e.Binary(Opcode.Or, crossHigh, carry)));
-    }
-
-    /// <summary>
-    /// A 64-bit divisor the backend divides by inline, as the operand to give
-    /// it: a constant other than zero (the constant itself, so no pass need
-    /// propagate it), or a register every definition of which is a widening
-    /// from 32 bits -- ZExt32, or SExt32 for a signed division, where the
-    /// magnitude still fits -- whose own definition the backend reads again.
-    /// Null for anything else: the runtime's helper.
-    /// </summary>
-    private Operand? NarrowDivisor(VReg r, bool signed, int depth = 0)
-    {
-        Instr? only = null;
-        foreach (Block block in _f.Blocks)
-            foreach (Instr instr in block.Instrs)
-                if (instr.Dest == r)
-                {
-                    if (only is not null) return null;
-                    only = instr;
-                }
-        if (only is null) return null;
-        if (only.Op == Opcode.Copy && only.Operands[0] is ImmOperand constant)
-            return constant.Value == 0 ? null : new ImmOperand(constant.Value, IrType.I64);
-        if (only.Op == Opcode.Copy && only.Operands[0] is RegOperand { Reg: { } source } && depth < 4)
-            return NarrowDivisor(source, signed, depth + 1) is Operand inner ? inner is ImmOperand ? inner : R(r) : null;
-        return only.Op == Opcode.ZExt32 || signed && only.Op == Opcode.SExt32 ? R(r) : null;
     }
 
     /// <summary>C# throws on integer division by zero; the machine would trap, but a trap is not an exception.</summary>

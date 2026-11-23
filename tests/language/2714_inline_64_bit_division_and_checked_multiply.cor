@@ -5,6 +5,7 @@
 // signed constants bad 0
 // unsigned by 32 bits bad 0
 // signed by 32 bits bad 0
+// reassigned and wide divisors bad 0 1234567890123456789
 // checked int bad 0
 // checked long bad 0
 // 0
@@ -80,6 +81,9 @@ static class Program
         U(a, 4096, a / 4096, a % 4096);
         U(a, 1UL << 40, a / (1UL << 40), a % (1UL << 40));
         U(a, 0x7FFFFFFFFFFFFFFF, a / 0x7FFFFFFFFFFFFFFF, a % 0x7FFFFFFFFFFFFFFF);
+        U(a, 0xFFFFFFFFFFFFFFFE, a / 0xFFFFFFFFFFFFFFFE, a % 0xFFFFFFFFFFFFFFFE);
+        U(a, 0xFFFFFFFFFFFFFFFF, a / 0xFFFFFFFFFFFFFFFF, a % 0xFFFFFFFFFFFFFFFF);
+        U(a, 0x8000000000000005, a / 0x8000000000000005, a % 0x8000000000000005);
         U(a, 1, a / 1, a % 1);
     }
 
@@ -109,6 +113,35 @@ static class Program
         // long.MinValue / -1 throws, as .NET has it.
         if (d != -1 || a != long.MinValue) S(a, d, a / d, a % d);
         if (d > 0) { uint u = (uint)d; S(a, u, a / u, a % u); }
+    }
+
+    // A divisor assigned again after the division, in a loop or on one
+    // path: never its first value baked in.
+    static string Digits(ulong n)
+    {
+        string s = "";
+        ulong divisor = 1000000000000000000;
+        bool started = false;
+        while (divisor > 0)
+        {
+            ulong digit = n / divisor;
+            n = n % divisor;
+            if (digit != 0 || started || divisor == 1) { s = s + (char)('0' + (int)digit); started = true; }
+            divisor /= 10;
+        }
+        return s;
+    }
+
+    static ulong OnePath(ulong a, ulong d, bool c)
+    {
+        if (c) d = 10;
+        return a / d;
+    }
+
+    static long OnePathSigned(long a, long d, bool c)
+    {
+        if (c) d = -10;
+        return a % d;
     }
 
     static void CheckedInt(int a, int b, uint c, uint d)
@@ -176,6 +209,21 @@ static class Program
         int[] signedNarrow = { 1, 2, -2, 3, -3, 10, -1000000000, int.MaxValue, int.MinValue, -1, 1000000000, -7 };
         foreach (ulong a in all) foreach (int d in signedNarrow) { SignedBy32((long)a, d); SignedBy32(-(long)(a >> 1), d); }
         Console.WriteLine("signed by 32 bits bad " + bad); bad = 0;
+
+        if (OnePath(1000, 7, false) != 142) bad++;
+        if (OnePath(1000, 7, true) != 100) bad++;
+        if (OnePathSigned(-1000, 7, false) != -6) bad++;
+        if (OnePathSigned(1003, 7, true) != 3) bad++;
+        foreach (ulong a in all)
+            foreach (ulong b in all)
+                if (b != 0) U(a, b, a / b, a % b);
+        foreach (ulong a in all)
+            foreach (ulong b in all)
+            {
+                long sa = (long)a, sb = (long)b;
+                if (sb != 0 && !(sb == -1 && sa == long.MinValue)) S(sa, sb, sa / sb, sa % sb);
+            }
+        Console.WriteLine("reassigned and wide divisors bad " + bad + " " + Digits(1234567890123456789)); bad = 0;
 
         int[] ints = { 0, 1, -1, 2, -2, 46340, 46341, -46341, 65535, 65536, int.MaxValue, int.MinValue, 1000000, -1000000, 3 };
         foreach (int a in ints) foreach (int b in ints) CheckedInt(a, b, (uint)a, (uint)b);

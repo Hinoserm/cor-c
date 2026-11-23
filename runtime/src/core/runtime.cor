@@ -6105,31 +6105,35 @@ public static partial class Runtime
             ulong unused;
             return UDivShort(a, (uint)b, out unused);
         }
+        return UDivLong(a, b);
+    }
 
-        // Shifting a 64-bit value by 64 is not defined, and b << 32 etc. above
-        // avoided it by construction; here `shift` is at most 63 because a >= b
-        // means b has no more leading zeros than a.
-        int shift = Clz64(b) - Clz64(a);
-        ulong d = b << shift;
-        ulong q = 0;
-
-        while (shift >= 0)
+    /// A DIVISOR OF MORE THAN 32 BITS, so a quotient of at most 32: one
+    /// 64-by-32 DIV of the dividend's top by the divisor's top 32 bits,
+    /// normalised, and a correction of at most one (Hacker's Delight, figure
+    /// 9-5, divDu; MSVC's _aulldiv takes the same shift). It was a loop of up
+    /// to 64 shifts, compares and subtractions, a bit of quotient each.
+    private static ulong UDivLong(ulong a, ulong b)
+    {
+        int n = Clz32((uint)(b >> 32));                 // 0..31: the top word is not zero
+        uint top = (uint)((b << n) >> 32);              // at least 2^31
+        ulong half = a >> 1;                            // its top word below `top`: the quotient fits
+        uint unused;
+        uint q1 = DivLU((uint)(half >> 32), (uint)half, top, out unused);
+        ulong q = ((ulong)q1 << n) >> 31;
+        if (q != 0)
         {
-            q = q << 1;
-            if (a >= d)
-            {
-                a = a - d;
-                q = q | (ulong)1;
-            }
-            d = d >> 1;
-            shift = shift - 1;
+            q = q - 1;
+        }
+        if (a - q * b >= b)
+        {
+            q = q + 1;
         }
         return q;
     }
 
-    /// Unsigned remainder: the same walk, keeping what is left instead of the
-    /// bits taken. Written out rather than as a - b * UDiv(a, b) to save the
-    /// multiply, which on a 486 is not free either.
+    /// Unsigned remainder: by the 32-bit path, or what the long division
+    /// leaves.
     // PUBLIC: the half every image's compiled code calls, its front inlined
     // there, a program's or a module's (Inline.CrossesImage).
     public static ulong URem(ulong a, ulong b)
@@ -6148,20 +6152,7 @@ public static partial class Runtime
             UDivShort(a, (uint)b, out left);
             return left;
         }
-
-        int shift = Clz64(b) - Clz64(a);
-        ulong d = b << shift;
-
-        while (shift >= 0)
-        {
-            if (a >= d)
-            {
-                a = a - d;
-            }
-            d = d >> 1;
-            shift = shift - 1;
-        }
-        return a;
+        return a - UDivLong(a, b) * b;
     }
 
     /// The magnitude of a signed value as an unsigned one. Negating

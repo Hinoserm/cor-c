@@ -2353,7 +2353,13 @@ internal sealed partial class Selector
         if (d is ImmOperand constant)
         {
             long c = constant.Value;
-            if (c == 0) return false;
+            if (c == 0)
+            {
+                // Never run: the division-by-zero test before it throws. A
+                // constant zero reaches here only through folding.
+                Mov(Lo(i.Dest!), Imm(0)); Mov(Hi(i.Dest!), Imm(0));
+                return true;
+            }
             (MReg alo, MReg ahi) = Copied(a);
             if (!signed)
             {
@@ -2497,11 +2503,34 @@ internal sealed partial class Selector
             }
             return (qlo, qhi, rlo, rhi);
         }
-        if (CpuModel.Scalar && c <= uint.MaxValue)
+        if (c > (1UL << 63))
         {
-            // THE 386 AND THE 486 DIVIDE: MUL there takes 9 to 42 clocks by
-            // the multiplier's bits and DIV 38 to 40 (Intel 486 manual; Agner
-            // Fog), so the magic's four MULs cost more than DIV's one or two.
+            // ABOVE 2^63 the quotient is 0 or 1: n >= c, by the borrow of
+            // n - c. No magic number of the usual form exists for some of
+            // them (0xFFFFFFFFFFFFFFFE).
+            MReg tl = Temp(), th = Temp(), below = Temp();
+            Mov(below, Imm(0));                               // SBB reads it; any value does
+            Mov(tl, lo); Mov(th, hi);
+            Emit(MOp.Sub, tl, Imm(unchecked((int)(uint)c))); Emit(MOp.Sbb, th, Imm(unchecked((int)(uint)(c >> 32))));
+            Emit(MOp.Sbb, below, below);                      // -1 where n < c
+            Mov(qlo, below); Emit(MOp.Add, qlo, Imm(1)); Mov(qhi, Imm(0));
+            if (wantRemainder)
+            {
+                // n where n < c, n - c otherwise.
+                MReg keep = Temp(), keepHigh = Temp();
+                Mov(rlo, tl); Mov(rhi, th);
+                Mov(keep, lo); Emit(MOp.Xor, keep, tl); Emit(MOp.And, keep, below); Emit(MOp.Xor, rlo, keep);
+                Mov(keepHigh, hi); Emit(MOp.Xor, keepHigh, th); Emit(MOp.And, keepHigh, below); Emit(MOp.Xor, rhi, keepHigh);
+            }
+            return (qlo, qhi, rlo, rhi);
+        }
+        if ((CpuModel.Scalar || CpuModel.P5) && c <= uint.MaxValue)
+        {
+            // THE 386, THE 486 AND THE PENTIUM DIVIDE: MUL there takes 9 to
+            // 42 clocks by the multiplier's bits, 10 unpaired on a Pentium,
+            // against DIV's 38 to 41 (Intel 486 and Pentium manuals; Agner
+            // Fog), so the magic's four MULs -- seven with a remainder -- cost
+            // more than DIV's one or two.
             MReg constant = Temp();
             Mov(constant, Imm(unchecked((int)(uint)c)));
             (MReg dlo, MReg dhi, MReg left) = DivideBy32(lo, hi, constant, false);
