@@ -1656,8 +1656,8 @@ public sealed partial class Binder
     /// the compiler's own block around each body, Parser.ImplicitKind): each
     /// method that needs it, and why -- its own float code or packed
     /// operations, a native that uses the FPU (Sys.CallNativeFloat), an asm
-    /// block's float code (AsmBinding.FloatCode), or a
-    /// call in a loop to one that needs it, so that the state is kept once
+    /// block's float code (AsmBinding.FloatCode), or a call that every pass
+    /// of a loop makes (EveryIteration) to one that needs it, so that the state is kept once
     /// around the loop and not on every call (the callee runs inside,
     /// Lowering's $inside copy) -- another image's too, the kernel's or a
     /// module's this one is built on, that exports such a copy
@@ -1813,9 +1813,12 @@ public sealed partial class Binder
     /// <summary>
     /// WHAT A LOOP CALLS ON EVERY ITERATION, for keeping the state around it
     /// (PackedStateOf): its condition and steps, and the statements of its
-    /// body run on each pass -- into blocks, a nested loop, a try's body and
-    /// finally -- but not a call behind an if's branch, a switch's arm, a
-    /// catch, or ?:, &&, || and ?? (ConditionalSites). A call some passes make
+    /// body run on each pass -- into blocks, a do's body, a try's body and
+    /// finally, as far as the first statement that may leave the pass (a
+    /// break, continue, return, throw or goto, or an if or switch holding one)
+    /// -- but not a call behind an if's branch, a switch's arm, a catch, a
+    /// nested while's, for's or foreach's body (which may run no times), or
+    /// ?:, &&, || and ?? (ConditionalSites). A call some passes make
     /// is not "in a loop": TCP's every read (Tcp.RecvOwned) calls its
     /// streamed copy under a condition inside `while (left > 0)`, once or not
     /// at all, and keeping the state around the loop made every read of every
@@ -1830,30 +1833,73 @@ public sealed partial class Binder
             foreach ((Node site, MethodSymbol callee) in DirectCalls(e, owner))
                 if (!maybe.Contains(site)) found.Add(callee);
         }
-        void Pass(Stmt? s)
+        // Whether a statement may leave the pass (or the loop, or the method)
+        // before the statements after it: those then run on some passes only.
+        static bool MayLeave(Stmt? s) => s switch
+        {
+            null => false,
+            BreakStmt or ContinueStmt or ReturnStmt or ThrowStmt or GotoStmt or GotoCaseStmt or LabeledStmt => true,
+            Block b => b.Statements.Any(MayLeave),
+            IfStmt i => MayLeave(i.Then) || MayLeave(i.Else),
+            SwitchStmt w => w.Cases.Any(c => c.Body.Any(MayLeave)),
+            TryStmt t => MayLeave(t.Body) || t.Catches.Any(c => MayLeave(c.Body)) || MayLeave(t.Finally),
+            // A nested loop's own break and continue are its own; a return,
+            // a throw or a goto inside it leaves this pass too.
+            WhileStmt or DoStmt or ForStmt or ForeachStmt => LeavesOut(s),
+            _ => false,
+        };
+        static bool LeavesOut(Stmt? s) => s switch
+        {
+            null => false,
+            ReturnStmt or ThrowStmt or GotoStmt or GotoCaseStmt or LabeledStmt => true,
+            Block b => b.Statements.Any(LeavesOut),
+            IfStmt i => LeavesOut(i.Then) || LeavesOut(i.Else),
+            SwitchStmt w => w.Cases.Any(c => c.Body.Any(LeavesOut)),
+            TryStmt t => LeavesOut(t.Body) || t.Catches.Any(c => LeavesOut(c.Body)) || LeavesOut(t.Finally),
+            WhileStmt w => LeavesOut(w.Body), DoStmt d => LeavesOut(d.Body),
+            ForStmt f => LeavesOut(f.Body), ForeachStmt e => LeavesOut(e.Body),
+            _ => false,
+        };
+        // Each statement of a pass in turn, as far as the first that may leave
+        // it (its own calls counted: they run before it leaves), returning
+        // whether the rest still runs.
+        bool Pass(Stmt? s)
         {
             switch (s)
             {
-                case null: return;
-                case Block block: foreach (Stmt one in block.Statements) Pass(one); return;
-                case ExprStmt or LocalDecl or ReturnStmt: Run(s); return;
-                case IfStmt choice: Run(choice.Cond); return;
-                case SwitchStmt choice: Run(choice.Subject); return;
-                case WhileStmt inner: Run(inner.Cond); Pass(inner.Body); return;
-                case DoStmt inner: Run(inner.Cond); Pass(inner.Body); return;
-                case ForStmt inner: Pass(inner.Init); Run(inner.Cond); foreach (Expr step in inner.Step) Run(step); Pass(inner.Body); return;
-                case ForeachStmt inner: Run(inner.Sequence); Pass(inner.Body); return;
-                case TryStmt guarded: Pass(guarded.Body); Pass(guarded.Finally); return;
-                // Anything else is counted as not on every pass: keeping the
-                // state in the callee costs a save per call, never a wrong one.
-                default: return;
+                case null: return true;
+                case Block block:
+                    foreach (Stmt one in block.Statements) if (!Pass(one)) return false;
+                    return true;
+                case ExprStmt or LocalDecl: Run(s); return true;
+                case ReturnStmt or ThrowStmt: Run(s); return false;
+                case IfStmt choice: Run(choice.Cond); return !MayLeave(choice);
+                case SwitchStmt choice: Run(choice.Subject); return !MayLeave(choice);
+                // A nested while, for or foreach may run its body no times: its
+                // condition, steps and sequence only. A do runs its body once.
+                case WhileStmt inner: Run(inner.Cond); return !MayLeave(inner);
+                case DoStmt inner: { bool on = Pass(inner.Body); Run(inner.Cond); return on && !MayLeave(inner); }
+                case ForStmt inner: Pass(inner.Init); Run(inner.Cond); return !MayLeave(inner);
+                case ForeachStmt inner: Run(inner.Sequence); return !MayLeave(inner);
+                case TryStmt guarded:
+                {
+                    bool on = Pass(guarded.Body);
+                    Pass(guarded.Finally);
+                    return on && !MayLeave(guarded);
+                }
+                // Anything else is counted as not on every pass, and may leave:
+                // keeping the state in the callee costs a save per call, never
+                // a wrong one.
+                default: return false;
             }
         }
         switch (loop)
         {
+            // The steps and the condition after a pass run only when the pass
+            // went through to its end: counted only then.
             case WhileStmt w: Run(w.Cond); Pass(w.Body); break;
-            case DoStmt d: Run(d.Cond); Pass(d.Body); break;
-            case ForStmt f: Run(f.Cond); foreach (Expr step in f.Step) Run(step); Pass(f.Body); break;
+            case DoStmt d: if (Pass(d.Body)) Run(d.Cond); break;
+            case ForStmt f: Run(f.Cond); if (Pass(f.Body)) foreach (Expr step in f.Step) Run(step); break;
             case ForeachStmt each: Pass(each.Body); break;
         }
         return found;

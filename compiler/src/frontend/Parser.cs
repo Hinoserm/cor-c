@@ -5917,8 +5917,9 @@ public sealed class Parser
     /// at a time, which keep no state -- where saving the thread's state
     /// (FNSTENV, FXSAVE: tens to a hundred and more cycles) would cost more
     /// than the packed loop wins (Sys.PackedSmall, by --cpu). Read off the
-    /// body's first loop at its own level, times each loop inside it down to
-    /// the innermost that holds the packed operations: `for (int i = S; i < E; i += C)`
+    /// body's first loop at its own level -- times, in 64 bits, each loop
+    /// inside it down to the innermost that holds the packed operations
+    /// (InnerPackedLoop) -- each read as `for (int i = S; i < E; i += C)`
     /// (or i++, or <=), or `while (E >= K)` (or >); E the method's integer
     /// parameters (_bodyParams), integer literals and + - * << >> of them --
     /// nothing that runs code at the method's entry, where the guard is
@@ -5979,8 +5980,14 @@ public sealed class Parser
             {
                 (Expr? more, long by) = Measure(inner);
                 if (more is null || by <= 0) return null;
+                // IN 64 BITS, the product of two bounds: in their own int it
+                // wraps (a huge job judged small) or, the method `checked`,
+                // throws at its entry where no loop of it would have.
+                if (work is not CastExpr { Type.Name: "long" })
+                    work = new CastExpr { Type = new TypeRef { Name = "long", Line = line, Col = col }, Operand = work, Line = line, Col = col };
                 work = new BinaryExpr { Op = BinOp.Mul, Left = work, Right = more, Line = line, Col = col };
-                step = checked(step * by);
+                if (step > long.MaxValue / by) return null;
+                step *= by;
             }
             return new CallExpr
             {
@@ -6004,6 +6011,10 @@ public sealed class Parser
             null => Array.Empty<Stmt>(),
             Block b => b.Statements.SelectMany(Under),
             IfStmt i => Under(i.Then).Concat(Under(i.Else)),
+            // A lock or a using is a try by now (ParseUsing, ParseLock).
+            TryStmt t => Under(t.Body).Concat(t.Catches.SelectMany(c => Under(c.Body))).Concat(Under(t.Finally)),
+            SwitchStmt w => w.Cases.SelectMany(c => c.Body.SelectMany(Under)),
+            LabeledStmt l => Under(l.Body),
             _ => new[] { s },
         };
         foreach (Stmt s in Under(body))
@@ -6023,14 +6034,22 @@ public sealed class Parser
         ExprStmt e => HoldsPacked(e.Expr),
         LocalDecl d => HoldsPacked(d.Init),
         IfStmt i => HoldsPacked(i.Cond) || HoldsPacked(i.Then) || HoldsPacked(i.Else),
-        ForStmt f => HoldsPacked(f.Body) || HoldsPacked(f.Cond),
+        ForStmt f => HoldsPacked(f.Body) || HoldsPacked(f.Cond) || HoldsPacked(f.Init) || f.Step.Any(HoldsPacked),
         WhileStmt w => HoldsPacked(w.Body) || HoldsPacked(w.Cond),
         DoStmt d => HoldsPacked(d.Body) || HoldsPacked(d.Cond),
-        ForeachStmt e => HoldsPacked(e.Body),
+        ForeachStmt e => HoldsPacked(e.Body) || HoldsPacked(e.Sequence),
+        TryStmt t => HoldsPacked(t.Body) || t.Catches.Any(c => HoldsPacked(c.Body)) || HoldsPacked(t.Finally),
+        SwitchStmt w => HoldsPacked(w.Subject) || w.Cases.Any(c => c.Body.Any(HoldsPacked)),
+        LabeledStmt l => HoldsPacked(l.Body),
+        ReturnStmt r => HoldsPacked(r.Value),
+        ThrowStmt t => HoldsPacked(t.Value),
         AssignExpr a => HoldsPacked(a.Target) || HoldsPacked(a.Value),
         BinaryExpr b => HoldsPacked(b.Left) || HoldsPacked(b.Right),
         UnaryExpr u => HoldsPacked(u.Operand),
         MemberExpr m => HoldsPacked(m.Target),
+        CastExpr c => HoldsPacked(c.Operand),
+        ConditionalExpr q => HoldsPacked(q.Cond) || HoldsPacked(q.Then) || HoldsPacked(q.Else),
+        IndexExpr x => HoldsPacked(x.Target) || x.Args.Any(HoldsPacked),
         _ => false,
     };
 
