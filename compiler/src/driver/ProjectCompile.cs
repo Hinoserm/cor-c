@@ -619,8 +619,10 @@ public static class ProjectCompile
         // worker, run its 509 units at seven and a half. Each child takes
         // units by claim file (--claim-dir) and a token for each (--worker-
         // pool); entry units, compiled above, are claimed first.
-        // THE UNITS THAT ARE STALE, asked once, here, and the current ones
-        // claimed before any worker starts. None: nothing to do. One: the
+        // THE UNITS THAT ARE STALE, asked here on `threads` threads at once
+        // (Stale reads only files and opens its own catalog, UnitDependencies),
+        // and the current ones claimed before any worker starts -- never asked
+        // again; a stale one is asked once more by the worker that takes it. None: nothing to do. One: the
         // parent compiles it, its session warm -- a process for one unit is a
         // start and a cold session for nothing (an edit of one file). Two or
         // more: worker processes, as many as there are stale units, threads
@@ -628,7 +630,9 @@ public static class ProjectCompile
         // least, so units never share a heap however little memory there is.
         // Never from a hosted `dotnet corc.dll`, whose path is the host's.
         bool mayUseProcesses = pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers;
-        bool[] staleAt = mayUseProcesses ? rest.Select(unit => Stale(unit) is not null).ToArray() : Array.Empty<bool>();
+        bool[] staleAt = mayUseProcesses
+            ? rest.AsParallel().AsOrdered().WithDegreeOfParallelism(threads).Select(unit => Stale(unit) is not null).ToArray()
+            : Array.Empty<bool>();
         int staleCount = staleAt.Count(stale => stale);
         int processes = mayUseProcesses ? Math.Min(Math.Min(threads, staleCount), Corsac.Projects.ProjectCommand.WorkerSpaces()) : 0;
         if (mayUseProcesses && staleCount == 0)
