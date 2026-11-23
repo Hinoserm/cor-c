@@ -2789,7 +2789,9 @@ public sealed class Parser
         foreach (Param p in parameters)
         {
             if (declared.Contains(p.Name) || !Named(p.Name)) continue;
-            kept.Add(new FieldDecl { Name = p.Name, Type = p.Type, Mods = Mods.Private, Line = p.Line, Col = p.Col });
+            // Said where its parameter's name is: the one place Roslyn says
+            // a primary parameter's type, kept or not.
+            kept.Add(new FieldDecl { Name = p.Name, Type = p.Type, Mods = Mods.Private, Line = p.Line, Col = p.Col, NameLine = p.NameLine, NameCol = p.NameCol });
             ctor.Body.WritableStatements.Add(Assign(p.Name, new NameExpr { Name = p.Name, Line = p.Line, Col = p.Col }, p.Line, p.Col));
         }
 
@@ -8189,7 +8191,7 @@ public sealed class Parser
         // `void* F()` returns a pointer: the type then, read as void's is.
         TypeRef? returns = byReference == Mods.None && At(Tok.KwVoid) && Ahead().Kind != Tok.Star && Take(Tok.KwVoid)
                          ? null
-                         : At(Tok.KwVoid) ? VoidType() : ParseTypeRef();
+                         : ParseTypeRef();
 
         string name = Expect(Tok.Ident, "the local function's name").Text;
 

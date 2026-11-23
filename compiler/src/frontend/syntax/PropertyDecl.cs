@@ -5,7 +5,6 @@ public sealed class PropertyDecl : MemberDecl
 {
     public required TypeRef Type { get; init; }
 
-
     /// <summary>
     /// This property came from a record's POSITIONAL LIST rather than from
     /// anybody writing it.

@@ -85,8 +85,10 @@ public abstract class MemberDecl : Node
 
     /// <summary>
     /// Where its name is written, as Roslyn places a diagnostic of its
-    /// declared type (CS9244): Line and Col are its start. 0 where nobody
-    /// wrote it.
+    /// declared type (CS9244): a field's or a property's type, a method's
+    /// result (its parameters keep their own, Param.NameLine); an indexer's
+    /// `this`, a positional record property's record name. Line and Col are
+    /// its start. 0 where nobody wrote it.
     /// </summary>
     public int NameLine { get; set; }
     public int NameCol { get; set; }

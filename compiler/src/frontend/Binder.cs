@@ -1928,11 +1928,23 @@ public sealed partial class Binder
         // `using X = System.Span<int>;`: what the alias names.
         if (file is not null)
             foreach ((string _, string alias, string target) in file.Aliases)
-                if (alias == simple && target.Split(NameParts, StringSplitOptions.RemoveEmptyEntries).Any(refLike.Contains)) return true;
+            {
+                if (alias != simple) continue;
+                // The target whole (`My_Buf`, `System.Span`), then its parts
+                // where it is generic: `Span<int>`.
+                string head = target.Split('<')[0];
+                int lastDot = head.LastIndexOf('.');
+                if (refLike.Contains(lastDot < 0 ? head : head[(lastDot + 1)..])) return true;
+                if (target.IndexOfAny(GenericParts) >= 0 && target.Split(GenericParts, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(part => part.Trim()).Select(part => part.Contains('.') ? part[(part.LastIndexOf('.') + 1)..] : part).Any(refLike.Contains))
+                    return true;
+            }
         foreach (TypeRef a in r.Args) if (NamesRefLike(a, file)) return true;
         if (r.UseArgs is { } kept) foreach (TypeRef a in kept) if (NamesRefLike(a, file)) return true;
         return false;
     }
+
+    private static readonly char[] GenericParts = { '<', '>', ',', '[', ']', '?', '(', ')', ' ' };
 
     private static readonly char[] NameParts = { '.', '$', '_', '`', '<', '>', ',', ' ', '[', ']', '?', '(', ')' };
 
@@ -1957,9 +1969,11 @@ public sealed partial class Binder
     private readonly HashSet<TypeDecl> _templateMembersChecked = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
-    /// A type's fields' and properties' types that hold a ref struct where
-    /// C# allows none: an array of one (CS0611, at the type), a type argument
-    /// (CS9244, at the member's name). Once per declaration.
+    /// A type's declared types that hold a ref struct where C# allows none --
+    /// its fields', properties', indexers', methods' results and every
+    /// parameter's (MemberTypes) -- an array of one (CS0611, at the type),
+    /// a type argument (CS9244, where Roslyn says it: MemberTypes' place,
+    /// a delegate's at the argument). Once per declaration.
     /// </summary>
     private void CheckMemberTypes(TypeDecl d, TypeSymbol owner)
     {
@@ -1975,7 +1989,8 @@ public sealed partial class Binder
                 foreach ((TypeRef declared, int line, int col) in MemberTypes(m))
                 {
                     if (!NamesRefLike(declared, m.Scope ?? d.Scope)) continue;
-                    open ??= OpenNames(m as MethodDecl, d);
+                    // Its own open names: a generic method's are its own.
+                    open = OpenNames(m as MethodDecl, d);
                     _member = m;
                     // At its name; where none was kept (a member the compiler
                     // wrote), at its own start: said either way. A delegate's
@@ -1983,7 +1998,7 @@ public sealed partial class Binder
                     // says them: not moved.
                     _refLikeArgumentAt = d.IsDelegate ? null : new NameExpr { Name = m.Name, Line = line > 0 ? line : m.Line, Col = line > 0 ? col : m.Col };
                     _refLikeMemberType = declared;
-                    try { CheckTemplateType(declared, false, open, owner); }
+                    try { CheckDeclaredType(declared, open, owner); }
                     catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); _quiet = 0; }
                     finally { _refLikeArgumentAt = null; _refLikeMemberType = null; }
                 }
@@ -1991,6 +2006,25 @@ public sealed partial class Binder
         }
         finally { _thisType = thisBefore; _member = memberBefore; }
     }
+
+    /// <summary>
+    /// A declared type, or where it names a type parameter, each argument
+    /// that names none: `Dictionary<T, List<Span<int>>>` has its
+    /// `List<Span<int>>` refused as any closed type is.
+    /// </summary>
+    private void CheckDeclaredType(TypeRef type, HashSet<string> open, TypeSymbol owner)
+    {
+        if (!MentionsAny(type, open))
+        {
+            CheckTemplateType(type, false, open, owner);
+            return;
+        }
+        foreach (TypeRef argument in type.Args) CheckDeclaredType(argument, open, owner);
+    }
+
+    /// <summary>Whether a declared type has a part CheckDeclaredType resolves: closed, and naming a ref struct.</summary>
+    private bool ClosedPartNamesRefLike(TypeRef type, HashSet<string> open, FileScope? file)
+        => !MentionsAny(type, open) ? NamesRefLike(type, file) : type.Args.Any(argument => ClosedPartNamesRefLike(argument, open, file));
 
     /// <summary>
     /// A member's written types and where each is said: a field's (its
@@ -2019,6 +2053,33 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// Whether a refusal is inside one of a type's members' declared types
+    /// that CheckMemberTypes says again: between the type's start and the
+    /// FIRST name declared with it (`T a = ..., b;` shares T, and a's
+    /// initialiser is no part of it).
+    /// </summary>
+    private bool DeclaredTypeHolds(TypeDecl declaring, Node at)
+    {
+        Dictionary<TypeRef, (MemberDecl Member, int Line, int Col)> first = new(ReferenceEqualityComparer.Instance);
+        foreach (MemberDecl member in declaring.Members)
+            foreach ((TypeRef type, int line, int col) in MemberTypes(member))
+                if (!first.TryGetValue(type, out var had) || line > 0 && (had.Line <= 0 || line < had.Line || line == had.Line && col < had.Col))
+                    first[type] = (member, line, col);
+        foreach ((TypeRef type, (MemberDecl member, int line, int col)) in first)
+            if (MemberPassSays(member, declaring, type) && InsideDeclared(type, line, col, at)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Whether CheckMemberTypes says what a member's declared type refuses:
+    /// a written type naming a ref struct and none of the type parameters
+    /// (CheckTemplateType's own test). Only then is the declaration's own
+    /// refusal left to it.
+    /// </summary>
+    private bool MemberPassSays(MemberDecl member, TypeDecl owner, TypeRef type)
+        => type.Written && type.Name is not ("var" or "") && ClosedPartNamesRefLike(type, OpenNames(member as MethodDecl, owner), member.Scope ?? owner.Scope);
+
+    /// <summary>
     /// Whether a node is written inside a declared type: the type itself or
     /// one of its arguments, or anything between its start and the name
     /// declared after it (a tuple's items).
@@ -2026,10 +2087,12 @@ public sealed partial class Binder
     private static bool InsideDeclared(TypeRef declared, int nameLine, int nameCol, Node at)
     {
         if (Within(declared, at)) return true;
-        if (declared.Line <= 0 || nameLine <= 0) return false;
-        bool afterStart = at.Line > declared.Line || at.Line == declared.Line && at.Col >= declared.Col;
-        bool beforeName = at.Line < nameLine || at.Line == nameLine && at.Col < nameCol;
-        return afterStart && beforeName;
+        // Between its start and the first name after it, on its own line
+        // and in its own file: a tuple's items, never a declarator's
+        // initialiser (`T a = ..., b;` ends T at a).
+        if (declared.Line <= 0 || nameLine != declared.Line || at.Line != declared.Line) return false;
+        if (declared.File is { Length: > 0 } typeFile && at.File is { Length: > 0 } atFile && typeFile != atFile) return false;
+        return at.Col >= declared.Col && at.Col < nameCol;
     }
 
     /// <summary>Whether a node is a written type or one of its arguments, at any depth.</summary>
@@ -2041,7 +2104,12 @@ public sealed partial class Binder
         return false;
     }
 
-    /// <summary>Where a type argument's refusal (CS9244) is said instead of at the argument: a member's name.</summary>
+    /// <summary>
+    /// Where a type argument's refusal (CS9244) is said instead of at the
+    /// argument: the place MemberTypes gives (a member's or a parameter's
+    /// name, an indexer's `this`, a positional record's name); null for a
+    /// delegate's, said where written.
+    /// </summary>
     private Node? _refLikeArgumentAt;
 
     /// <summary>The member's type whose refusals move there: only those (_refLikeArgumentAt).</summary>
@@ -2366,7 +2434,7 @@ public sealed partial class Binder
             // by CheckMemberTypes, which checks every type of the program's
             // own: not here too, where it is declared.
             else if (_refLikeMemberType is null && (_declaringMembersOf ?? _thisType?.Decl) is { Specialised: false } declaring && !IsLibraryDecl(declaring)
-                     && declaring.Members.Any(member => MemberTypes(member).Any(t => InsideDeclared(t.Type, t.Line, t.Col, at)))) return;
+                     && DeclaredTypeHolds(declaring, at)) return;
         }
         // In a look, said and taken back with it (Peek): nothing else undone.
         if (_peeking > 0)
@@ -4298,7 +4366,7 @@ public sealed partial class Binder
     /// <summary>The unit's generic types as written, for their templates' written types (CheckBodyWork).</summary>
     private readonly List<TypeDecl> _templateDecls = new();
 
-    /// <summary>The program's own types as written, for their fields' and properties' types (CheckMemberTypes).</summary>
+    /// <summary>The program's own types as written, for their members' declared types (CheckMemberTypes).</summary>
     private readonly List<TypeDecl> _declaredTypes = new();
 
     private void CheckBodyWork()
@@ -4331,7 +4399,8 @@ public sealed partial class Binder
                 finally { _thisType = thisBefore; }
             }
 
-            // EVERY TYPE'S FIELDS AND PROPERTIES, a template's as much as any:
+            // EVERY TYPE'S DECLARED TYPES, a template's as much as any --
+            // fields, properties, indexers, methods' results and parameters:
             // `List<Span<int>> l;` is refused at its name (CS9244), as Roslyn
             // places it, once the copies' arguments are known.
             foreach (TypeDecl d in _declaredTypes)

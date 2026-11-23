@@ -1,0 +1,22 @@
+// test: ref_structs_in_open_and_captured_declarations
+// expect-compile-error: CS9244: The type 'Span<int>' may not be a ref struct or a type parameter allowing ref structs in order to use it as parameter 'T' in the generic type or method 'List<T>'
+//
+// A REF STRUCT INSIDE A DECLARED TYPE THAT NAMES A TYPE PARAMETER, AND ONE
+// CAPTURED: `Dictionary<T, List<Span<int>>>` has its closed part refused at
+// the member's or parameter's name (CS9244); a primary constructor's
+// parameter a body uses is said once, at its name; an alias to a ref struct
+// whose name has an underscore is seen through.
+// The whole list is checked by 2710_ref_structs_in_open_and_captured_declarations.sh.
+using System;
+using System.Collections.Generic;
+using B = My_Buf;
+
+ref struct My_Buf { public int N; }
+class C<T> { Dictionary<T, List<Span<int>>> f; void M(Dictionary<T, List<Span<int>>> x) { } }
+class D(List<Span<int>> q) { int F() => q.Count; }
+class E { List<B> aliased; }
+static class P
+{
+    static List<Span<int>> Make() => null!;
+    static void Main() { }
+}
