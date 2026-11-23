@@ -20,6 +20,13 @@ public static class ProjectCommand
     }
 
     /// <summary>
+    /// How a child compile process ended, from its exit code: above 128 is
+    /// the shell's convention, which .NET follows, for a signal (128 + its
+    /// number) -- the compiler itself exits with 0, 1, 2 or Recycle (75).
+    /// </summary>
+    public static string HowEnded(int code) => code > 128 ? "was killed by signal " + (code - 128) : "exited with code " + code;
+
+    /// <summary>
     /// Whether this compiler can start copies of itself to compile units: not
     /// hosted as `dotnet corc.dll`, whose process path is the host's.
     /// </summary>
@@ -511,8 +518,7 @@ public static class ProjectCommand
                 {
                     ok = false;
                     Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + child.Id + ") "
-                        + (code > 128 ? "was killed by signal " + (code - 128) : "exited with code " + code)
-                        + "; units of it not yet compiled are not built");
+                        + HowEnded(code) + "; units of it not yet compiled are not built");
                 }
             });
             wait.Start();
