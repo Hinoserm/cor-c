@@ -81,8 +81,8 @@ public sealed class TaskExecutor
         Timeout(task);
         if ((string?)task.Attribute("Interactive") is { } interactive && interactive is not ("true" or "false"))
             BuildManifest.Fail(task, "Interactive must be true or false");
-        if ((string?)task.Attribute("Workers") is { } workers && workers is not ("auto" or "1"))
-            BuildManifest.Fail(task, "Workers must be auto or 1");
+        if ((string?)task.Attribute("Workers") is { } workers && workers is not ("auto" or "1" or "budget"))
+            BuildManifest.Fail(task, "Workers must be auto, 1 or budget");
         IncrementalTask.Validate(task);
         if (!int.TryParse((string?)task.Attribute("ExpectedExitCode") ?? "0", out _))
             BuildManifest.Fail(task, "ExpectedExitCode must be an integer");
@@ -149,7 +149,8 @@ public sealed class TaskExecutor
             result = await runner.Run(target.Path, executable, args, directory, environment, Timeout(task), cancel,
                 compile || (string?)task.Attribute("Workers") == "auto",
                 compile ? count => bootstrap ? new[] { "-maxcpucount:" + count } : new[] { "--jobs", count.ToString(CultureInfo.InvariantCulture) } : null,
-                (string?)task.Attribute("Interactive") == "true");
+                (string?)task.Attribute("Interactive") == "true",
+                drawsOwn: (string?)task.Attribute("Workers") == "budget");
             int expected = int.Parse((string?)task.Attribute("ExpectedExitCode") ?? "0", CultureInfo.InvariantCulture);
             bool passed = !result.TimedOut && result.ExitCode == expected;
             string detail = executable + (result.TimedOut ? " timed out" : " exited " + result.ExitCode + ", expected " + expected)

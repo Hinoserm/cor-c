@@ -2,8 +2,8 @@ namespace Corsac.Build;
 
 /// <summary>
 /// `corc build`: runs a corsac.build manifest. One executable holds the
-/// build, the compiler and the linker, so a build no longer starts a process
-/// per source and no longer needs to hand a worker budget between processes.
+/// build, the compiler and the linker; the processes it runs share one worker
+/// budget (WorkerPool), named to manifests as $(WorkerPool).
 /// </summary>
 public static class BuildCommand
 {
@@ -34,11 +34,16 @@ public static class BuildCommand
             // THE BUILD'S WORKER BUDGET (WorkerPool): --jobs tokens every process
             // of the build draws on, the build tool's own tasks included,
             // named to manifests as $(WorkerPool). One directory per build,
-            // gone when it ends.
-            string budget = Path.Combine(manifest.Root, "build", "workers", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // gone when it ends however it ends; those of builds that died
+            // without their cleanup are swept first.
+            string workersRoot = Path.Combine(manifest.Root, "build", "workers");
+            WorkerPool.SweepDead(workersRoot);
+            string budget = Path.Combine(workersRoot, Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
             manifest.UseWorkerPool(budget);
-            ProcessRunner processes = new(options.Jobs, logs, budget);
-            TaskExecutor executor = new(manifest, options, processes, report);
+            using ProcessRunner processes = new(options.Jobs, logs, budget);
+            try
+            {
+                        TaskExecutor executor = new(manifest, options, processes, report);
             foreach (BuildTarget node in graph.Ordered)
             {
                 foreach (var task in node.Tasks) executor.Validate(task, options.Plan);
@@ -52,8 +57,6 @@ public static class BuildCommand
             {
                 foreach (BuildTarget node in graph.Ordered)
                     Console.WriteLine("/" + node.Path + " <- " + string.Join(", ", node.Edges.Select(t => "/" + t.Path)));
-                processes.Dispose();
-                try { Directory.Delete(budget, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 return 0;
             }
             using CancellationTokenSource cancel = new();
@@ -64,10 +67,14 @@ public static class BuildCommand
             {
                 Console.CancelKeyPress -= handler;
                 report.Write(Path.Combine(logs, "tests.xml"));
+            }
+            return 0;
+            }
+            finally
+            {
                 processes.Dispose();
                 try { Directory.Delete(budget, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
-            return 0;
         }
         catch (OperationCanceledException) { Console.Error.WriteLine("corc build: cancelled"); return 130; }
         catch (Exception error) { Console.Error.WriteLine("corc build: " + error.Message); return 1; }

@@ -18,7 +18,8 @@ namespace Corsac.Build;
 /// - THE BUDGET is a directory holding exactly N empty files named
 ///   `worker-0` .. `worker-(N-1)`, N the build's --jobs. `corc build` makes one
 ///   for every build (Create) and names it to manifests as $(WorkerPool); a
-///   process given one is told its path (`--worker-pool DIR`).
+///   manifest hands it to a coordinator (Workers="budget"), which hands it on
+///   to each corc it runs as `--worker-pool DIR`.
 /// - A TOKEN is one of those files opened read-write with no sharing
 ///   (FileShare.None: an exclusive lock), and is held for as long as the
 ///   handle is open. Closing the handle gives it back; so does the process
@@ -32,6 +33,8 @@ namespace Corsac.Build;
 ///   coordinator costs a few wakes a second and no core.
 /// - Tokens are not counted anywhere else: the files are the count. Nothing
 ///   writes into them.
+/// - A BUDGET THAT HAS GONE (its directory or a file deleted under a taker) is
+///   an error, never "none free": a taker would wait on it for ever.
 /// </summary>
 public sealed class WorkerPool : IDisposable
 {
@@ -54,13 +57,46 @@ public sealed class WorkerPool : IDisposable
         return size == 0 ? null : new WorkerPool(directory, size);
     }
 
-    /// <summary>Lays out a budget of <paramref name="size"/> workers.</summary>
+    /// <summary>
+    /// Lays out a budget of <paramref name="size"/> workers, and proves the
+    /// file system locks: where an exclusive open is not exclusive (a mount
+    /// without flock, file locking switched off), a budget would quietly
+    /// be no budget at all, so it is refused.
+    /// </summary>
     public static string Create(string directory, int size)
     {
+        if (size < 1) throw new ArgumentOutOfRangeException(nameof(size), "a worker budget needs at least one worker");
         Directory.CreateDirectory(directory);
         foreach (string stale in Directory.GetFiles(directory, "worker-*")) File.Delete(stale);
         for (int i = 0; i < size; i++) File.WriteAllBytes(Path.Combine(directory, "worker-" + i), Array.Empty<byte>());
+        string first = Path.Combine(directory, "worker-0");
+        using (FileStream held = new(first, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            bool shared;
+            try { using FileStream again = new(first, FileMode.Open, FileAccess.ReadWrite, FileShare.None); shared = true; }
+            catch (IOException) { shared = false; }
+            if (shared) throw new IOException("file locking does not hold at " + directory + ": a worker budget cannot be kept there");
+        }
         return directory;
+    }
+
+    /// <summary>
+    /// The budgets of builds that died without removing theirs: each a
+    /// directory named by its build's process id, whose process is gone.
+    /// </summary>
+    public static void SweepDead(string root)
+    {
+        if (!Directory.Exists(root)) return;
+        foreach (string directory in Directory.GetDirectories(root))
+        {
+            if (!int.TryParse(Path.GetFileName(directory), out int pid) || pid == Environment.ProcessId) continue;
+            bool alive;
+            try { using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(pid); alive = !process.HasExited; }
+            catch (ArgumentException) { alive = false; }
+            catch (InvalidOperationException) { alive = false; }
+            if (!alive)
+                try { Directory.Delete(directory, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
     }
 
     /// <summary>The most workers this budget could ever offer.</summary>
@@ -81,6 +117,8 @@ public sealed class WorkerPool : IDisposable
                 lock (gate) held.Add(stream);
                 return true;
             }
+            catch (FileNotFoundException) { throw new IOException("the worker budget at " + directory + " has gone"); }
+            catch (DirectoryNotFoundException) { throw new IOException("the worker budget at " + directory + " has gone"); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }

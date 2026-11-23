@@ -62,7 +62,7 @@ public sealed class IncrementalTask
             throw new BuildException("Incremental inputs and outputs must be different files");
         XElement expanded = new(task);
         foreach (XElement element in expanded.DescendantsAndSelf())
-            foreach (XAttribute attribute in element.Attributes()) attribute.Value = manifest.Expand(attribute.Value);
+            foreach (XAttribute attribute in element.Attributes()) attribute.Value = manifest.ExpandForIdentity(attribute.Value);
         // Script bodies are literal script text; $(...) there may be shell
         // substitution rather than an orchestration property.
         string identity = manifest.File + "\n" + target.Path + "\n" + expanded.ToString(SaveOptions.DisableFormatting);

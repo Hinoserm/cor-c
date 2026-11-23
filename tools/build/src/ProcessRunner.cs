@@ -6,7 +6,6 @@ public sealed class ProcessRunner : IDisposable
 {
     private readonly WorkerPool pool;
     private readonly int jobs;
-    private readonly string budget;
     private readonly string logs;
     private int sequence;
 
@@ -20,7 +19,6 @@ public sealed class ProcessRunner : IDisposable
         WorkerPool.Create(budget, jobs);
         pool = WorkerPool.Open(budget) ?? throw new BuildException("the worker budget could not be laid out at " + budget);
         this.jobs = jobs;
-        this.budget = budget;
         this.logs = logs;
     }
 
@@ -30,20 +28,20 @@ public sealed class ProcessRunner : IDisposable
     /// A process run with its share of the budget:
     /// - ONE TOKEN, held while it runs, for an ordinary task -- one process
     ///   computing.
-    /// - NONE for a coordinator that is handed the budget itself (an argument
-    ///   naming $(WorkerPool)): it draws a token for each piece of work it
+    /// - NONE for a coordinator that is handed the budget itself
+    ///   (Workers="budget", its arguments naming $(WorkerPool)): it draws a
+    ///   token for each piece of work it
     ///   does, so a module of 132 units and twenty of two run side by side
     ///   on the same N, and it is told N, not what was free when it began.
-    /// - The tokens going spare when it starts, for a Workers="auto" task not
-    ///   handed the budget -- a tool that knows only a count, which it keeps.
+    /// - The tokens going spare when it starts, for a Workers="auto" task -- a
+    ///   tool that knows only a count, which it keeps.
     /// - None for an interactive one, which waits on a person.
     /// </summary>
     public async Task<ProcessResult> Run(string label, string executable, IEnumerable<string> arguments,
         string directory, IDictionary<string, string> environment, TimeSpan timeout, CancellationToken cancel,
-        bool useAvailableWorkers = false, Func<int, IEnumerable<string>>? workerArguments = null, bool interactive = false)
+        bool useAvailableWorkers = false, Func<int, IEnumerable<string>>? workerArguments = null, bool interactive = false,
+        bool drawsOwn = false)
     {
-        arguments = arguments.ToList();
-        bool drawsOwn = arguments.Any(argument => argument.Contains(budget, StringComparison.Ordinal));
         int taken = 0;
         int workers = 1;
         if (drawsOwn) workers = jobs;

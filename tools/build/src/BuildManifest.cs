@@ -162,6 +162,14 @@ public sealed class BuildManifest
     /// </summary>
     public void UseWorkerPool(string directory) => Properties["WorkerPool"] = directory;
 
+    /// <summary>
+    /// Expand, for what a task's identity is hashed from (IncrementalTask):
+    /// $(WorkerPool) left as written, its value being this build's own
+    /// directory -- a task handed it would never be up to date otherwise.
+    /// </summary>
+    public string ExpandForIdentity(string text) =>
+        Expand(Regex.Replace(text, @"\$\(WorkerPool\)", "\u0001WorkerPool\u0001", RegexOptions.IgnoreCase)).Replace("\u0001WorkerPool\u0001", "$(WorkerPool)");
+
     // Targets expand their tasks on several threads at once, so the file is
     // made once, under this lock, and never written into Properties.
     private readonly object _classLibrariesGate = new();
