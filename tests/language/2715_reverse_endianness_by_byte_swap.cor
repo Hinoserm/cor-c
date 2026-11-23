@@ -4,8 +4,9 @@
 // 78563412 F0DEBC9A78563412 3412 FFFFFF80 8000000000000000 bad 0
 //
 // BinaryPrimitives.ReverseEndianness of every width and sign, by the
-// processor's byte swap (Sys.ByteSwap: BSWAP r32 for the 32-bit forms, two
-// for the 64-bit), against the bytes reversed one at a time.
+// processor's byte swap (Sys.ByteSwap: one BSWAP r32 for the 32-bit forms;
+// for the 64-bit, two on i386 and one BSWAP r64 on x86-64), against the
+// bytes reversed one at a time.
 using System;
 using System.Buffers.Binary;
 

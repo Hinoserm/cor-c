@@ -10610,7 +10610,7 @@ public static class Gc
     public static long ReferencesIntoReport(nuint low, nuint high, long max)
     {
         long marked, cut;
-        return ReferencesInto(low, high, max, false, true, out marked, out cut);
+        return ReferencesInto(low, high, max, null, true, out marked, out cut);
     }
 
     /// THE REFERENCES INTO [low, high) CUT: ReferencesIntoReport's walk, and
@@ -10623,6 +10623,13 @@ public static class Gc
     /// registers included; `cut` the words cleared. Answers the words found
     /// in statics, roots and the heap; -1 when no collection could be made.
     /// For a kernel taking a module's image out whatever still points in.
+    /// The answer is the first round's count, taken before anything was cut
+    /// or moved: what pointed in, not what still does. Strings still listed
+    /// after the rounds are cleared by the last, as any other reference.
+    ///
+    /// EACH CALL ITS OWN STATE (CutState): two modules taken out at once
+    /// share nothing but the heap lock, under which alone the walk sees a
+    /// call's lists.
     ///
     /// A STRING OF THE RANGE'S OWN -- a literal in a module's read-only data,
     /// kept by the kernel as a key or a name -- is not cleared: the slot is
@@ -10636,38 +10643,43 @@ public static class Gc
         cut = 0;
         marked = 0;
         long found = -1;
-        _stringVt = Sys.ReadAddress(Sys.ObjectAddress("x"));
+        nuint stringVt = Sys.ReadAddress(Sys.ObjectAddress("x"));
         // AGAIN WHILE STRINGS ARE LEFT: more than a list holds (MoveMost), or
         // copies that could not be put in (a collection under way, a slot
         // changed); a few rounds, then cleared as any other reference.
         for (int round = 0; round < 8; round++)
         {
             bool last = round == 7;
-            _moveSlots = last ? null : new nuint[MoveMost];
-            _moveHolders = last ? null : new nuint[MoveMost];
-            _moveLiterals = last ? null : new nuint[MoveMost];
-            _moveCount = 0;
+            CutState state = new CutState();
+            state.StringVt = stringVt;
+            if (!last)
+            {
+                state.Slots = new nuint[MoveMost];
+                state.Holders = new nuint[MoveMost];
+                state.Literals = new nuint[MoveMost];
+            }
             long roundMarked, roundCut;
-            long roundFound = ReferencesInto(low, high, round == 0 ? max : 0, true, round == 0, out roundMarked, out roundCut);
+            long roundFound = ReferencesInto(low, high, round == 0 ? max : 0, state, round == 0, out roundMarked, out roundCut);
             if (round == 0) { found = roundFound; marked = roundMarked; }
             // REFUSED IN ANY ROUND: what the rounds before left -- strings not
             // yet copied -- still points in, so "could not tell", never the
             // first round's count as if it were done.
-            if (roundFound < 0) { _moveSlots = null; _moveHolders = null; _moveLiterals = null; return -1; }
+            if (roundFound < 0) return -1;
             cut = cut + roundCut;
-            nuint count = _moveCount;
-            nuint[]? slots = _moveSlots, holders = _moveHolders, literals = _moveLiterals;
-            _moveSlots = null;
-            _moveHolders = null;
-            _moveLiterals = null;
-            _moveCount = 0;
+            nuint count = state.Count;
+            nuint[]? slots = state.Slots, holders = state.Holders, literals = state.Literals;
             if (count == 0 || slots == null || holders == null || literals == null) break;
             // The copies, made with no lock held, from the literals -- in the
             // range, still mapped -- never from the slots, whose holders may
-            // be swept and their chunk given back meanwhile.
+            // be swept and their chunk given back meanwhile. One copy for each
+            // literal however many slots hold it, so keys equal by reference
+            // before stay so after.
             object?[] copies = new object?[count];
             for (nuint i = 0; i < count; i++)
             {
+                for (nuint j = 0; j < i; j++)
+                    if (literals[j] == literals[i]) { copies[i] = copies[j]; break; }
+                if (copies[i] != null) continue;
                 string? text = Sys.ObjectAt(literals[i]) as string;
                 if (text != null) copies[i] = new string(text.ToCharArray());
             }
@@ -10678,9 +10690,13 @@ public static class Gc
             {
                 object? copy = copies[i];
                 // THE HOLDER STILL THERE: its chunk the heap's, its block
-                // allocated -- else the slot is nobody's now.
+                // allocated and whole -- not free, and not swallowed by a free
+                // neighbour, whose merge zeroes the header (Merge) -- else the
+                // slot is nobody's now.
                 nuint holder = holders[i];
-                if (HeapChunks.Of(holder) == 0 || (Sys.ReadAddress(holder) & FlagFree) != 0) continue;
+                if (HeapChunks.Of(holder) == 0) continue;
+                nuint header = Sys.ReadAddress(holder);
+                if ((header & FlagFree) != 0 || (header & SizeMask) < LeastBlock) continue;
                 if (!quiet || copy == null) { left = left + 1; continue; }
                 if (Sys.Cas(slots[i], literals[i], Sys.ObjectAddress(copy)) == literals[i])
                 {
@@ -10695,16 +10711,23 @@ public static class Gc
         return found;
     }
 
-    static bool _cutting;
-    static long _cut;
+    /// One CutReferencesInto round's lists and count, the call's own: seen
+    /// by the heap walk only through _cutState, set and cleared with the
+    /// heap lock held.
+    sealed class CutState
+    {
+        public nuint[]? Slots, Holders, Literals;
+        public nuint Count;
+        public nuint StringVt;
+        public long Cut;
+    }
+
+    static CutState? _cutState;
     const int MoveMost = 1024;
-    static nuint[]? _moveSlots, _moveHolders, _moveLiterals;
-    static nuint _moveCount;
-    static nuint _stringVt;
 
     /// `first`: the marking count asked (`marked`) and the summary said;
     /// a cut's later rounds ask neither.
-    static long ReferencesInto(nuint low, nuint high, long max, bool cutting, bool first, out long marked, out long cut)
+    static long ReferencesInto(nuint low, nuint high, long max, CutState? cutting, bool first, out long marked, out long cut)
     {
         marked = 0;
         cut = 0;
@@ -10752,15 +10775,14 @@ public static class Gc
                 if (size < LeastBlock || Beyond(block, size, end)) break;
                 if ((word & FlagFree) == 0)
                 {
-                    _cutting = cutting;
+                    _cutState = cutting;
                     found = BlockReferencesInto(block, size, paged, low, high, max, found);
-                    _cutting = false;
+                    _cutState = null;
                 }
                 block = block + size;
             }
         }
-        cut = _cut;
-        _cut = 0;
+        cut = cutting != null ? cutting.Cut : 0;
         GcLock.Exit();
         // A NEGATIVE `max` IS QUIET: no word named, no summary (a kernel
         // asking again whether a range it is waiting on is still held).
@@ -10829,27 +10851,29 @@ public static class Gc
         // CUT (CutReferencesInto): a reference by the descriptor's word,
         // cleared -- a null stored needs no barrier: it points at nothing --
         // or, a string of the range's own, its slot kept to be given a copy.
-        if (_cutting && described)
+        CutState? state = _cutState;
+        if (state != null && described)
         {
-            nuint[]? moving = _moveSlots;
-            bool literal = moving != null && Sys.ReadAddress(word) == _stringVt;
+            nuint[]? moving = state.Slots;
+            // A string's header word read only where it is inside the range.
+            bool literal = moving != null && word + (nuint)WordSize.Bytes <= high && Sys.ReadAddress(word) == state.StringVt;
             if (literal)
             {
                 // A STRING PAST THE LIST'S END is left for the next round,
                 // never cleared: only the last round, which lists none,
                 // clears strings.
-                if (_moveCount >= (nuint)moving!.Length) return found + 1;
-                moving[_moveCount] = q;
-                _moveHolders![_moveCount] = payload - HeaderBytes;
-                _moveLiterals![_moveCount] = word;
-                _moveCount = _moveCount + 1;
+                if (state.Count >= (nuint)moving!.Length) return found + 1;
+                moving[state.Count] = q;
+                state.Holders![state.Count] = payload - HeaderBytes;
+                state.Literals![state.Count] = word;
+                state.Count = state.Count + 1;
                 if (found < max) Runtime.WriteLiteral(2, "gc refs:   a string of the range: to be copied\n");
             }
             // ONLY WHERE IT STILL HOLDS THAT WORD: mutators run on, and a
             // reference stored since is theirs.
             else if (Sys.Cas(q, word, 0) == word)
             {
-                _cut = _cut + 1;
+                state.Cut = state.Cut + 1;
                 if (found < max) Runtime.WriteLiteral(2, "gc refs:   cleared\n");
             }
         }
