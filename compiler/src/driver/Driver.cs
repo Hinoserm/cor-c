@@ -1425,15 +1425,8 @@ public static class Driver
         // collector may run (BackEdgePolls); a kernel interrupts its
         // processors instead.
         module.SafepointPolls = !freestanding && !module.NoCollector;
-        // A KERNEL MODULE'S UNIT KEEPS THEM WHATEVER MODULES IT LINKS
-        // AGAINST: its link defines its field sites in the module itself, and
-        // a call into usb.ko or virtio.ko is a call out of this link as one
-        // into the kernel is. Without them ehci, xhci, the virtio drivers and
-        // every other module over another carried no IR, and called the
-        // kernel's PhysicalAddress.get_Low32 through the GOT where every other
-        // module inlined it (KernelAssumptions' offered bodies).
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
-            && (sharedLibs.Count == 0 || moduleUnit) && (moduleUnit || !(shared || args.Contains("--pic")));
+            && sharedLibs.Count == 0 && (moduleUnit || !(shared || args.Contains("--pic")));
         // WHAT THE IMAGES THIS ONE LINKS AGAINST EXPORT, read before the
         // passes (Module.ProvidedElsewhere): a library body one of them
         // supplies may not bring what its library withholds into code this
