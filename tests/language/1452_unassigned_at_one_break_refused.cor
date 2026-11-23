@@ -1,5 +1,5 @@
 // test: a local missed at one break of an endless loop is not assigned after it
-// expect-compile-error: 'kick' is used before it is definitely assigned
+// expect-compile-error: CS0165: Use of unassigned local variable 'kick'
 
 using System;
 

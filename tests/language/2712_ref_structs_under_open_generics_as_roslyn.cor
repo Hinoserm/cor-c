@@ -1,0 +1,16 @@
+// test: ref_structs_under_open_generics_as_roslyn
+// expect-compile-error: CS9244: The type 'Span<int>' may not be a ref struct or a type parameter allowing ref structs in order to use it as parameter 'V' in the generic type or method 'Dictionary<K, V>'
+//
+// A REF STRUCT GIVEN DIRECTLY TO AN OPEN GENERIC: `Dictionary<T, Span<int>>`
+// gives Span to TValue, which allows none, and is refused at the member's or
+// parameter's name (CS9244) though no copy of the open type is ever made.
+// The whole list is checked by 2712_ref_structs_under_open_generics_as_roslyn.sh.
+using System;
+using System.Collections.Generic;
+
+class C<T> { Dictionary<T, Span<int>> f; void M(List<T> a, Dictionary<T, Span<int>> b) { } }
+static class P
+{
+    static void G<U>(KeyValuePair<U, ReadOnlySpan<char>> pair) { }
+    static void Main() { }
+}

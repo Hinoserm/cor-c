@@ -1,5 +1,5 @@
 // test: lambda_assignment_not_assigned_outside_refused
-// expect-compile-error: 'x' is used before it is definitely assigned
+// expect-compile-error: CS0165: Use of unassigned local variable 'x'
 //
 // WHAT A LAMBDA ASSIGNS IS NOT ASSIGNED WHERE IT IS WRITTEN (C# CS0165): its
 // body runs when the delegate is called, or never. The binder's passes over

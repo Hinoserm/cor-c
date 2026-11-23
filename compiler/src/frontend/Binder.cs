@@ -1932,11 +1932,12 @@ public sealed partial class Binder
                 if (alias != simple) continue;
                 // The target whole (`My_Buf`, `System.Span`), then its parts
                 // where it is generic: `Span<int>`.
-                string head = target.Split('<')[0];
+                string head = target.Split('<')[0].Replace("global::", "", StringComparison.Ordinal);
                 int lastDot = head.LastIndexOf('.');
                 if (refLike.Contains(lastDot < 0 ? head : head[(lastDot + 1)..])) return true;
                 if (target.IndexOfAny(GenericParts) >= 0 && target.Split(GenericParts, StringSplitOptions.RemoveEmptyEntries)
-                        .Select(part => part.Trim()).Select(part => part.Contains('.') ? part[(part.LastIndexOf('.') + 1)..] : part).Any(refLike.Contains))
+                        .Select(part => part.Trim().Replace("global::", "", StringComparison.Ordinal))
+                        .Select(part => part.Contains('.') ? part[(part.LastIndexOf('.') + 1)..] : part).Any(refLike.Contains))
                     return true;
             }
         foreach (TypeRef a in r.Args) if (NamesRefLike(a, file)) return true;
@@ -2019,7 +2020,33 @@ public sealed partial class Binder
             CheckTemplateType(type, false, open, owner);
             return;
         }
+        OpenArgumentsRefLike(type, open, owner);
         foreach (TypeRef argument in type.Args) CheckDeclaredType(argument, open, owner);
+    }
+
+    /// <summary>
+    /// An open generic's closed arguments against its template's parameters:
+    /// `Dictionary<T, Span<int>>` gives Span to TValue, which allows no ref
+    /// struct (CS9244) -- what no copy of the open type is made to say.
+    /// </summary>
+    private void OpenArgumentsRefLike(TypeRef type, HashSet<string> open, TypeSymbol owner)
+    {
+        if (type.Args.Count == 0 || !type.Args.Any(argument => !MentionsAny(argument, open) && NamesRefLike(argument, _member?.Scope ?? owner.Decl?.Scope))) return;
+        if (!FindMadeType(Arity(type.Name, type.Args.Count), out TypeSymbol? generic) || generic?.Decl is not { } d) return;
+        List<TypeParam> ps = d.TemplateParams ?? d.TypeParams;
+        if (ps.Count != type.Args.Count) return;
+        string shown = BoxedFaces.Plain(d.Template ?? d.Name) + "<" + string.Join(", ", ps.Select(p => p.Name)) + ">";
+        for (int i = 0; i < ps.Count; i++)
+        {
+            TypeRef argument = type.Args[i];
+            if (MentionsAny(argument, open) || ps[i].AllowsRefStruct || !NamesRefLike(argument, _member?.Scope ?? owner.Decl?.Scope)) continue;
+            int errors = _r.Errors.Count, warnings = _r.Warnings.Count;
+            Type given = Resolve(argument, owner);
+            // Only the refusal: what else a name says here is its use's.
+            _r.Errors.RemoveRange(errors, _r.Errors.Count - errors);
+            _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
+            if (RefLike(given)) RefuseRefLikeArgument(argument, RefLikeArgument(given, ps[i].Name, shown));
+        }
     }
 
     /// <summary>Whether a declared type has a part CheckDeclaredType resolves: closed, and naming a ref struct.</summary>
@@ -2065,12 +2092,17 @@ public sealed partial class Binder
             foreach ((TypeRef type, int line, int col) in MemberTypes(member))
                 if (!first.TryGetValue(type, out var had) || line > 0 && (had.Line <= 0 || line < had.Line || line == had.Line && col < had.Col))
                     first[type] = (member, line, col);
+        // The place first, the costlier question only of the type it is in.
         foreach ((TypeRef type, (MemberDecl member, int line, int col)) in first)
-            if (MemberPassSays(member, declaring, type) && InsideDeclared(type, line, col, at)) return true;
+            if (InsideDeclared(type, line, col, at) && MemberPassSays(member, declaring, type)) return true;
         return false;
     }
 
     /// <summary>
+    /// KEPT IN STEP WITH CheckMemberTypes AND CheckDeclaredType: what this
+    /// says yes to, they refuse again at the member's place, or the
+    /// declaration's own refusal is lost.
+    ///
     /// Whether CheckMemberTypes says what a member's declared type refuses:
     /// a written type naming a ref struct and none of the type parameters
     /// (CheckTemplateType's own test). Only then is the declaration's own
@@ -21191,7 +21223,10 @@ public sealed partial class Binder
                     _r.PatternSlot[isx] = slot;
                     _r.PatternSym[isx] = pattern;
                     Declare(isx, isx.Binding, pattern);
-                    _assigned.Add(pattern);
+                    // ASSIGNED WHERE THE TEST HELD, as C# has it (CS0165):
+                    // Assume makes it so in a branch, a right operand, a loop's
+                    // body. `o is var x` holds always, and assigns always.
+                    if (isx.Type.Name == "var") _assigned.Add(pattern);
                 }
                 return Type.Bool;
             }
@@ -22113,6 +22148,56 @@ public sealed partial class Binder
     /// </summary>
     private List<Sym> Assume(Expr cond, bool holds)
     {
+        if (_assuming > 0) return AssumeCore(cond, holds);
+        _assuming++;
+        try
+        {
+            List<Sym> added = AssumeCore(cond, holds);
+            AssumeAssigned(cond, holds, added, 0);
+            return added;
+        }
+        finally { _assuming--; }
+    }
+
+    /// <summary>How deep in Assume: what a condition assigns is walked once, from the top.</summary>
+    private int _assuming;
+
+    /// <summary>
+    /// WHAT A CONDITION ASSIGNS WHERE IT HOLDS (C#'s definite assignment
+    /// "when true" and "when false"): `x is Foo f` true assigns f; `!c` the
+    /// other way; `a && b` true both sides', `a || b` false both sides'; a
+    /// pattern's test (`is { P: 1 } f` is such a chain over its subject),
+    /// and whatever the binder put in a condition's place. Each is undone
+    /// with the condition's other proofs (Forget).
+    /// </summary>
+    private void AssumeAssigned(Expr cond, bool holds, List<Sym> added, int depth)
+    {
+        if (depth > 64) return;
+        switch (cond)
+        {
+            case IsExpr { Binding: not null } bound when holds:
+                if (_r.PatternSym.TryGetValue(bound, out LocalSym? boundLocal) && _assigned.Add(boundLocal)) added.Add(new AssignedSym(boundLocal));
+                break;
+            case UnaryExpr { Op: UnOp.Not } negated:
+                AssumeAssigned(negated.Operand, !holds, added, depth + 1);
+                return;
+            case BinaryExpr { Op: BinOp.AndAlso } both when holds:
+                AssumeAssigned(both.Left, true, added, depth + 1);
+                AssumeAssigned(both.Right, true, added, depth + 1);
+                return;
+            case BinaryExpr { Op: BinOp.OrElse } either when !holds:
+                AssumeAssigned(either.Left, false, added, depth + 1);
+                AssumeAssigned(either.Right, false, added, depth + 1);
+                return;
+            case PatternExpr tested:
+                AssumeAssigned(tested.Test, holds, added, depth + 1);
+                return;
+        }
+        if (_r.Rewrites.TryGetValue(cond, out Expr? instead) && !ReferenceEquals(instead, cond)) AssumeAssigned(instead, holds, added, depth + 1);
+    }
+
+    private List<Sym> AssumeCore(Expr cond, bool holds)
+    {
         List<Sym> added = new();
 
         // `!x` PROVES WHAT x DISPROVES. Without this, the false branch of an
@@ -22187,6 +22272,11 @@ public sealed partial class Binder
             foreach (Sym both in byLeft)
             {
                 if (!byRight.Contains(both)) continue;
+                if (both is AssignedSym assignedBoth)
+                {
+                    if (_assigned.Add(assignedBoth.Local)) added.Add(both);
+                    continue;
+                }
                 if (both is PathSym { Spelt: var spelt } ? _notNullPaths.Add(spelt) : _notNull.Add(both)) added.Add(both);
             }
         }
@@ -22498,6 +22588,11 @@ public sealed partial class Binder
                 _notNullPaths.Remove(path.Spelt);
                 continue;
             }
+            if (s is AssignedSym assigned)
+            {
+                _assigned.Remove(assigned.Local);
+                continue;
+            }
 
             _notNull.Remove(s);
         }
@@ -22739,7 +22834,7 @@ public sealed partial class Binder
 
             if (sym is LocalSym local && !_assigned.Contains(local))
             {
-                Error(n, $"'{n.Name}' is used before it is definitely assigned");
+                Error(n, $"CS0165: Use of unassigned local variable '{n.Name}'");
             }
 
             // A CONST STRING READS AS THE TEXT IT NAMES, which is the same

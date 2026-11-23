@@ -1,5 +1,5 @@
 // test: natural_type_lambda_assignment_not_assigned_outside_refused
-// expect-compile-error: 'total' is used before it is definitely assigned
+// expect-compile-error: CS0165: Use of unassigned local variable 'total'
 //
 // THE SAME WHEN THE LAMBDA'S TYPE IS INFERRED (C# CS0165): working out what a
 // `var` lambda returns checks its body once more, and that pass too left what

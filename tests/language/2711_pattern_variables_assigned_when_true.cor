@@ -1,0 +1,34 @@
+// test: pattern_variables_assigned_when_true
+// expect-compile-error: CS0165: Use of unassigned local variable 'n'
+//
+// A PATTERN'S VARIABLE IS ASSIGNED ONLY WHERE ITS TEST HELD (C#'s
+// definite assignment, CS0165): after `o is int n ? n : 0`, after an `if`
+// whose then branch alone saw it, from a bool the test was stored in, and
+// in `o is int n || n > 0` it is not; in `&&`'s right side, after a guard
+// clause `if (!(o is int n)) return;`, `is not int n`, a `var` pattern, a
+// loop's body, `!(o is string s) || ...`, a foreach's `if`, a switch arm's
+// `when` and a property pattern it is.
+// The whole list is checked by 2711_pattern_variables_assigned_when_true.sh.
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static int Bad1(object o) { int x = o is int n ? n : 0; return x + n; }
+    static void Bad2(object o) { if (o is string s) { } Console.WriteLine(s); }
+    static void Bad3(object o) { bool b = o is int n; if (b) Console.WriteLine(n); }
+    static void Bad4(object o) { Console.WriteLine(o is int n || n > 0); }
+    static int Good1(object o) => o is int n && n > 0 ? n : -1;
+    static int Good2(object o) { if (!(o is int n)) return -1; return n; }
+    static int Good3(object o) { if (o is not int n) return -1; return n; }
+    static int Good4(object o) => o is var v ? (v == null ? 0 : 1) : 2;
+    static int Good5(object o) { while (o is int[] a && a.Length > 0) { return a[0]; } return 0; }
+    static string Good6(object o) => !(o is string s) || s.Length == 0 ? "none" : s;
+    static int Good7(object o) { if (o is int n && n > 1 || o is long) return 1; return 0; }
+    static int Good8(List<object> xs) { int t = 0; foreach (object x in xs) if (x is int i) t += i; return t; }
+    static int Good9(object o) => o switch { _ when o is int n => n, _ => 0 };
+    static void Main()
+    {
+        Console.WriteLine(Good1(3) + " " + Good2(4) + " " + Good3(5) + " " + Good4(null!) + " " + Good5(new[] { 7 }) + " " + Good6("x") + " " + Good7(2) + " " + Good8(new() { 1, 2 }) + " " + Good9(9));
+    }
+}
