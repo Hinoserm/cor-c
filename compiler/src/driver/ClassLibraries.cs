@@ -212,7 +212,11 @@ internal static class ClassLibraries
     /// sources belong to): nothing of their code can be called from it.
     /// Empty when its own sources are none of the split's -- a program, a
     /// test's unit, a library of someone else's -- and a source the split
-    /// does not name is no one's, and never among them.
+    /// does not name is no one's, and never among them. The table is the
+    /// Linux set's (Driver.DefaultLibraries for x86); the Windows set's
+    /// own sources are not in it, so a Windows build is not checked.
+    /// Parts read out of a declaration index are signatures only, and are
+    /// not either.
     /// </summary>
     internal static HashSet<string> Above(string root, IEnumerable<string> own, IEnumerable<string> references)
     {

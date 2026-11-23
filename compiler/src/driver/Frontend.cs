@@ -1120,6 +1120,7 @@ public static class Frontend
         bool UnderLibraryRoot(string path) => trees.Any(tree => path.StartsWith(tree, StringComparison.Ordinal));
 
         Dictionary<string, Lang.TypeDecl> first = new(StringComparer.Ordinal);
+        Dictionary<Lang.TypeDecl, Apart> apart = new(ReferenceEqualityComparer.Instance);
         List<Lang.TypeDecl> merged = new();
 
         foreach (Lang.TypeDecl part in unit.Types)
@@ -1139,6 +1140,7 @@ public static class Frontend
             {
                 first[key] = part;
                 merged.Add(part);
+                apart[part] = new Apart(part);
                 continue;
             }
 
@@ -1166,7 +1168,7 @@ public static class Frontend
                 }
             }
 
-            if (part.FromLibraryAbove && !into.FromLibraryAbove) RefuseStaticStateApart(into, part);
+            apart[into].Add(part);
             into.Members.AddRange(part.Members);
             into.Mods |= part.Mods;
             into.FromLibrary |= part.FromLibrary;
@@ -1202,9 +1204,34 @@ public static class Frontend
     /// storage only, and allowed; a table of constants is refused with the
     /// rest, being an initialiser until the binder makes it data.
     /// </summary>
-    private static void RefuseStaticStateApart(Lang.TypeDecl owner, Lang.TypeDecl part)
+    /// <summary>
+    /// One merged type's parts as they arrive, in whatever order the merge
+    /// meets them (arguments, or the index's sort by path): each part of a
+    /// library above is held until the type has a part that is not, then
+    /// refused if it holds static state, so which one sorts first decides
+    /// nothing. The members of each part are taken as it arrives, before a
+    /// first part's list takes the others'.
+    /// </summary>
+    private sealed class Apart
     {
-        foreach (Lang.MemberDecl member in part.Members)
+        private readonly List<(Lang.TypeDecl Part, List<Lang.MemberDecl> Members)> _above = new();
+        private Lang.TypeDecl? _owner;
+
+        public Apart(Lang.TypeDecl first) => Add(first);
+
+        public void Add(Lang.TypeDecl part)
+        {
+            if (part.FromLibraryAbove) _above.Add((part, new List<Lang.MemberDecl>(part.Members)));
+            else _owner ??= part;
+            if (_owner is null) return;
+            foreach ((Lang.TypeDecl above, List<Lang.MemberDecl> members) in _above) RefuseStaticStateApart(_owner, above, members);
+            _above.Clear();
+        }
+    }
+
+    private static void RefuseStaticStateApart(Lang.TypeDecl owner, Lang.TypeDecl part, List<Lang.MemberDecl> members)
+    {
+        foreach (Lang.MemberDecl member in members)
         {
             string? what = member switch
             {
@@ -1214,9 +1241,9 @@ public static class Frontend
                 _ => null,
             };
             if (what is null) continue;
-            string name = member is Lang.MethodDecl ? owner.Name : owner.Name + "." + member.Name;
+            string name = member is Lang.MethodDecl ? part.Name : part.Name + "." + member.Name;
             throw new Lang.CompileError(member.File, member.Line, member.Col,
-                $"'{name}': {what} in a part of '{owner.Name}' built into a shared library above its part in {owner.File}, "
+                $"'{name}': {what} in a part of '{part.Name}' built into a shared library above its part in {owner.File}, "
                 + $"whose library lays out and starts the class's static state and cannot call up into it; move it there");
         }
     }
