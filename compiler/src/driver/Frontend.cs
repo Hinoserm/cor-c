@@ -1141,7 +1141,11 @@ public static class Frontend
             {
                 first[key] = part;
                 merged.Add(part);
-                if (part.FromLibraryAbove) (apart ??= new(ReferenceEqualityComparer.Instance))[part] = new Apart(part);
+                if (part.FromLibraryAbove)
+                {
+                    apart ??= new(ReferenceEqualityComparer.Instance);
+                    apart[part] = new Apart(part);
+                }
                 continue;
             }
 
