@@ -1120,7 +1120,8 @@ public static class Frontend
         bool UnderLibraryRoot(string path) => trees.Any(tree => path.StartsWith(tree, StringComparison.Ordinal));
 
         Dictionary<string, Lang.TypeDecl> first = new(StringComparer.Ordinal);
-        Dictionary<Lang.TypeDecl, Apart> apart = new(ReferenceEqualityComparer.Instance);
+        // Only for a type whose first part is of a library above (Apart): none, outside a class library's build.
+        Dictionary<Lang.TypeDecl, Apart>? apart = null;
         List<Lang.TypeDecl> merged = new();
 
         foreach (Lang.TypeDecl part in unit.Types)
@@ -1140,7 +1141,7 @@ public static class Frontend
             {
                 first[key] = part;
                 merged.Add(part);
-                apart[part] = new Apart(part);
+                if (part.FromLibraryAbove) (apart ??= new(ReferenceEqualityComparer.Instance))[part] = new Apart(part);
                 continue;
             }
 
@@ -1168,7 +1169,8 @@ public static class Frontend
                 }
             }
 
-            apart[into].Add(part);
+            if (apart is not null && apart.TryGetValue(into, out Apart? held)) held.Add(part);
+            else if (part.FromLibraryAbove) RefuseStaticStateApart(into, part, part.Members);
             into.Members.AddRange(part.Members);
             into.Mods |= part.Mods;
             into.FromLibrary |= part.FromLibrary;
@@ -1191,26 +1193,14 @@ public static class Frontend
     }
 
     /// <summary>
-    /// A CLASS IN TWO SHARED LIBRARIES KEEPS ITS STATIC STATE IN THE FIRST
-    /// PART'S: that part's library lays the statics out and its StaticInit$
-    /// starts them, so an initialiser or a static constructor written in a
-    /// part of a library built after it is code that StaticInit$ would have
-    /// to import from a library it does not link. SystemType's COM part held
-    /// `static readonly object Missing = new object();`, corsacrt's
-    /// StaticInit$ imported its Preinit$Missing, and libcorsacrt.so did not
-    /// link. Refused here, naming the member, when the library beneath is
-    /// built. (A part of a library beneath this one, linked, may hold them:
-    /// its code is there to call.) A static field without an initialiser is
-    /// storage only, and allowed; a table of constants is refused with the
-    /// rest, being an initialiser until the binder makes it data.
-    /// </summary>
-    /// <summary>
-    /// One merged type's parts as they arrive, in whatever order the merge
-    /// meets them (arguments, or the index's sort by path): each part of a
-    /// library above is held until the type has a part that is not, then
-    /// refused if it holds static state, so which one sorts first decides
-    /// nothing. The members of each part are taken as it arrives, before a
-    /// first part's list takes the others'.
+    /// A merged type whose FIRST part is of a library above (the index sorts
+    /// parts by path, and an above part's may sort first): its parts as they
+    /// arrive, each above part held until the type has a part that is not,
+    /// then refused if it holds static state, so which one sorts first
+    /// decides nothing. A type whose first part is not above needs none of
+    /// this: a later above part is judged against it at once. The first
+    /// part's members are taken as it arrives, before its list takes the
+    /// others'.
     /// </summary>
     private sealed class Apart
     {
@@ -1229,6 +1219,20 @@ public static class Frontend
         }
     }
 
+    /// <summary>
+    /// A CLASS IN TWO SHARED LIBRARIES KEEPS ITS STATIC STATE IN THE FIRST
+    /// PART'S: that part's library lays the statics out and its StaticInit$
+    /// starts them, so an initialiser or a static constructor written in a
+    /// part of a library built after it is code that StaticInit$ would have
+    /// to import from a library it does not link. SystemType's COM part held
+    /// `static readonly object Missing = new object();`, corsacrt's
+    /// StaticInit$ imported its Preinit$Missing, and libcorsacrt.so did not
+    /// link. Refused here, naming the member, when the library beneath is
+    /// built. (A part of a library beneath this one, linked, may hold them:
+    /// its code is there to call.) A static field without an initialiser is
+    /// storage only, and allowed; a table of constants is refused with the
+    /// rest, being an initialiser until the binder makes it data.
+    /// </summary>
     private static void RefuseStaticStateApart(Lang.TypeDecl owner, Lang.TypeDecl part, List<Lang.MemberDecl> members)
     {
         foreach (Lang.MemberDecl member in members)
