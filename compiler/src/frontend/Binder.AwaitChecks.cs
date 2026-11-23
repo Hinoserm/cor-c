@@ -1815,7 +1815,9 @@ public sealed partial class Binder
     /// (PackedStateOf): its condition and steps, and the statements of its
     /// body run on each pass -- into blocks, a do's body, a try's body and
     /// finally, as far as the first statement that may leave the pass (a
-    /// break, continue, return, throw or goto, or an if or switch holding one)
+    /// break, continue, return, throw or goto, or an if holding one, or a
+    /// switch holding one but a case's own break or goto case; a nested do's
+    /// condition only where its body cannot skip it, SkipsCondition)
     /// -- but not a call behind an if's branch, a switch's arm, a catch, a
     /// nested while's, for's or foreach's body (which may run no times), or
     /// ?:, &&, || and ?? (ConditionalSites). A call some passes make

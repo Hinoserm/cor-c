@@ -5990,6 +5990,8 @@ public sealed class Parser
                 if (step > int.MaxValue / by) return null;
                 step *= by;
             }
+            // PackedSmall's step is an int (Prelude), a single loop's too.
+            if (step > int.MaxValue) return null;
             return new CallExpr
             {
                 Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedSmall", Line = line, Col = col },
