@@ -6062,6 +6062,10 @@ public sealed partial class Lowering
 
             case BinOp.Div:
             case BinOp.Rem:
+                // THE PAIR ALREADY MADE (DividePaired): the first division's
+                // zero test covered this divisor, unchanged since, so neither
+                // the test nor the division is made again.
+                if (PairedAnswer(op, l, r, !un) is VReg made) return made;
                 DivideByZeroCheck(at, r);
                 return Divide(at, op, l, r, operand);
 
@@ -6150,10 +6154,6 @@ public sealed partial class Lowering
     /// </summary>
     private VReg DividePaired(Node at, BinOp op, VReg l, VReg r, bool signed)
     {
-        if (_lastDivide is { } memo && memo.Block == _e.Block && memo.L == l && memo.R == r && memo.Signed == signed
-            && !WrittenSince(memo.Block, memo.At, l, r))
-            return op == BinOp.Div ? memo.Quotient : memo.Remainder;
-
         VReg quotient = _f.NewReg(IrType.I64, "quotient64"), remainder = _f.NewReg(IrType.I64, "remainder64");
         Block? done = null;
         if (signed)
@@ -6193,6 +6193,22 @@ public sealed partial class Lowering
         _e.SetBlock(joined);
         _lastDivide = new DivideMemo(joined, joined.Instrs.Count, l, r, signed, quotient, remainder);
         return op == BinOp.Div ? quotient : remainder;
+    }
+
+    /// <summary>
+    /// The earlier division's answer for this `/` or `%` of the same l and r
+    /// (DividePaired): only on a small-cache 32-bit target, in the block that
+    /// division ended in, with nothing since writing l or r -- straight-line
+    /// code after it, so its zero test and its division hold here. Null
+    /// otherwise, and the memo dropped once it can no longer match.
+    /// </summary>
+    private VReg? PairedAnswer(BinOp op, VReg l, VReg r, bool signed)
+    {
+        if (_lastDivide is not { } memo) return null;
+        if (memo.Block != _e.Block) { _lastDivide = null; return null; }
+        if (l.Type != IrType.I64 || _t.NativeI64 || InlinesLargeExpansions) return null;
+        if (memo.L != l || memo.R != r || memo.Signed != signed || WrittenSince(memo.Block, memo.At, l, r)) return null;
+        return op == BinOp.Div ? memo.Quotient : memo.Remainder;
     }
 
     private sealed record DivideMemo(Block Block, int At, VReg L, VReg R, bool Signed, VReg Quotient, VReg Remainder);

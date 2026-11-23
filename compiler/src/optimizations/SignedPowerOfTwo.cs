@@ -43,7 +43,7 @@ public sealed class SignedPowerOfTwo : IPass
                 // Let ordinary folding evaluate a wholly constant IR divide
                 // directly instead of expanding it into a chain needing more
                 // propagation rounds.
-                if (i.Op != Opcode.Call && i.Operands[0] is ImmOperand)
+                if (i.Operands[0] is ImmOperand)
                 { result?.Add(i); continue; }
                 IrType type = i.Dest.Type;
                 long signed = type == IrType.I32 ? unchecked((int)divisor.Value) : divisor.Value;
