@@ -36,14 +36,16 @@ public sealed partial class Binder
            || _method?.Params.Any(p => RefLike(p.Type)) == true;
 
     /// <summary>The check of one method's body, once it is bound (EndMethodBody).</summary>
-    private void CheckRefSafety(MethodDecl md, Type returns)
+    private void CheckRefSafety(MethodDecl md, Type returns, IReadOnlyList<Param>? parameters = null)
     {
         if (md.Body is null) return;
         _refSafety.Clear();
         _refSafetyMethod = md;
+        // A lambda's are its own, not the body's it is bound as (CheckLambda).
+        _refSafetyParams = parameters ?? md.Params;
         // The body's statements are the method's own (1): its block adds none.
         try { SafetyVisit(md.Body, 0, RefLike(returns)); }
-        finally { _refSafetyMethod = null; _refSafety.Clear(); }
+        finally { _refSafetyMethod = null; _refSafetyParams = null; _refSafety.Clear(); }
     }
 
     private void SafetyVisit(Node n, int depth, bool returnsRefLike)
@@ -245,7 +247,10 @@ public sealed partial class Binder
 
     /// <summary>Whether a parameter of the method checked is `scoped`.</summary>
     private bool ParamScoped(ParamSym parameter)
-        => _refSafetyMethod is { } md && parameter.Index < md.Params.Count && md.Params[parameter.Index].IsScoped;
+        => _refSafetyParams is { } ps && parameter.Index < ps.Count && ps[parameter.Index].IsScoped;
+
+    /// <summary>The parameters of the method or lambda checked, as written.</summary>
+    private IReadOnlyList<Param>? _refSafetyParams;
 
     /// <summary>A call's receiver as an argument: an instance method's object, where it is a ref struct's.</summary>
     private Expr? Receiver(CallExpr call)

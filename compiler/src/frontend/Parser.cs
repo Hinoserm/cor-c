@@ -3487,6 +3487,7 @@ public sealed class Parser
         }
 
         // field
+        Token fieldName = _t[_i - 1];
         if (_declarationsOnly) FieldNames.Add(_t[_i - 1].Pos);
         int initFrom = Cur.Pos;
         Expr? init = Take(Tok.Assign) ? Initialiser(type) : null;
@@ -3510,7 +3511,7 @@ public sealed class Parser
             FieldDecl more = new()
             {
                 Name = also.Text, Mods = mods, Type = type, Init = value, IsEvent = isEvent,
-                DeclaredInit = value, Line = also.Line, Col = also.Col,
+                DeclaredInit = value, Line = also.Line, Col = also.Col, NameLine = also.Line, NameCol = also.Col,
             };
 
             if (attributes.Count > 0) more.WritableAttributes.AddRange(attributes);
@@ -3522,7 +3523,7 @@ public sealed class Parser
         FieldDecl first = new()
         {
             Name = name, Mods = mods, Type = type, Init = init, IsEvent = isEvent,
-            DeclaredInit = init, Line = start.Line, Col = start.Col,
+            DeclaredInit = init, Line = start.Line, Col = start.Col, NameLine = fieldName.Line, NameCol = fieldName.Col,
         };
 
         if (attributes.Count > 0) first.WritableAttributes.AddRange(attributes);
@@ -4420,6 +4421,8 @@ public sealed class Parser
 
     private PropertyDecl ParseProperty(TypeRef type, string name, Mods mods, Token start)
     {
+        // Its name, just read (an indexer's `]`, which nothing places at).
+        Token propertyName = _t[_i - 1];
         // AN EXPRESSION BODY IS A GETTER AND NOTHING ELSE, for an indexer as
         // much as for a property: `public int this[int i] => data[i];`. An
         // ordinary property's form is handled where members are dispatched,
@@ -4603,6 +4606,7 @@ public sealed class Parser
             Name = name, Mods = mods, Type = type, Getter = getter, Setter = setter,
             Auto = auto, HasSetter = hasSetter, Init = init, Line = start.Line, Col = start.Col,
             GetMods = getMods, SetMods = setMods,
+            NameLine = propertyName.Kind == Tok.Ident ? propertyName.Line : 0, NameCol = propertyName.Kind == Tok.Ident ? propertyName.Col : 0,
         };
     }
 
@@ -8089,7 +8093,9 @@ public sealed class Parser
         MethodDecl m = new()
         {
             Name = name + "$" + _memberName + "$" + _hoistSerial++,
-            Returns = returns ?? VoidType(),
+            // `void` was read with the name (ParseLocalFunction): VoidType
+            // reads a token, which here is the `<` of the type parameters.
+            Returns = returns ?? new TypeRef { Name = "void", Line = at.Line, Col = at.Col },
             Mods = (_memberStatic ? Mods.Static | Mods.Private : Mods.Private) | byReference,
             Line = at.Line, Col = at.Col, Body = null,
             HoistedName = name,

@@ -3360,7 +3360,7 @@ public sealed class Monomorphiser
                     Preinit = f.Preinit,
                     VtableSlotHint = f.VtableSlotHint,
                     FixedSize = f.FixedSize,
-                    Line = f.Line, Col = f.Col,
+                    Line = f.Line, Col = f.Col, NameLine = f.NameLine, NameCol = f.NameCol,
                 };
 
                 if (f.Attributes.Count > 0) copy.WritableAttributes.AddRange(f.Attributes);
@@ -3379,7 +3379,7 @@ public sealed class Monomorphiser
                     VtableSlotHint = p.VtableSlotHint,
                     ExplicitInterface = p.ExplicitInterface,
                     ExplicitInterfaceArgs = p.ExplicitInterfaceArgs?.Select(a => Sub(a, map)).ToList(),
-                    Line = p.Line, Col = p.Col,
+                    Line = p.Line, Col = p.Col, NameLine = p.NameLine, NameCol = p.NameCol,
                 };
 
                 // AN INDEXER'S PARAMETERS, substituted like any other type.

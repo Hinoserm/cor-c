@@ -1,0 +1,31 @@
+// test: void_generic_local_functions
+// expect-exit: 0
+// expect-output:
+// 1,2,3 of 3
+// a of 3
+// 1a
+//
+// A GENERIC LOCAL FUNCTION RETURNING NOTHING, static or capturing, beside
+// one returning its T: `static void Trim<T>(List<T> list, int to)` read
+// its `<` as part of a void return type and refused the parameter list.
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static void Main()
+    {
+        List<int> numbers = new() { 1, 2, 3, 4 };
+        List<string> words = new() { "a", "b", "c" };
+        int keep = 2;
+        keep++;
+        static void Trim<T>(List<T> list, int to) { if (list.Count > to) list.RemoveRange(to, list.Count - to); }
+        Trim(numbers, keep);
+        Trim(words, 1);
+        void Show<T>(List<T> list) { Console.WriteLine(string.Join(",", list) + " of " + keep); }
+        Show(numbers);
+        Show(words);
+        T First<T>(List<T> list) => list[0];
+        Console.WriteLine(First(numbers) + First(words));
+    }
+}

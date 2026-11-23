@@ -1836,10 +1836,11 @@ public sealed partial class Binder
     /// </summary>
     private void CheckTemplateTypes(MethodDecl md, TypeDecl owner, TypeSymbol sym)
     {
+        // In a binding of the fresh bodies only too: what an earlier round
+        // said was thrown away with it, and only written types that name a
+        // ref struct are resolved, which makes the pass cheap.
         if (md.Body is null || _quiet > 0 || !_templatesChecked.Add(md) || IsLibraryDecl(owner)) return;
-        HashSet<string> open = new(StringComparer.Ordinal);
-        foreach (TypeParam p in md.TypeParams) open.Add(p.Name);
-        foreach (TypeParam p in owner.TypeParams) open.Add(p.Name);
+        HashSet<string>? open = null;
         MemberDecl? before = _member;
         _member = md;
         try
@@ -1857,28 +1858,150 @@ public sealed partial class Binder
                     DefaultExpr de => de.Type,
                     _ => null,
                 };
-                if (written is not { Written: true } || written.Name is "var" or "" || MentionsAny(written, open)) continue;
-                int errors = _r.Errors.Count, warnings = _r.Warnings.Count;
-                Type resolved = Resolve(written, sym);
-                // Resolve checks a written type only outside a copy, and a
-                // generic type's template is shared code (Canon): asked here.
-                bool said = false;
-                for (int k = errors; k < _r.Errors.Count; k++)
-                    said |= _r.Errors[k].Message.StartsWith("CS0611:", StringComparison.Ordinal) || _r.Errors[k].Message.StartsWith("CS9244:", StringComparison.Ordinal);
-                if (!said && resolved.Symbol?.Decl is { Specialised: false }) TemplateArgumentsRefLike(written, resolved, sym);
-                else if (!said) RefLikeUses(written, resolved);
-                if (n is NewExpr { ArraySize: not null } && RefLike(resolved))
-                    RefuseRefLikeArgument(written, $"CS0611: Array elements cannot be of type '{resolved.Shown()}'");
-                for (int k = _r.Errors.Count - 1; k >= errors; k--)
-                    if (!_r.Errors[k].Message.StartsWith("CS0611:", StringComparison.Ordinal) && !_r.Errors[k].Message.StartsWith("CS9244:", StringComparison.Ordinal))
-                        _r.Errors.RemoveAt(k);
-                _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
+                if (written is null) continue;
+                open ??= OpenNames(md, owner);
+                CheckTemplateType(written, n is NewExpr { ArraySize: not null }, open, sym);
             }
+        }
+        // ONE TEMPLATE'S MISSING TYPE COSTS NO REBUILD of its own: asked
+        // for with the others, as a body's are (CheckBodyWork).
+        catch (Metadata.DeclarationDemand demand)
+        {
+            _declarationBatch.Add(demand);
+            _quiet = 0;
         }
         finally { _member = before; }
     }
 
+    /// <summary>The type parameters a template's written types may name: its own and its owner's (an outer type's among them, OuterParams).</summary>
+    private static HashSet<string> OpenNames(MethodDecl? md, TypeDecl owner)
+    {
+        HashSet<string> open = new(StringComparer.Ordinal);
+        if (md is not null) foreach (TypeParam p in md.TypeParams) open.Add(p.Name);
+        foreach (TypeParam p in owner.TypeParams) open.Add(p.Name);
+        return open;
+    }
+
+    /// <summary>
+    /// One written type of a template, refused where it holds a ref struct
+    /// C# allows none in (CS0611, CS9244). ONLY ONE THAT NAMES A REF STRUCT
+    /// is resolved at all: resolving makes and declares what it names, which
+    /// generic code never called must not cost a valid program.
+    /// </summary>
+    private void CheckTemplateType(TypeRef written, bool sizedArray, HashSet<string> open, TypeSymbol sym)
+    {
+        if (!written.Written || written.Name is "var" or "" || MentionsAny(written, open) || !NamesRefLike(written)) return;
+        int errors = _r.Errors.Count, warnings = _r.Warnings.Count;
+        Type resolved = Resolve(written, sym);
+        // Resolve checks a written type only outside a copy, and a generic
+        // type's template is shared code (Canon): asked here.
+        bool said = false;
+        for (int k = errors; k < _r.Errors.Count; k++)
+            said |= _r.Errors[k].Message.StartsWith("CS0611:", StringComparison.Ordinal) || _r.Errors[k].Message.StartsWith("CS9244:", StringComparison.Ordinal);
+        if (!said && resolved.Symbol?.Decl is { Specialised: false }) TemplateArgumentsRefLike(written, resolved, sym);
+        else if (!said) RefLikeUses(written, resolved);
+        if (sizedArray && RefLike(resolved))
+            RefuseRefLikeArgument(written, $"CS0611: Array elements cannot be of type '{resolved.Shown()}'");
+        for (int k = _r.Errors.Count - 1; k >= errors; k--)
+            if (!_r.Errors[k].Message.StartsWith("CS0611:", StringComparison.Ordinal) && !_r.Errors[k].Message.StartsWith("CS9244:", StringComparison.Ordinal))
+                _r.Errors.RemoveAt(k);
+        _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
+    }
+
+    /// <summary>
+    /// Whether a written type names a ref struct anywhere in it, by simple
+    /// name (RefLikeNames): each part of a name its arguments were folded
+    /// into (`List$Span_int`), and the arguments kept beside it (UseArgs).
+    /// </summary>
+    private bool NamesRefLike(TypeRef r)
+    {
+        HashSet<string> refLike = RefLikeNames();
+        foreach (string part in r.Name.Split(NameParts, StringSplitOptions.RemoveEmptyEntries))
+            if (refLike.Contains(part)) return true;
+        foreach (TypeRef a in r.Args) if (NamesRefLike(a)) return true;
+        if (r.UseArgs is { } kept) foreach (TypeRef a in kept) if (NamesRefLike(a)) return true;
+        return false;
+    }
+
+    private static readonly char[] NameParts = { '.', '$', '_', '`', '<', '>', ',', ' ' };
+
+    /// <summary>
+    /// The simple names of the ref structs the unit has declared, and Span's
+    /// and ReadOnlySpan's whatever it has: made again when more are declared.
+    /// </summary>
+    private HashSet<string> RefLikeNames()
+    {
+        if (_refLikeNames is not null && _refLikeNamesAt == _r.Types.Count) return _refLikeNames;
+        _refLikeNames = new(StringComparer.Ordinal) { "Span", "ReadOnlySpan" };
+        foreach (TypeSymbol t in _r.Types.Values)
+            if (t.Decl is { Specialised: false } d && (d.Mods & Mods.RefLike) != 0) _refLikeNames.Add(d.Name);
+        _refLikeNamesAt = _r.Types.Count;
+        return _refLikeNames;
+    }
+
+    private HashSet<string>? _refLikeNames;
+    private int _refLikeNamesAt;
+
     private readonly HashSet<MethodDecl> _templatesChecked = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<TypeDecl> _templateMembersChecked = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// A type's fields' and properties' types that hold a ref struct where
+    /// C# allows none: an array of one (CS0611, at the type), a type argument
+    /// (CS9244, at the member's name). Once per declaration.
+    /// </summary>
+    private void CheckMemberTypes(TypeDecl d, TypeSymbol owner)
+    {
+        if (!_templateMembersChecked.Add(d)) return;
+        HashSet<string>? open = null;
+        TypeSymbol? thisBefore = _thisType;
+        MemberDecl? memberBefore = _member;
+        _thisType = owner;
+        try
+        {
+            foreach (MemberDecl m in d.Members)
+            {
+                foreach ((TypeRef declared, int line, int col) in MemberTypes(m))
+                {
+                    if (!NamesRefLike(declared)) continue;
+                    open ??= OpenNames(null, d);
+                    _member = m;
+                    _refLikeArgumentAt = line > 0 ? new NameExpr { Name = m.Name, Line = line, Col = col } : null;
+                    try { CheckTemplateType(declared, false, open, owner); }
+                    catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); _quiet = 0; }
+                    finally { _refLikeArgumentAt = null; }
+                }
+            }
+        }
+        finally { _thisType = thisBefore; _member = memberBefore; }
+    }
+
+    /// <summary>A member's written type and where its name is, a field's further names too.</summary>
+    private static IEnumerable<(TypeRef Type, int Line, int Col)> MemberTypes(MemberDecl m)
+    {
+        switch (m)
+        {
+            case FieldDecl f:
+                yield return (f.Type, f.NameLine, f.NameCol);
+                foreach (FieldDecl more in f.More) yield return (more.Type, more.NameLine, more.NameCol);
+                break;
+            case PropertyDecl p:
+                yield return (p.Type, p.NameLine, p.NameCol);
+                break;
+        }
+    }
+
+    /// <summary>Whether a node is a written type or one of its arguments, at any depth.</summary>
+    private static bool Within(TypeRef root, Node at)
+    {
+        if (ReferenceEquals(root, at)) return true;
+        foreach (TypeRef a in root.Args) if (Within(a, at)) return true;
+        if (root.UseArgs is { } kept) foreach (TypeRef a in kept) if (Within(a, at)) return true;
+        return false;
+    }
+
+    /// <summary>Where a type argument's refusal (CS9244) is said instead of at the argument: a member's name.</summary>
+    private Node? _refLikeArgumentAt;
 
     /// <summary>A declaration of the class library's (or one of no source, as IsLibraryType counts it).</summary>
     private static bool IsLibraryDecl(TypeDecl d) => d.SourcePath is not { } path || LibrarySource is null || LibrarySource(path);
@@ -2151,17 +2274,17 @@ public sealed partial class Binder
     /// <summary>
     /// Whether the code being bound is a copy over a ref struct where its
     /// template's parameter allows none: `List$Span$int`, a type nested in
-    /// one, or a type over one of those (`IEnumerable<List<Span<int>>>`).
+    /// one, a type over one of those (`IEnumerable<List<Span<int>>>`), or a
+    /// lambda written in any of them.
     /// </summary>
     private bool CopyOverRefLike()
     {
-        for (TypeSymbol? t = _thisType; t is not null; )
-        {
-            if (OverRefLike(t, 0)) return true;
-            if (t.Decl?.Outer is not { } outer || !FindMadeType(outer, out TypeSymbol? up) || up is null || ReferenceEquals(up, t)) break;
-            t = up;
-        }
-        return false;
+        // A lambda's closure is no copy itself: the type its code is
+        // written in is (_lexicalType). A type nested in a copy over a ref
+        // struct is made over the same arguments (OuterParams), so its own
+        // are enough.
+        TypeSymbol? home = _thisType is { } now && IsClosure(now) ? _lexicalType : _thisType;
+        return home is not null && OverRefLike(home, 0);
     }
 
     private bool OverRefLike(TypeSymbol t, int depth)
@@ -2192,6 +2315,13 @@ public sealed partial class Binder
     private void RefuseRefLikeArgument(Node at, string message)
     {
         if (_quiet > 0) return;
+        if (message.StartsWith("CS9244:", StringComparison.Ordinal))
+        {
+            if (_refLikeArgumentAt is { } named) at = named;
+            // A FIELD'S OR A PROPERTY'S OWN TYPE is said at its name, once,
+            // by CheckMemberTypes: not here too, where it is declared.
+            else if (_member is { } member && MemberTypes(member).Any(t => Within(t.Type, at))) return;
+        }
         // In a look, said and taken back with it (Peek): nothing else undone.
         if (_peeking > 0)
         {
@@ -4093,6 +4223,7 @@ public sealed partial class Binder
                 _bodyWork.Add((d, sym, null));
             }
             else if (d.TypeParams.Count > 0 && !d.Specialised) _templateDecls.Add(d);
+            if (!d.Specialised && !IsLibraryDecl(d)) _declaredTypes.Add(d);
         }
 
         // AND THE BODIES OF THE EXTENDING DECLARATIONS, which the loop above
@@ -4116,6 +4247,9 @@ public sealed partial class Binder
 
     /// <summary>The unit's generic types as written, for their templates' written types (CheckBodyWork).</summary>
     private readonly List<TypeDecl> _templateDecls = new();
+
+    /// <summary>The program's own types as written, for their fields' and properties' types (CheckMemberTypes).</summary>
+    private readonly List<TypeDecl> _declaredTypes = new();
 
     private void CheckBodyWork()
     {
@@ -4145,6 +4279,15 @@ public sealed partial class Binder
                     foreach (MethodDecl md in d.Members.OfType<MethodDecl>()) CheckTemplateTypes(md, d, template);
                 }
                 finally { _thisType = thisBefore; }
+            }
+
+            // EVERY TYPE'S FIELDS AND PROPERTIES, a template's as much as any:
+            // `List<Span<int>> l;` is refused at its name (CS9244), as Roslyn
+            // places it, once the copies' arguments are known.
+            foreach (TypeDecl d in _declaredTypes)
+            {
+                if (!_r.Types.TryGetValue(TypeKey(d), out TypeSymbol? owner) || !ReferenceEquals(owner.Decl, d) || owner.MembersPending) continue;
+                CheckMemberTypes(d, owner);
             }
 
             for (int ordinal = 0; ; ordinal++)
@@ -11477,7 +11620,7 @@ public sealed partial class Binder
         // (Binder.RefSafety): `() => { Span<int> t = stackalloc int[4];
         // return t; }` is CS8352 in a lambda as anywhere.
         if (_quiet == 0 && !InGenericCopy() && (RefLike(closureReturns) || _sawRefLocal || run.Params.Any(p => RefLike(p.Type))))
-            CheckRefSafety(body, closureReturns);
+            CheckRefSafety(body, closureReturns, lam.Params);
         _sawRefLocal = outerSawRefLocal;
         _r.FrameSize[body] = _nextSlot;
         PopScope();
@@ -13099,10 +13242,11 @@ public sealed partial class Binder
         int overrides = _r.WantedOverrides.Count;
         int wanting = _r.Wanting.Count;
         HashSet<string>? anonymous = _r.AnonymousDelegates.Count > 0 ? new(_r.AnonymousDelegates, StringComparer.Ordinal) : null;
-        // And whether another round is wanted: what the look asked for (a
-        // natural type's delegate, a type not made yet) the real check asks
-        // again, and a round asked for nothing declares nothing.
-        bool reexpand = _r.Reexpand;
+        // NOT Reexpand: a round a look asked for stays asked. Several askers
+        // change state first (a struct context's needs, a lambda's canonical
+        // face) and ask only on that first change, so the real check finds
+        // it made and never asks again -- one spare round is the cost.
+        int held = _heldCopyErrors?.Count ?? 0;
         // WHAT THE LOOK DECLARED IS TAKEN BACK TOO. An `out var` or a pattern
         // variable in the expression declares a name in the scope it is
         // checked in, and the real check that follows declares it again: a
@@ -13136,7 +13280,8 @@ public sealed partial class Binder
         Trim(_r.Wanting, wanting);
         if (anonymous is null) _r.AnonymousDelegates.Clear();
         else _r.AnonymousDelegates.IntersectWith(anonymous);
-        _r.Reexpand = reexpand;
+        // What a copy over a ref struct said in the look is the look's too.
+        if (_heldCopyErrors is not null && _heldCopyErrors.Count > held) _heldCopyErrors.RemoveRange(held, _heldCopyErrors.Count - held);
         return had;
     }
 

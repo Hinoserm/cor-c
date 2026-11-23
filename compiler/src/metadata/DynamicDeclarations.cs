@@ -91,7 +91,8 @@ public static class DynamicDeclarations
             if (dot > 0 && found.Count > 1)
             {
                 string written = name[..dot];
-                List<TypeDecl> qualified = found.Where(t => Path(t).EndsWith(written, StringComparison.Ordinal)).ToList();
+                List<TypeDecl> qualified = found.Where(t => Path(t) is { } path
+                    && (path == written || path.EndsWith("." + written, StringComparison.Ordinal))).ToList();
                 if (qualified.Count > 0) found = qualified;
             }
             TypeDecl? d = found.Count <= 1 ? found.FirstOrDefault()

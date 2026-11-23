@@ -4,6 +4,14 @@ namespace Corsac.Lang;
 public sealed class FieldDecl : MemberDecl
 {
     public required TypeRef Type { get; init; }
+
+    /// <summary>
+    /// Where its name is written, as Roslyn places a diagnostic of the
+    /// declaration (CS9244 on its type): Line and Col are its start.
+    /// 0 where nobody wrote it.
+    /// </summary>
+    public int NameLine { get; init; }
+    public int NameCol { get; init; }
     /// <summary>Declared with the event keyword: a delegate-typed field whose += and -= combine and remove.</summary>
     public bool IsEvent { get; init; }
 

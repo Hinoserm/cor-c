@@ -1,0 +1,16 @@
+// test: ref_structs_in_member_types_as_roslyn
+// expect-compile-error: CS0611: Array elements cannot be of type 'Span<int>'
+//
+// A REF STRUCT IN A FIELD'S OR A PROPERTY'S TYPE, of a generic type never
+// made or a plain one: `List<Span<int>> l` is refused at the member's name
+// (CS9244), as Roslyn places it, each name of `l, m` and a tuple
+// property's too; `Span<int>[] a` at its type (CS0611). A field of the
+// type's own T is fine.
+// The whole list is checked by 2707_ref_structs_in_member_types_as_roslyn.sh.
+using System;
+using System.Collections.Generic;
+
+class G<T> { List<Span<int>> l; Span<int>[] a; T keep; List<T> fine; }
+class K<T> { public List<Span<byte>> Items { get; set; } }
+class N { List<Span<int>> l, m; public (Span<int>, int) Pair { get; } }
+static class P { static void Main() { } }

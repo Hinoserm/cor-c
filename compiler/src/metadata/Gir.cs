@@ -416,6 +416,9 @@ public static class Gir
                     I32(f.TemplateIndex);
                     Type(f.Type);
                     Expr(f.Init);
+                    // Where its name is written (Roslyn's place for CS9244).
+                    I32(f.NameLine);
+                    I32(f.NameCol);
                     break;
 
                 case MethodDecl d:
@@ -496,6 +499,8 @@ public static class Gir
                     Str(p2.ExplicitInterface ?? "");
                     I32((int)p2.GetMods);
                     I32((int)p2.SetMods);
+                    I32(p2.NameLine);
+                    I32(p2.NameCol);
                     I32(p2.Params.Count);
 
                     foreach (Param ip in p2.Params)
@@ -1332,8 +1337,10 @@ public static class Gir
                     Mods mods = (Mods)I32();
                     int index = I32();
                     TypeRef type = Type();
+                    Expr? init = Expr();
+                    int nameLine = I32(), nameCol = I32();
 
-                    return new FieldDecl { Name = name, Mods = mods, Type = type, Init = Expr(), TemplateIndex = index };
+                    return new FieldDecl { Name = name, Mods = mods, Type = type, Init = init, TemplateIndex = index, NameLine = nameLine, NameCol = nameCol };
                 }
 
                 case M.Method:
@@ -1429,11 +1436,12 @@ public static class Gir
                     string propertyInterface = Str();
                     Mods getMods = (Mods)I32();
                     Mods setMods = (Mods)I32();
+                    int nameLine = I32(), nameCol = I32();
 
                     PropertyDecl p = new()
                     {
                         Name = name, Mods = mods, Type = type, Auto = auto, HasSetter = hasSetter,
-                        GetMods = getMods, SetMods = setMods,
+                        GetMods = getMods, SetMods = setMods, NameLine = nameLine, NameCol = nameCol,
                         Getter = getter, Setter = setter, Init = init, TemplateIndex = index,
                         ExplicitInterface = propertyInterface.Length == 0 ? null : propertyInterface,
                     };
