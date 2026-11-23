@@ -1766,8 +1766,7 @@ public sealed partial class Binder
                 if (own is null && n is AsmStmt asm && _r.AsmBlocks.TryGetValue(asm, out AsmBinding? block) && block.FloatCode) own = "an asm block's float code";
                 if (own is null && n is CallExpr call && PackedOperation(call)) own = "packed operations";
                 else if (own is null && n is Expr e && FloatTyped(e)) own = "float code";
-                if (n is WhileStmt or DoStmt or ForStmt or ForeachStmt)
-                    foreach ((Node _, MethodSymbol callee) in DirectCalls(n, m.Owner)) looped.Add(callee);
+                if (n is WhileStmt or DoStmt or ForStmt or ForeachStmt) looped.AddRange(EveryIteration(n, m.Owner, maybe));
             }
             if (own is not null) state[m] = own;
             if (copyable) _r.PackedCopyable.Add(m);
@@ -1809,6 +1808,55 @@ public sealed partial class Binder
             }
         }
         return state;
+    }
+
+    /// <summary>
+    /// WHAT A LOOP CALLS ON EVERY ITERATION, for keeping the state around it
+    /// (PackedStateOf): its condition and steps, and the statements of its
+    /// body run on each pass -- into blocks, a nested loop, a try's body and
+    /// finally -- but not a call behind an if's branch, a switch's arm, a
+    /// catch, or ?:, &&, || and ?? (ConditionalSites). A call some passes make
+    /// is not "in a loop": TCP's every read (Tcp.RecvOwned) calls its
+    /// streamed copy under a condition inside `while (left > 0)`, once or not
+    /// at all, and keeping the state around the loop made every read of every
+    /// size pay the save, the give-back and, after a wake, the #NM trap.
+    /// </summary>
+    private List<MethodSymbol> EveryIteration(Node loop, TypeSymbol owner, HashSet<Node> maybe)
+    {
+        List<MethodSymbol> found = new();
+        void Run(Node? e)
+        {
+            if (e is null) return;
+            foreach ((Node site, MethodSymbol callee) in DirectCalls(e, owner))
+                if (!maybe.Contains(site)) found.Add(callee);
+        }
+        void Pass(Stmt? s)
+        {
+            switch (s)
+            {
+                case null: return;
+                case Block block: foreach (Stmt one in block.Statements) Pass(one); return;
+                case ExprStmt or LocalDecl or ReturnStmt: Run(s); return;
+                case IfStmt choice: Run(choice.Cond); return;
+                case SwitchStmt choice: Run(choice.Subject); return;
+                case WhileStmt inner: Run(inner.Cond); Pass(inner.Body); return;
+                case DoStmt inner: Run(inner.Cond); Pass(inner.Body); return;
+                case ForStmt inner: Pass(inner.Init); Run(inner.Cond); foreach (Expr step in inner.Step) Run(step); Pass(inner.Body); return;
+                case ForeachStmt inner: Run(inner.Sequence); Pass(inner.Body); return;
+                case TryStmt guarded: Pass(guarded.Body); Pass(guarded.Finally); return;
+                // Anything else is counted as not on every pass: keeping the
+                // state in the callee costs a save per call, never a wrong one.
+                default: return;
+            }
+        }
+        switch (loop)
+        {
+            case WhileStmt w: Run(w.Cond); Pass(w.Body); break;
+            case DoStmt d: Run(d.Cond); Pass(d.Body); break;
+            case ForStmt f: Run(f.Cond); foreach (Expr step in f.Step) Run(step); Pass(f.Body); break;
+            case ForeachStmt each: Pass(each.Body); break;
+        }
+        return found;
     }
 
     /// <summary>The parameterless constructor a class's own runs unnamed, its nearest base's that declares one (Lowering.ImplicitConstructor); null where none.</summary>

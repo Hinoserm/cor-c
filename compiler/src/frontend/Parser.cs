@@ -5917,7 +5917,8 @@ public sealed class Parser
     /// at a time, which keep no state -- where saving the thread's state
     /// (FNSTENV, FXSAVE: tens to a hundred and more cycles) would cost more
     /// than the packed loop wins (Sys.PackedSmall, by --cpu). Read off the
-    /// body's first loop at its own level: `for (int i = S; i < E; i += C)`
+    /// body's first loop at its own level, times each loop inside it down to
+    /// the innermost that holds the packed operations: `for (int i = S; i < E; i += C)`
     /// (or i++, or <=), or `while (E >= K)` (or >); E the method's integer
     /// parameters (_bodyParams), integer literals and + - * << >> of them --
     /// nothing that runs code at the method's entry, where the guard is
@@ -5941,25 +5942,46 @@ public sealed class Parser
                 => new BinaryExpr { Op = b.Op, Left = left, Right = right, Line = line, Col = col },
             _ => null,
         };
-        foreach (Stmt s in Level(read))
+        // ONE LOOP'S WORK AND STEP: (E - S, C) of `for (i = S; i < E; i += C)`,
+        // (E, K) of `while (E >= K)`; null where its bound is nothing the
+        // entry can compute.
+        (Expr? Work, long Step) Measure(Stmt s)
         {
-            Expr? work = null;
-            long step = 0;
             if (s is ForStmt { Init: LocalDecl { Name: var i, Init: var first }, Cond: BinaryExpr { Op: BinOp.Lt or BinOp.Le, Left: NameExpr { Name: var tested } } test } f
                 && tested == i && Int(first) is long start && Bound(test.Right) is { } bound)
             {
-                step = f.Step is [UnaryExpr { Op: UnOp.PostInc or UnOp.PreInc, Operand: NameExpr { Name: var bumped } }] && bumped == i ? 1
+                long step = f.Step is [UnaryExpr { Op: UnOp.PostInc or UnOp.PreInc, Operand: NameExpr { Name: var bumped } }] && bumped == i ? 1
                      : f.Step is [AssignExpr { Op: BinOp.Add, Target: NameExpr { Name: var added }, Value: var by }] && added == i && Int(by) is long k ? k : 0;
                 long less = start - (test.Op == BinOp.Le ? 1 : 0);
-                work = less == 0 ? bound : new BinaryExpr { Op = BinOp.Sub, Left = bound, Right = IntLiteral(less, line, col), Line = line, Col = col };
+                return (less == 0 ? bound : new BinaryExpr { Op = BinOp.Sub, Left = bound, Right = IntLiteral(less, line, col), Line = line, Col = col }, step);
             }
-            else if (s is WhileStmt { Cond: BinaryExpr { Op: BinOp.Ge or BinOp.Gt } test2 } && Int(test2.Right) is long least && Bound(test2.Left) is { } left)
-            {
-                step = least + (test2.Op == BinOp.Gt ? 1 : 0);
-                work = left;
-            }
-            else if (s is not (ForStmt or WhileStmt or DoStmt or ForeachStmt)) continue;
+            if (s is WhileStmt { Cond: BinaryExpr { Op: BinOp.Ge or BinOp.Gt } test2 } && Int(test2.Right) is long least && Bound(test2.Left) is { } left)
+                return (left, least + (test2.Op == BinOp.Gt ? 1 : 0));
+            return (null, 0);
+        }
+        static Stmt? BodyOf(Stmt loop) => loop switch
+        {
+            ForStmt f => f.Body, WhileStmt w => w.Body, DoStmt d => d.Body, ForeachStmt e => e.Body, _ => null,
+        };
+        foreach (Stmt s in Level(read))
+        {
+            if (s is not (ForStmt or WhileStmt or DoStmt or ForeachStmt)) continue;
+            // THE WORK IS THE INNERMOST LOOP'S THAT HOLDS THE PACKED OPERATIONS,
+            // times each loop's around it: a copy's loop over frames of some 180
+            // words each is not a frame's worth of work a turn, and judged by
+            // its frames alone a claim of seven frames ran without the packed
+            // registers -- the streamed copy, silently not streamed. Where an
+            // inner loop's bound is nothing the entry can compute (a count read
+            // in the loop), no cutoff: the packed version always runs.
+            (Expr? work, long step) = Measure(s);
             if (work is null || step <= 0) return null;
+            for (Stmt? inner = InnerPackedLoop(BodyOf(s)); inner is not null; inner = InnerPackedLoop(BodyOf(inner)))
+            {
+                (Expr? more, long by) = Measure(inner);
+                if (more is null || by <= 0) return null;
+                work = new BinaryExpr { Op = BinOp.Mul, Left = work, Right = more, Line = line, Col = col };
+                step = checked(step * by);
+            }
             return new CallExpr
             {
                 Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedSmall", Line = line, Col = col },
@@ -5969,6 +5991,48 @@ public sealed class Parser
         }
         return null;
     }
+
+    /// <summary>
+    /// The first loop in a loop's body (its own level, or under an if) that
+    /// holds a packed operation (`Packed.NAME(...)`, read by its spelling: the
+    /// parser binds nothing); null where none does.
+    /// </summary>
+    private static Stmt? InnerPackedLoop(Stmt? body)
+    {
+        IEnumerable<Stmt> Under(Stmt? s) => s switch
+        {
+            null => Array.Empty<Stmt>(),
+            Block b => b.Statements.SelectMany(Under),
+            IfStmt i => Under(i.Then).Concat(Under(i.Else)),
+            _ => new[] { s },
+        };
+        foreach (Stmt s in Under(body))
+            if (s is ForStmt or WhileStmt or DoStmt or ForeachStmt && HoldsPacked(s)) return s;
+        return null;
+    }
+
+    /// <summary>Whether a statement holds a packed operation's call anywhere in it, by its spelling.</summary>
+    private static bool HoldsPacked(Node? n) => n switch
+    {
+        null => false,
+        // Not Features, Prefetch, PrefetchWrite or Fence, which touch no
+        // register (Binder.PackedOperation).
+        CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Packed" }, Name: not ("Features" or "Prefetch" or "PrefetchWrite" or "Fence") } } => true,
+        CallExpr c => HoldsPacked(c.Target) || c.Args.Any(HoldsPacked),
+        Block b => b.Statements.Any(HoldsPacked),
+        ExprStmt e => HoldsPacked(e.Expr),
+        LocalDecl d => HoldsPacked(d.Init),
+        IfStmt i => HoldsPacked(i.Cond) || HoldsPacked(i.Then) || HoldsPacked(i.Else),
+        ForStmt f => HoldsPacked(f.Body) || HoldsPacked(f.Cond),
+        WhileStmt w => HoldsPacked(w.Body) || HoldsPacked(w.Cond),
+        DoStmt d => HoldsPacked(d.Body) || HoldsPacked(d.Cond),
+        ForeachStmt e => HoldsPacked(e.Body),
+        AssignExpr a => HoldsPacked(a.Target) || HoldsPacked(a.Value),
+        BinaryExpr b => HoldsPacked(b.Left) || HoldsPacked(b.Right),
+        UnaryExpr u => HoldsPacked(u.Operand),
+        MemberExpr m => HoldsPacked(m.Target),
+        _ => false,
+    };
 
     /// <summary>One variant of a packed block: its state taken (Sys.PackedEnter), its body, the state given back on every way out (a finally's Sys.PackedLeave).</summary>
     private static Stmt PackedVariant(Stmt read, int kind, int mask, int number, int line, int col)
