@@ -601,7 +601,25 @@ public static class ProjectCompile
             }
         }
         int threads = Math.Min(limit, rest.Length);
-        if (threads <= 1) Worker();
+        // UNITS IN WORKER PROCESSES WHERE A BUDGET IS GIVEN: each its own heap,
+        // so no unit's collection stops the others. Threads in one process
+        // share one heap and every collection stops all of them: a module of
+        // 132 units (nt) spent 210 s of its 260 in such pauses, at two and a
+        // half processors of eight; `corc project`'s children, a process to a
+        // worker, run its 509 units at seven and a half. Each child takes
+        // units by claim file (--claim-dir) and a token for each (--worker-
+        // pool); entry units, compiled above, are claimed first.
+        if (pool is not null && claims is null && threads > 1)
+        {
+            string claimDir = list + ".claims";
+            if (Directory.Exists(claimDir)) Directory.Delete(claimDir, recursive: true);
+            Directory.CreateDirectory(claimDir);
+            int entries = units.Count(unit => unit.Entry);
+            if (dynamic) for (int e = 0; e < entries; e++) File.WriteAllBytes(Path.Combine(claimDir, "e" + e), Array.Empty<byte>());
+            if (!InWorkerProcesses(list, claimDir, Driver.Value(args, "--worker-pool")!, common, census, threads)) failures++;
+            try { Directory.Delete(claimDir, recursive: true); } catch (IOException) { }
+        }
+        else if (threads <= 1) Worker();
         else
         {
             Thread[] running = new Thread[threads];
@@ -668,6 +686,69 @@ public static class ProjectCompile
     /// and units are left unclaimed: start another in its place (ProjectCommand).
     /// </summary>
     public const int Recycle = 75;
+
+    /// <summary>
+    /// `count` child compile-project processes of this compiler over the
+    /// same unit list, each taking whatever unit is unclaimed next
+    /// (claimDir) and a token of the build's budget (pool) for each; one
+    /// spent (Recycle) is started again in its place. Their output is this
+    /// process's. Whether every one succeeded.
+    /// </summary>
+    private static bool InWorkerProcesses(string list, string claimDir, string pool, List<string> common, bool census, int count)
+    {
+        List<System.Diagnostics.ProcessStartInfo> starts = new();
+        for (int i = 0; i < count; i++)
+        {
+            System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            start.ArgumentList.Add("--compiler-identity"); start.ArgumentList.Add(CompilerIdentity());
+            // ITS SHARE OF THE PROCESSORS FOR ITS COLLECTOR, as ProjectCommand's
+            // children have it: markers enough for its share, less its own.
+            if (Switches.GcWorkers < 0)
+            {
+                int cores = Math.Max(1, Environment.ProcessorCount / Math.Max(1, count));
+                start.ArgumentList.Add("--gc-workers");
+                start.ArgumentList.Add(Math.Min(7, Math.Max(0, cores - 1)).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            foreach (string flag in Driver.ChildFlags) start.ArgumentList.Add(flag);
+            start.ArgumentList.Add("compile-project");
+            start.ArgumentList.Add("--units"); start.ArgumentList.Add(list);
+            start.ArgumentList.Add("--claim-dir"); start.ArgumentList.Add(claimDir);
+            start.ArgumentList.Add("--jobs"); start.ArgumentList.Add("1");
+            start.ArgumentList.Add("--worker-pool"); start.ArgumentList.Add(pool);
+            if (census) start.ArgumentList.Add("--unit-census");
+            foreach (string option in common) start.ArgumentList.Add(option);
+            starts.Add(start);
+        }
+        bool ok = true;
+        object gate = new();
+        List<Thread> waits = new();
+        foreach (System.Diagnostics.ProcessStartInfo start in starts)
+        {
+            Thread wait = new(() =>
+            {
+                try
+                {
+                    int code;
+                    do
+                    {
+                        using System.Diagnostics.Process child = System.Diagnostics.Process.Start(start)!;
+                        child.WaitForExit();
+                        code = child.ExitCode;
+                    }
+                    while (code == Recycle);
+                    if (code != 0) lock (gate) ok = false;
+                }
+                catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException)
+                {
+                    lock (gate) { ok = false; Console.Error.WriteLine("corc: a compile-project worker could not be started: " + e.Message); }
+                }
+            }) { IsBackground = true, Name = "worker-process" };
+            waits.Add(wait);
+            wait.Start();
+        }
+        foreach (Thread wait in waits) wait.Join();
+        return ok;
+    }
 
     // ---- calls between units inside a kept state -------------------------------------
     //

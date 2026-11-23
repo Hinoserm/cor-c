@@ -354,13 +354,23 @@ count to MSBuild and DOTNET_PROCESSOR_COUNT. Leases share one global semaphore
 and are returned on success, failure and cancellation; nested compilers do not
 each receive the full machine count.
 
-Exec, Script and Test use one slot by default. `Workers="auto"` allows a
-cooperating task to lease the remaining idle slots. Every child receives its
-lease as CORSAC_BUILD_JOBS and DOTNET_PROCESSOR_COUNT. Scripts must pass that
-budget to native tools, e.g. `corc --jobs` or `make -j`; arbitrary scripts which
-ignore it cannot be forcibly constrained by a process semaphore. The repository
-library-build script passes it to the compiler. Memory estimates and named
-resource locks below remain future scheduling work.
+THE WORKER BUDGET. A build's --jobs workers are one budget shared by every
+process of the build (tools/build/src/WorkerPool.cs holds the protocol): a
+directory of lock files, one per worker, laid out under build/workers/<pid>
+when the build starts, removed when it ends, and named to the manifest as the
+reserved property `$(WorkerPool)`. A token is held only while computing.
+
+Exec, Script and Test hold one token while their process runs.
+`Workers="budget"` marks a coordinator that is handed the budget -- it must
+name `$(WorkerPool)` in an argument or the environment -- and draws a token
+for each piece of work itself, passing the directory to each corc as
+`--worker-pool`: it holds none of its own and is told N (DOTNET_PROCESSOR_COUNT,
+CORSAC_BUILD_JOBS), so many coordinators run side by side on the same N and
+the next starts whenever a token is free. `Workers="auto"` leases the tokens
+free when the task starts, for a tool that knows only a count. corc's
+compile-project, handed a budget, runs its units in worker processes, a heap
+each, a token a unit. Memory estimates and named resource locks remain
+future scheduling work.
 
 ## Incremental execution
 

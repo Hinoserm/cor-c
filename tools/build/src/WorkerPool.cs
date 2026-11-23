@@ -34,7 +34,10 @@ namespace Corsac.Build;
 /// - Tokens are not counted anywhere else: the files are the count. Nothing
 ///   writes into them.
 /// - A BUDGET THAT HAS GONE (its directory or a file deleted under a taker) is
-///   an error, never "none free": a taker would wait on it for ever.
+///   an error, never "none free": a taker would wait on it for ever. A copy
+///   of TryTake must throw there too.
+/// - THE `owner` FILE beside the tokens is held by the build that laid the
+///   budget out; a budget whose owner nobody holds is a dead build's (SweepDead).
 /// </summary>
 public sealed class WorkerPool : IDisposable
 {
@@ -81,20 +84,31 @@ public sealed class WorkerPool : IDisposable
     }
 
     /// <summary>
+    /// The budget's owner file, held by the build that laid it out for as
+    /// long as it runs: another build that can take it knows this one is gone
+    /// (SweepDead) -- by the lock, not the process id, which another process
+    /// may have since and another PID namespace may not see.
+    /// </summary>
+    public static FileStream Own(string directory) =>
+        new(Path.Combine(directory, "owner"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+
+    /// <summary>
     /// The budgets of builds that died without removing theirs: each a
-    /// directory named by its build's process id, whose process is gone.
+    /// directory beside this build's whose owner file nobody holds.
     /// </summary>
     public static void SweepDead(string root)
     {
         if (!Directory.Exists(root)) return;
         foreach (string directory in Directory.GetDirectories(root))
         {
-            if (!int.TryParse(Path.GetFileName(directory), out int pid) || pid == Environment.ProcessId) continue;
-            bool alive;
-            try { using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(pid); alive = !process.HasExited; }
-            catch (ArgumentException) { alive = false; }
-            catch (InvalidOperationException) { alive = false; }
-            if (!alive)
+            // NOT ONE JUST MADE: a build holds its owner file a moment after
+            // making its directory, and a sweep in that moment must not see it.
+            if (DateTime.UtcNow - Directory.GetCreationTimeUtc(directory) < TimeSpan.FromMinutes(1)) continue;
+            bool gone;
+            try { using FileStream taken = Own(directory); gone = true; }
+            catch (IOException) { gone = false; }
+            catch (UnauthorizedAccessException) { gone = false; }
+            if (gone)
                 try { Directory.Delete(directory, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
     }

@@ -5,6 +5,7 @@ namespace Corsac.Build;
 public sealed class ProcessRunner : IDisposable
 {
     private readonly WorkerPool pool;
+    private readonly FileStream? owner;
     private readonly int jobs;
     private readonly string logs;
     private int sequence;
@@ -16,21 +17,38 @@ public sealed class ProcessRunner : IDisposable
     /// </summary>
     public ProcessRunner(int jobs, string logs, string budget)
     {
-        WorkerPool.Create(budget, jobs);
-        pool = WorkerPool.Open(budget) ?? throw new BuildException("the worker budget could not be laid out at " + budget);
+        // THE BUILD'S OWN, while it lives: its owner file held (WorkerPool.Own),
+        // which another build's SweepDead takes for proof that it is not.
+        try
+        {
+            Directory.CreateDirectory(budget);
+            owner = WorkerPool.Own(budget);
+            WorkerPool.Create(budget, jobs);
+            pool = WorkerPool.Open(budget) ?? throw new BuildException("the worker budget could not be laid out at " + budget);
+        }
+        catch
+        {
+            owner?.Dispose();
+            try { Directory.Delete(budget, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            throw;
+        }
         this.jobs = jobs;
         this.logs = logs;
     }
 
-    public void Dispose() => pool.Dispose();
+    public void Dispose()
+    {
+        pool.Dispose();
+        owner?.Dispose();
+    }
 
     /// <summary>
     /// A process run with its share of the budget:
     /// - ONE TOKEN, held while it runs, for an ordinary task -- one process
     ///   computing.
     /// - NONE for a coordinator that is handed the budget itself
-    ///   (Workers="budget", its arguments naming $(WorkerPool)): it draws a
-    ///   token for each piece of work it
+    ///   (Workers="budget", its arguments naming $(WorkerPool)): it draws
+    ///   a token for each piece of work it
     ///   does, so a module of 132 units and twenty of two run side by side
     ///   on the same N, and it is told N, not what was free when it began.
     /// - The tokens going spare when it starts, for a Workers="auto" task -- a

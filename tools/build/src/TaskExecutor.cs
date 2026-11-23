@@ -83,6 +83,16 @@ public sealed class TaskExecutor
             BuildManifest.Fail(task, "Interactive must be true or false");
         if ((string?)task.Attribute("Workers") is { } workers && workers is not ("auto" or "1" or "budget"))
             BuildManifest.Fail(task, "Workers must be auto, 1 or budget");
+        // A COORDINATOR IS HANDED THE BUDGET IT DRAWS ON: one that says
+        // Workers="budget" and is not given $(WorkerPool) would run N wide with
+        // no token, beside every other task's. Never an interactive one.
+        if ((string?)task.Attribute("Workers") == "budget")
+        {
+            bool handed = task.DescendantsAndSelf().SelectMany(e => e.Attributes())
+                .Any(a => a.Value.Contains("$(WorkerPool)", StringComparison.OrdinalIgnoreCase));
+            if (!handed) BuildManifest.Fail(task, "Workers=\"budget\" needs $(WorkerPool) in an argument or the environment: it is the budget the task draws on");
+            if ((string?)task.Attribute("Interactive") == "true") BuildManifest.Fail(task, "an interactive task cannot be Workers=\"budget\"");
+        }
         IncrementalTask.Validate(task);
         if (!int.TryParse((string?)task.Attribute("ExpectedExitCode") ?? "0", out _))
             BuildManifest.Fail(task, "ExpectedExitCode must be an integer");

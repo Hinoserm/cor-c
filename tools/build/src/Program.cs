@@ -43,7 +43,7 @@ public static class BuildCommand
             using ProcessRunner processes = new(options.Jobs, logs, budget);
             try
             {
-                        TaskExecutor executor = new(manifest, options, processes, report);
+            TaskExecutor executor = new(manifest, options, processes, report);
             foreach (BuildTarget node in graph.Ordered)
             {
                 foreach (var task in node.Tasks) executor.Validate(task, options.Plan);
