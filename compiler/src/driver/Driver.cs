@@ -180,13 +180,14 @@ public static class Driver
                 "link" => ObjectLinkCommand.Run(Response(rest)),
                 "index" => IndexCommand.Run(Response(rest)),
                 "library-sources" => LibrarySources(rest),
+                "library-split" => LibrarySplit(rest),
                 "dependencies-current" => DependenciesCurrent(rest),
                 "project" => Projects.ProjectCommand.Run(rest),
                 "backend" when rest.Length == 0 => BackendCommand.Run(),
                 // `corc build` runs a build manifest; assembling one file is
                 // `corc asm`, which is what that command was always called
                 // when anyone wrote it down.
-                "build" => Corsac.Build.BuildCommand.Run(rest).GetAwaiter().GetResult(),
+                "build" => RunBuild(rest),
                 "asm" => Build(rest),
                 "help" or "--help" or "-h" => Usage(),
                 _ => Fail($"unknown command '{command}'"),
@@ -267,6 +268,8 @@ public static class Driver
               corc asm --target x86-16 <file.asm> -o <output.bin>
               corc asm --target x86-32 <file.asm> --obj -o <output.o>
               corc asm --target x86-64 <file.asm> --obj -o <output.o>
+              corc library-sources [--freestanding]   every class library source, in order
+              corc library-split                      which shared library owns each: soname|sources
 
             options:
               --target <name>    x86 (default; also x86-32, i386) or x86-64 (also amd64)
@@ -441,6 +444,41 @@ public static class Driver
     {
         if (args.Any(argument => argument != "--freestanding")) return Fail("library-sources accepts only --freestanding");
         foreach (string path in DefaultLibraries(Target.X86, args.Contains("--freestanding"))) Console.WriteLine(path);
+        return 0;
+    }
+
+    /// <summary>
+    /// `corc build`, with the class library's split offered to manifests as
+    /// $(ClassLibraries) (<see cref="ClassLibraries"/>): a build that lays the
+    /// libraries out takes it from the toolchain instead of a copy of its own.
+    /// </summary>
+    private static int RunBuild(string[] args)
+    {
+        Corsac.Build.BuildManifest.ClassLibrarySplit = () =>
+        {
+            string root = LibraryRoot() ?? throw new Corsac.Build.BuildException("$(ClassLibraries): the toolchain has no library root");
+            List<string> problems = ClassLibraries.Check(root);
+            if (problems.Count != 0) throw new Corsac.Build.BuildException("$(ClassLibraries): " + string.Join("; ", problems));
+            return ClassLibraries.Text();
+        };
+        return Corsac.Build.BuildCommand.Run(args).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// `corc library-split`: which shared library owns each hosted class
+    /// library source, one `soname|source ...` line per library in build
+    /// order (<see cref="ClassLibraries"/>). Refuses, naming each source, when
+    /// the split and the source list disagree.
+    /// </summary>
+    private static int LibrarySplit(string[] args)
+    {
+        if (args.Length != 0) return Fail("library-split takes no arguments");
+        string? root = LibraryRoot();
+        if (root is null) return Fail("library-split: no library root (pass --lib-root)");
+        List<string> problems = ClassLibraries.Check(root);
+        foreach (string problem in problems) Console.Error.WriteLine($"corc: library-split: {problem}");
+        if (problems.Count != 0) return 2;
+        Console.Write(ClassLibraries.Text());
         return 0;
     }
 

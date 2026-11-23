@@ -171,7 +171,13 @@ captured by an already running operation. Plan output must show these barriers.
 PropertyGroup and $(Name) expansion follow the supported MSBuild conventions.
 Global CLI properties are immutable and override manifest defaults. Reserved
 properties include WorkspaceDirectory, ManifestDirectory, Configuration,
-Profile, OutputDirectory, and Jobs. Native platform, architecture, CPU, ABI,
+Profile, OutputDirectory, Jobs, and ClassLibraries. ClassLibraries is the
+path of a file the toolchain writes under the output directory when a
+manifest first names it (rewritten only when its text changes): the class
+library's split into shared libraries, one `soname|source ...` line per
+library in build order with sources relative to the toolchain's library
+root -- `corc library-split`'s output -- for an image build that lays the
+libraries out without a list of its own. Native platform, architecture, CPU, ABI,
 and object format are independent from the .NET TargetFramework contract.
 Profiles supply groups of property values; local task inputs may specialize
 them. Undefined orchestration properties are diagnosed rather than silently

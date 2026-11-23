@@ -66,48 +66,15 @@ SOURCES="$("$corc" library-sources | sed "s|^$root/||" | tr '\n' ' ')"
 
 # ---- what goes where, bottom of the stack first -----------------------------
 #
-# Each line is: <soname> <sources it owns>. The order is the build order and
+# Each line is: <soname>|<sources it owns>. The order is the build order and
 # the dependency order: a library may only need the ones above it in this
 # list, which is checked after every build.
-
-# Which library owns each source. Every source is owned by exactly one of
-# them, checked below, and a library may use only those listed before it.
-# Drawing, the GUI seat and Forms call each other, so they are one image.
-LIBRARIES="
-libcorsacrt.so|stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/unicode.cor runtime/src/core/gc.cor stdlib/src/System/GC.cor runtime/src/core/threading.cor runtime/src/platforms/threads.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/signals.cor stdlib/src/System/Threading/interlocked.cor stdlib/src/System/Text/normalization.cor
-libSystem.Runtime.InteropServices.so|stdlib/src/System/interop.cor
-libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor stdlib/src/System/Reflection/Assembly.cor stdlib/src/System/AppDomain.cor
-libSystem.Runtime.Numerics.so|stdlib/src/System/numerics.cor
-libSystem.Collections.so|stdlib/src/System/Collections/Collections.cor
-libSystem.Text.RegularExpressions.so|stdlib/src/System/Text/RegularExpressions.cor
-libSystem.IO.so|stdlib/src/System/IO/io.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/timezone.cor stdlib/src/System/IO/watcher.cor
-libSystem.IO.Compression.so|stdlib/src/System/IO/compression.cor
-libSystem.Formats.Tar.so|stdlib/src/System/IO/tar.cor
-libSystem.Console.so|stdlib/src/System/console.cor
-libSystem.Net.so|stdlib/src/System/Net/Net.cor
-libSystem.Security.Cryptography.so|stdlib/src/System/Security/Cryptography/Cryptography.cor stdlib/src/System/Security/Cryptography/Hashing.cor stdlib/src/Corsac/Security/Cryptography/crypto.cor stdlib/src/Corsac/Security/Cryptography/crypto_base.cor stdlib/src/Corsac/Security/Cryptography/crypto_der.cor stdlib/src/Corsac/Security/Cryptography/crypto_random.cor stdlib/src/Corsac/Security/Cryptography/crypto_sha512.cor stdlib/src/Corsac/Security/Cryptography/crypto_chacha.cor stdlib/src/Corsac/Security/Cryptography/crypto_poly1305.cor stdlib/src/Corsac/Security/Cryptography/crypto_chachapoly.cor stdlib/src/Corsac/Security/Cryptography/crypto_aes.cor stdlib/src/Corsac/Security/Cryptography/crypto_gcm.cor stdlib/src/Corsac/Security/Cryptography/crypto_field25519.cor stdlib/src/Corsac/Security/Cryptography/crypto_x25519.cor stdlib/src/Corsac/Security/Cryptography/crypto_ed25519.cor stdlib/src/Corsac/Security/Cryptography/crypto_p256_field.cor stdlib/src/Corsac/Security/Cryptography/crypto_p256.cor stdlib/src/Corsac/Security/Cryptography/crypto_p384.cor stdlib/src/Corsac/Security/Cryptography/crypto_rsa.cor stdlib/src/System/Security/Cryptography/Oid.cor stdlib/src/System/Security/Cryptography/X509Certificates/X509Der.cor stdlib/src/System/Security/Cryptography/X509Certificates/X509CertificateView.cor stdlib/src/System/Security/Cryptography/X509Certificates/X509PathChecks.cor stdlib/src/System/Security/Cryptography/X509Certificates/X509Certificate.cor stdlib/src/System/Security/Cryptography/X509Certificates/X509Store.cor stdlib/src/System/Security/Cryptography/X509Certificates/X509Chain.cor stdlib/src/System/Security/Cryptography/X509Certificates/X509KeyExtensions.cor stdlib/src/System/Security/Cryptography/HKDF.cor stdlib/src/System/Security/Cryptography/Aead.cor stdlib/src/System/Security/Cryptography/Asymmetric.cor
-libSystem.Net.Security.so|stdlib/src/System/Net/SslPolicyErrors.cor stdlib/src/System/Security/Authentication/SslProtocols.cor stdlib/src/System/Security/Authentication/AuthenticationException.cor stdlib/src/System/Net/Security/tls.cor stdlib/src/System/Net/Security/tls13.cor stdlib/src/System/Net/Security/tls_aesgcm.cor stdlib/src/System/Net/Security/tls_stream.cor stdlib/src/System/Net/Security/tls_handshake.cor stdlib/src/System/Net/Security/tls_hello.cor stdlib/src/System/Net/Security/tls_policy.cor stdlib/src/System/Net/Security/tls_client.cor stdlib/src/System/Net/Security/SslStream.cor
-libMono.Posix.so|stdlib/src/System/unix.cor stdlib/src/System/power.cor
-libSystem.Diagnostics.Process.so|stdlib/src/System/process.cor
-libSystem.ServiceProcess.so|stdlib/src/System/ServiceProcess/ServiceWire.cor stdlib/src/System/ServiceProcess/ServiceProcess.cor
-libSystem.Security.Cryptography.ProtectedData.so|stdlib/src/System/Security/Cryptography/ProtectedData.cor
-libSystem.Xml.so|stdlib/src/System/Xml/Xml.cor
-libSystem.Text.Json.so|stdlib/src/System/Text/Json/Json.cor
-libMicrosoft.Win32.Registry.so|stdlib/src/Microsoft/Win32/Registry.cor
-libSystem.Runtime.InteropServices.Com.so|stdlib/src/System/Runtime/InteropServices/ComInterop.cor stdlib/src/System/Runtime/InteropServices/ComNdr.cor stdlib/src/System/Runtime/InteropServices/ComRemote.cor stdlib/src/System/Runtime/InteropServices/ComOle.cor
-libMicrosoft.CSharp.so|stdlib/src/System/Dynamic/Dynamic.cor
-libSystem.Windows.Forms.so|stdlib/src/System/Drawing/Drawing.cor stdlib/src/System/Drawing/Drawing2D.cor stdlib/src/System/Drawing/FontEngine.cor stdlib/src/System/Drawing/TrueType.cor stdlib/src/System/Drawing/BitmapFont.cor stdlib/src/System/Drawing/Text.cor stdlib/src/System/Drawing/Imaging.cor stdlib/src/Corsac/GUI/Gui.cor stdlib/src/System/Windows/Forms/Forms.cor stdlib/src/Microsoft/Win32/SystemEvents.cor stdlib/src/System/Drawing/Printing/SpoolWire.cor stdlib/src/System/Drawing/Printing/Printing.cor stdlib/src/System/Windows/Forms/PrintDialogs.cor stdlib/src/System/Windows/Forms/PrintPreview.cor
-"
-
-owned_all=" $(printf '%s\n' "$LIBRARIES" | cut -s -d'|' -f2 | tr '\n' ' ') "
-unowned=""
-for src in $SOURCES; do
-    [[ "$owned_all" == *" $src "* ]] || unowned="$unowned $src"
-done
-if [ -n "$unowned" ]; then
-    echo "no shared library owns:$unowned (add each to LIBRARIES in $0)" >&2
-    exit 2
-fi
+#
+# ASKED OF THE COMPILER as well (compiler/src/driver/ClassLibraries.cs): the
+# kernel repository's image build lays the same libraries out, and a copy of
+# the split kept in each fell behind in one of them. corc refuses, naming the
+# source, when the split and the source list disagree.
+LIBRARIES="$("$corc" library-split)" || exit 2
 
 mkdir -p "$out"
 

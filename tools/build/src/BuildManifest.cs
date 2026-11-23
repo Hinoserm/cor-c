@@ -48,6 +48,7 @@ public sealed class BuildManifest
         result.Properties["ManifestDirectory"] = result.Root;
         result.Properties["OutputDirectory"] = Path.Combine(result.Root, "build");
         result.Properties["Jobs"] = options.Jobs.ToString();
+        result.Properties.Remove("ClassLibraries");
         foreach (XElement element in root.Elements())
         {
             switch (element.Name.ToString())
@@ -59,7 +60,7 @@ public sealed class BuildManifest
                         if (property.HasAttributes || property.HasElements || property.Name.Namespace != XNamespace.None)
                             Fail(property, "Only simple orchestration properties are currently supported");
                         string name = property.Name.LocalName;
-                        if (name is "WorkspaceDirectory" or "ManifestDirectory" or "OutputDirectory" or "Jobs")
+                        if (name is "WorkspaceDirectory" or "ManifestDirectory" or "OutputDirectory" or "Jobs" or "ClassLibraries")
                             Fail(property, "Reserved property " + name);
                         if (!options.Properties.ContainsKey(name)) result.Properties[name] = result.Expand(property.Value);
                     }
@@ -141,9 +142,40 @@ public sealed class BuildManifest
         return Resolve("", DefaultTarget);
     }
 
+    /// <summary>
+    /// The class library's split into shared libraries, as the toolchain
+    /// running this build has it (`corc library-split`): set by the compiler
+    /// before it runs a build, and null in a build utility without one.
+    /// </summary>
+    public static Func<string>? ClassLibrarySplit { get; set; }
+
     public string Expand(string text) => Regex.Replace(text, @"\$\(([^)]+)\)", match =>
         Properties.TryGetValue(match.Groups[1].Value, out string? value) ? value
+        : match.Groups[1].Value.Equals("ClassLibraries", StringComparison.OrdinalIgnoreCase) ? ClassLibrariesFile()
         : throw new BuildException("Undefined property " + match.Value));
+
+    /// <summary>
+    /// $(ClassLibraries): the path of a file holding the split, one
+    /// `soname|source ...` line per library in build order, sources relative
+    /// to the toolchain's library root. Written under the output directory
+    /// the first time a manifest names it, and rewritten only when its text
+    /// changed, so a step that takes it as an input stays current.
+    /// </summary>
+    private string ClassLibrariesFile()
+    {
+        if (ClassLibrarySplit is null) throw new BuildException("$(ClassLibraries) needs the toolchain's build command (corc build)");
+        string text = ClassLibrarySplit();
+        string path = Path.Combine(Properties["OutputDirectory"], "toolchain", "class-libraries.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        if (!System.IO.File.Exists(path) || System.IO.File.ReadAllText(path) != text)
+        {
+            string temporary = path + "." + Environment.ProcessId + ".tmp";
+            System.IO.File.WriteAllText(temporary, text);
+            System.IO.File.Move(temporary, path, overwrite: true);
+        }
+        Properties["ClassLibraries"] = path;
+        return path;
+    }
 
     public string FullPath(string value) => Path.GetFullPath(Expand(value), Root);
     public static IEnumerable<string> Split(string? text) => (text ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);

@@ -543,7 +543,12 @@ image that meets another must have been compiled from the same sources in
 the same order -- which is why a library build is given the whole list
 and marks the rest `--ref` rather than being given only its own files.
 The compiler holds the one list (`Driver.DefaultLibraries`, asked with
-`corc library-sources`) and every build reads it from there.
+`corc library-sources`) and every build reads it from there. Which shared
+library owns each of those sources is held beside it
+(`ClassLibraries`, asked with `corc library-split`, one `soname|sources`
+line per library in build order; a manifest run by `corc build` gets the
+same text as a file through `$(ClassLibraries)`), so no build keeps a copy
+of the split that can fall behind.
 
 ### Position-independent code
 
