@@ -2380,7 +2380,11 @@ internal sealed partial class Selector
 
         _rangeVisits = 0;
         bool zeroHigh = ZeroHigh(d);
-        if (!zeroHigh && !(signed && SignNarrow(d))) return false;
+        if (!zeroHigh && !(signed && SignNarrow(d)))
+        {
+            SelectDivideAny64(i, signed, rem);
+            return true;
+        }
         MReg divisor = Temp();
         Mov(divisor, PairRM(d).Lo);
         if (!signed)
@@ -2415,6 +2419,83 @@ internal sealed partial class Selector
         Negate(plo, phi, quotientSign);
         Mov(Lo(i.Dest!), plo); Mov(Hi(i.Dest!), phi);
         return true;
+    }
+
+    /// <summary>
+    /// ANY 64-BIT DIVISOR, inline: the divisor's magnitudes, then by its high
+    /// word -- zero, DivideBy32; not, the normalised division (Hacker's
+    /// Delight, figure 9-5): BSR finds its top bit k, SHLD takes its top 32
+    /// bits normalised, one DIV of the dividend halved by them (the halving
+    /// keeps the quotient within 32 bits), the quotient shifted down by k and
+    /// one less unless zero, then the remainder by one MUL and an IMUL and the
+    /// correction of at most one made without a branch. The quotient of a
+    /// divisor of more than 32 bits fits 32. Signs given back as elsewhere.
+    /// </summary>
+    private void SelectDivideAny64(Instr i, bool signed, bool rem)
+    {
+        (MReg alo, MReg ahi) = Copied(i.Operands[0]);
+        (MReg blo, MReg bhi) = Copied(i.Operands[1]);
+        MReg? dividendSign = null, quotientSign = null;
+        if (signed)
+        {
+            dividendSign = SignOf(ahi);
+            MReg divisorSign = SignOf(bhi);
+            Negate(alo, ahi, dividendSign);
+            Negate(blo, bhi, divisorSign);
+            quotientSign = Temp();
+            Mov(quotientSign, dividendSign); Emit(MOp.Xor, quotientSign, divisorSign);
+        }
+        MReg qlo = Temp(), qhi = Temp(), rlo = Temp(), rhi = Temp();
+        MBlock anchor = _cur;
+        MBlock narrow = _m.NewBlock("div64-narrow" + _splits++, anchor);
+        MBlock wide = _m.NewBlock("div64-wide" + _splits++, narrow);
+        MBlock done = _m.NewBlock("div64-done" + _splits++, wide);
+        Emit(MOp.Test, bhi, bhi); Jcc(Cond.Ne, wide); Jmp(narrow);
+
+        _cur = narrow;
+        (MReg nlo, MReg nhi, MReg left) = DivideBy32(alo, ahi, blo, false);
+        Mov(qlo, nlo); Mov(qhi, nhi); Mov(rlo, left); Mov(rhi, Imm(0));
+        Jmp(done);
+
+        _cur = wide;
+        MReg k = Temp(), top = Temp(), halfLo = Temp(), halfHi = Temp(), q = Temp(), cross = Temp();
+        Emit(MOp.Bsr, k, bhi);                                  // the divisor's top bit, 0..31
+        Mov(Ecx, Imm(31)); Emit(MOp.Sub, Ecx, k);               // n = 31 - k
+        Mov(top, bhi); EmitCl(MOp.Shld, top, blo);              // (b << n) >> 32: at least 2^31
+        Mov(halfLo, alo); Mov(halfHi, ahi);
+        Emit(MOp.Shrd, halfLo, halfHi, Imm(1)); Emit(MOp.Shr, halfHi, Imm(1));
+        Mov(Eax, halfLo); Mov(Edx, halfHi);
+        Emit(MOp.Div, top);                                     // its high word below `top`: it fits
+        Mov(q, Eax);
+        Mov(Ecx, k); EmitCl(MOp.Shr, q);                        // (q1 << n) >> 31 = q1 >> k
+        Emit(MOp.Sub, q, Imm(1)); Emit(MOp.Adc, q, Imm(0));    // one less, unless zero
+        // r = a - q*b, mod 2^64.
+        Mov(cross, q); Emit(MOp.Imul, cross, bhi);
+        Mov(Eax, q); Emit(MOp.Mul, blo);
+        Emit(MOp.Add, Edx, cross);
+        Mov(rlo, alo); Mov(rhi, ahi);
+        Emit(MOp.Sub, rlo, Eax); Emit(MOp.Sbb, rhi, Edx);
+        // r >= b: one more, and b taken off. The borrow of r - b says.
+        MReg tlo = Temp(), thi = Temp(), below = Temp(), keep = Temp();
+        Mov(below, Imm(0));
+        Mov(tlo, rlo); Mov(thi, rhi);
+        Emit(MOp.Sub, tlo, blo); Emit(MOp.Sbb, thi, bhi);
+        Emit(MOp.Sbb, below, below);                            // -1 where r < b
+        Emit(MOp.Add, q, Imm(1)); Emit(MOp.Add, q, below);
+        Mov(keep, rlo); Emit(MOp.Xor, keep, tlo); Emit(MOp.And, keep, below); Emit(MOp.Xor, tlo, keep);
+        Mov(keep, rhi); Emit(MOp.Xor, keep, thi); Emit(MOp.And, keep, below); Emit(MOp.Xor, thi, keep);
+        Mov(qlo, q); Mov(qhi, Imm(0)); Mov(rlo, tlo); Mov(rhi, thi);
+        Jmp(done);
+
+        _cur = done;
+        if (rem)
+        {
+            if (dividendSign is not null) Negate(rlo, rhi, dividendSign);
+            Mov(Lo(i.Dest!), rlo); Mov(Hi(i.Dest!), rhi);
+            return;
+        }
+        if (quotientSign is not null) Negate(qlo, qhi, quotientSign);
+        Mov(Lo(i.Dest!), qlo); Mov(Hi(i.Dest!), qhi);
     }
 
     /// <summary>An I64 operand's two words in fresh registers of this instruction's own, free to change.</summary>
@@ -2826,7 +2907,8 @@ internal sealed partial class Selector
 
         if (i.Dest!.Type == IrType.I64 && SelectDivide64(i, signed, rem)) return;
 
-        // The 486 has no 64-bit divide: a cdecl runtime helper does it.
+        // NEVER REACHED BY AN I64 DIVISION, which SelectDivide64 always
+        // takes; kept for the backend's own tests, which build one by hand.
         string helper = (signed, rem) switch
         {
             (true, false) => "__divdi3",

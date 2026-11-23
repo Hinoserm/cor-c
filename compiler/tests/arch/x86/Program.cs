@@ -219,7 +219,7 @@ internal static class Program
         Check(obj.Symbols.Where(s => s.IsFunction).All(s => s.Offset % 4 == 0), "functions are 4-byte aligned");
         Check(backend.Statistics().Contains("  add\n") && backend.Statistics().Contains("total in"), "per-function code sizes are reported");
         Check(errors.Count == 0, "no backend errors");
-        Check(obj.Section(".text").Relocs.Any(r => r.Symbol == "__udivdi3" && r.Kind == RelocKind.Rel32), "64-bit divide calls __udivdi3");
+        Check(!obj.Section(".text").Relocs.Any(r => r.Symbol == "__udivdi3"), "a 64-bit divide is inline, never a call (Select.SelectDivide64)");
         Check(obj.Symbols.Any(s => s.Name == "table" && s.Section?.Name == ".data"), "table lands in .data");
         Check(obj.Symbols.Any(s => s.Name == "counter" && s.Section?.Name == ".bss"), "counter lands in .bss");
         Check(obj.Section(".data").Relocs.Count == 2, "data relocations converted");

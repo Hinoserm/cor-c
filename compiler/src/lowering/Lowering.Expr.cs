@@ -6124,6 +6124,14 @@ public sealed partial class Lowering
     private VReg MachineDivide(Node at, Opcode dop, VReg l, VReg r, Type operand)
     {
         bool signedDivision = dop is Opcode.DivS or Opcode.RemS;
+        // A CACHE THAT HOLDS IT: the whole 64-bit division inline at every
+        // site -- the backend's (SelectDivide64): DIV once or twice for a
+        // 32-bit divisor, a normalised DIV and a correction for a wider one,
+        // a reciprocal for a constant -- with no call, so no frame and no
+        // registers saved around one. A small cache takes the runtime test
+        // below and calls for the rare 64-bit divisor instead.
+        if (l.Type == IrType.I64 && !_t.NativeI64 && InlinesLargeExpansions)
+            return _e.Binary(dop, R(l), R(r), IrType.I64);
         if (l.Type == IrType.I64 && !_t.NativeI64)
         {
             // ASKED AT RUN TIME: a divisor whose 64 bits are its 32 sign- or
@@ -6148,6 +6156,15 @@ public sealed partial class Lowering
         }
         return Canonical(_e.Binary(dop, l, r), operand);
     }
+
+    /// <summary>
+    /// WHETHER CODE SIZE MAY BE SPENT FOR SPEED: an expansion of some thirty
+    /// instructions at every site, in place of a call, where the processor's
+    /// level-1 instruction cache is 32 KB or more (X86Cpu.InstructionCacheKb:
+    /// the K6, the Athlons, the Geode LX); a 386, 486, Pentium, P6 or Pentium
+    /// 4, with 8 to 16, keeps the call and the cache for the loop it is in.
+    /// </summary>
+    private static bool InlinesLargeExpansions => Target.Current.X86Profile.InstructionCacheKb >= 32;
 
     /// <summary>A 64-bit division by the runtime's helper, for a divisor of more than 32 bits.</summary>
     private VReg RuntimeDivide(Node at, Opcode dop, VReg l, VReg r)

@@ -90,6 +90,27 @@ public sealed class X86Cpu
     public X86Feature Banned { get; }
     /// <summary>The --disable-NAME switches Banned came from, to hand on with the profile's own arguments: a unit compiled from a contract alone (X86CodeGenerationContract.Arguments) keeps no disable of a feature its model lacks.</summary>
     public IReadOnlyList<string> BanArguments { get; }
+    /// <summary>
+    /// THE LEVEL-1 INSTRUCTION CACHE, in kilobytes, by which the compiler
+    /// weighs code size against speed (Lowering.InlinesLargeExpansions): none
+    /// on the 386 (external, if any); 8 on the 486 (unified) and the Pentium;
+    /// 16 on the Pentium MMX; 8 on the Pentium Pro and 16 on the Pentium II
+    /// and III; the Pentium 4's trace cache of 12K micro-ops, counted as 12;
+    /// 32 on the K6 family; 64 on the Athlon, Athlon XP and Athlon 64, on
+    /// the Geode LX, and on the 6x86MX (unified). From each one's datasheet
+    /// (Intel 241428, 243502, 242690; AMD 20695, 21016, 22007, 25112, 33234;
+    /// Cyrix 94329).
+    /// </summary>
+    public int InstructionCacheKb => Name switch
+    {
+        "386" => 0,
+        "486" or "pentium" or "686" => 8,
+        "pentium4" => 12,
+        "pentium-mmx" or "pentium2" or "pentium3" => 16,
+        "k6" or "k6-2" or "k6-3" or "k6-2+" or "k6-3+" => 32,
+        _ => 64,
+    };
+
     public bool Pentium => Has(X86Feature.Pentium);
     public bool Mmx => Has(X86Feature.Mmx);
     public bool ThreeDNow => Has(X86Feature.ThreeDNow);
