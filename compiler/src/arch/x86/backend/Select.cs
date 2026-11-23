@@ -2276,6 +2276,20 @@ internal sealed partial class Selector
             }
         }
 
+        if (SignNarrow(left) && SignNarrow(right) && left is not ImmOperand)
+        {
+            // TWO VALUES SIGN-EXTENDED FROM 32 BITS (a checked int multiply's
+            // widening, `(long)a * b`): their whole product is IMUL's EDX:EAX,
+            // one instruction where the general case below takes three.
+            MReg factor = Temp();
+            Mov(factor, PairRM(right).Lo);
+            Mov(Eax, PairRM(left).Lo);
+            Emit(MOp.ImulWide, factor);
+            Mov(dest.Lo, Eax); Mov(dest.Hi, Edx);
+            Commit(i, dest);
+            return;
+        }
+
         // (ah:al) * (bh:bl) mod 2^64 = al*bl + ((ah*bl + al*bh) << 32).
         // One widening mul for the low product and two truncating imuls for
         // the cross terms; the ah*bh term never reaches the low 64 bits.
@@ -2299,6 +2313,299 @@ internal sealed partial class Selector
     }
 
     private static bool PowerOfTwo(ulong v) => v != 0 && (v & (v - 1)) == 0;
+
+    /// <summary>
+    /// A value sign-extended from 32 bits: SExt32's, a signed load of four
+    /// bytes or fewer, or a constant in int's range. Its low word is the
+    /// whole of it, read as a signed int.
+    /// </summary>
+    private bool SignNarrow(Operand operand)
+    {
+        if (operand is ImmOperand immediate) return immediate.Value >= int.MinValue && immediate.Value <= int.MaxValue;
+        if (operand is not RegOperand register || !_definitions.TryGetValue(register.Reg, out Instr? def) || def is null) return false;
+        return def.Op == Opcode.SExt32 || def.Op == Opcode.Load && def.Signed && def.Size <= 4;
+    }
+
+    /// <summary>
+    /// A 64-BIT DIVISION OR REMAINDER INLINE, on a target with no 64-bit
+    /// divide (Lowering.MachineDivide gives the backend only those it can do
+    /// here; every other one is the runtime's DivU/RemU/DivS/RemS):
+    ///
+    /// - by a CONSTANT, a multiplication by its magic number: the high 64
+    ///   bits of the dividend times a 64-bit reciprocal, four MULs and the
+    ///   adds between them, and a shift (Granlund and Montgomery, as the
+    ///   32-bit DivideByConstant has it); a power of two a shift and a mask.
+    ///   A signed one divides the magnitudes and gives the signs back.
+    /// - by a value of 32 bits (zero-extended, or sign-extended for a signed
+    ///   division), DIV twice: the high word by the divisor, then the
+    ///   remainder and the low word -- whose quotient always fits, since the
+    ///   remainder is below the divisor; once, when the dividend's high word
+    ///   is known zero. The remainder is EDX either way.
+    ///
+    /// The runtime's way was a call, then UDiv, then UDivShort and DivLU
+    /// with a loop of sixteen-bit steps; a kernel's clock divides by
+    /// 1000000000 and 1000 on every reading. False for anything else.
+    /// </summary>
+    private bool SelectDivide64(Instr i, bool signed, bool rem)
+    {
+        Operand a = i.Operands[0];
+        Operand d = i.Operands[1];
+        if (d is ImmOperand constant)
+        {
+            long c = constant.Value;
+            if (c == 0) return false;
+            (MReg alo, MReg ahi) = Copied(a);
+            if (!signed)
+            {
+                (MReg qlo, MReg qhi, MReg rlo, MReg rhi) = UnsignedByConstant(alo, ahi, unchecked((ulong)c), rem);
+                Mov(Lo(i.Dest!), rem ? rlo : qlo); Mov(Hi(i.Dest!), rem ? rhi : qhi);
+                return true;
+            }
+            MReg sign = SignOf(ahi);
+            Negate(alo, ahi, sign);                       // the magnitude, 2^63 for MinValue
+            ulong magnitude = c < 0 ? unchecked((ulong)(-c)) : (ulong)c;
+            (MReg slo, MReg shi, MReg tlo, MReg thi) = UnsignedByConstant(alo, ahi, magnitude, rem);
+            if (rem) { Negate(tlo, thi, sign); Mov(Lo(i.Dest!), tlo); Mov(Hi(i.Dest!), thi); return true; }
+            if (c < 0) Emit(MOp.Not, sign);               // the quotient's sign is the dividend's, flipped
+            Negate(slo, shi, sign);
+            Mov(Lo(i.Dest!), slo); Mov(Hi(i.Dest!), shi);
+            return true;
+        }
+
+        _rangeVisits = 0;
+        bool zeroHigh = ZeroHigh(d);
+        if (!zeroHigh && !(signed && SignNarrow(d))) return false;
+        MReg divisor = Temp();
+        Mov(divisor, PairRM(d).Lo);
+        if (!signed)
+        {
+            (MOperand ulo, MOperand uhi) = PairRM(a);
+            (MReg qlo, MReg qhi, MReg r) = DivideBy32(ulo, uhi, divisor, ZeroHigh(a));
+            Mov(Lo(i.Dest!), rem ? r : qlo); Mov(Hi(i.Dest!), rem ? Imm(0) : qhi);
+            return true;
+        }
+        (MReg nlo, MReg nhi) = Copied(a);
+        MReg dividendSign = SignOf(nhi);
+        Negate(nlo, nhi, dividendSign);
+        MReg quotientSign = Temp();
+        Mov(quotientSign, dividendSign);
+        if (!zeroHigh)
+        {
+            // The divisor's magnitude, 2^31 for int.MinValue: still 32 bits.
+            MReg divisorSign = Temp();
+            Mov(divisorSign, divisor); Emit(MOp.Sar, divisorSign, Imm(31));
+            Emit(MOp.Xor, divisor, divisorSign); Emit(MOp.Sub, divisor, divisorSign);
+            Emit(MOp.Xor, quotientSign, divisorSign);
+        }
+        (MReg plo, MReg phi, MReg left) = DivideBy32(nlo, nhi, divisor, false);
+        if (rem)
+        {
+            MReg leftHi = Temp();
+            Mov(leftHi, Imm(0));
+            Negate(left, leftHi, dividendSign);
+            Mov(Lo(i.Dest!), left); Mov(Hi(i.Dest!), leftHi);
+            return true;
+        }
+        Negate(plo, phi, quotientSign);
+        Mov(Lo(i.Dest!), plo); Mov(Hi(i.Dest!), phi);
+        return true;
+    }
+
+    /// <summary>An I64 operand's two words in fresh registers of this instruction's own, free to change.</summary>
+    private (MReg Lo, MReg Hi) Copied(Operand o)
+    {
+        (MOperand lo, MOperand hi) = PairRM(o);
+        MReg l = Temp(), h = Temp();
+        Mov(l, lo); Mov(h, hi);
+        return (l, h);
+    }
+
+    /// <summary>0 for a nonnegative high word, -1 for a negative one.</summary>
+    private MReg SignOf(MReg high)
+    {
+        MReg sign = Temp();
+        Mov(sign, high); Emit(MOp.Sar, sign, Imm(31));
+        return sign;
+    }
+
+    /// <summary>(hi:lo ^ mask) - mask: the value negated where mask is -1, unchanged where it is 0.</summary>
+    private void Negate(MReg lo, MReg hi, MReg mask)
+    {
+        Emit(MOp.Xor, lo, mask); Emit(MOp.Xor, hi, mask);
+        Emit(MOp.Sub, lo, mask); Emit(MOp.Sbb, hi, mask);
+    }
+
+    /// <summary>
+    /// hi:lo / divisor and its remainder, divisor 32 bits and not zero, as
+    /// Linux's div_u64_rem and MSVC's _aulldiv do it: DIV of the high word
+    /// (EDX zero, so it cannot overflow) only where the high word is at
+    /// least the divisor -- below it, that quotient is zero and the high word
+    /// is its own remainder -- then DIV of that remainder and the low word,
+    /// whose quotient always fits. A clock's nanoseconds by 1000000000 take
+    /// the one DIV: their high word is below it. No test at all where the
+    /// high word is known zero.
+    /// </summary>
+    private (MReg Qlo, MReg Qhi, MReg Remainder) DivideBy32(MOperand lo, MOperand hi, MReg divisor, bool highZero)
+    {
+        MReg qlo = Temp(), qhi = Temp(), r = Temp(), carried = Temp();
+        Mov(qhi, Imm(0));
+        if (highZero) Mov(carried, Imm(0));
+        else
+        {
+            Mov(carried, hi);
+            MBlock anchor = _cur;
+            MBlock high = _m.NewBlock("div64-high" + _splits++, anchor);
+            MBlock low = _m.NewBlock("div64-low" + _splits++, high);
+            Emit(MOp.Cmp, carried, divisor); Jcc(Cond.B, low); Jmp(high);
+            _cur = high;
+            Mov(Eax, carried); Mov(Edx, Imm(0));
+            Emit(MOp.Div, divisor);
+            Mov(qhi, Eax); Mov(carried, Edx);
+            Jmp(low);
+            _cur = low;
+        }
+        Mov(Eax, lo); Mov(Edx, carried);
+        Emit(MOp.Div, divisor);
+        Mov(qlo, Eax); Mov(r, Edx);
+        return (qlo, qhi, r);
+    }
+
+    /// <summary>
+    /// hi:lo / c and hi:lo % c, unsigned, c not zero. One: itself. A power
+    /// of two: a shift and a mask. Anything else: the high 64 bits of the
+    /// 128-bit product with c's magic number (MagicUnsigned64), shifted; the
+    /// remainder the dividend less the quotient times c. The remainder only
+    /// where it is asked for.
+    /// </summary>
+    private (MReg Qlo, MReg Qhi, MReg Rlo, MReg Rhi) UnsignedByConstant(MReg lo, MReg hi, ulong c, bool wantRemainder)
+    {
+        MReg qlo = Temp(), qhi = Temp(), rlo = Temp(), rhi = Temp();
+        if (c == 1)
+        {
+            Mov(qlo, lo); Mov(qhi, hi); Mov(rlo, Imm(0)); Mov(rhi, Imm(0));
+            return (qlo, qhi, rlo, rhi);
+        }
+        if (PowerOfTwo(c))
+        {
+            int k = System.Numerics.BitOperations.TrailingZeroCount(c);
+            Mov(qlo, lo); Mov(qhi, hi); ShiftRight(qlo, qhi, k);
+            if (wantRemainder)
+            {
+                ulong mask = c - 1;
+                Mov(rlo, lo); Mov(rhi, hi);
+                Emit(MOp.And, rlo, Imm(unchecked((int)(uint)mask))); Emit(MOp.And, rhi, Imm(unchecked((int)(uint)(mask >> 32))));
+            }
+            return (qlo, qhi, rlo, rhi);
+        }
+        if (CpuModel.Scalar && c <= uint.MaxValue)
+        {
+            // THE 386 AND THE 486 DIVIDE: MUL there takes 9 to 42 clocks by
+            // the multiplier's bits and DIV 38 to 40 (Intel 486 manual; Agner
+            // Fog), so the magic's four MULs cost more than DIV's one or two.
+            MReg constant = Temp();
+            Mov(constant, Imm(unchecked((int)(uint)c)));
+            (MReg dlo, MReg dhi, MReg left) = DivideBy32(lo, hi, constant, false);
+            Mov(qlo, dlo); Mov(qhi, dhi); Mov(rlo, left); Mov(rhi, Imm(0));
+            return (qlo, qhi, rlo, rhi);
+        }
+        // Everywhere else the magic: MUL r32 is 3 clocks on a K6, K7 or K8,
+        // 4 to 5 on a P6 and 10 on a Pentium, DIV 18 to 40 and more (Agner
+        // Fog's tables), and GCC and Clang call __udivdi3 here even so.
+        (ulong magic, int shift, bool add) = MagicUnsigned64(c);
+        (MReg tlo, MReg thi) = MultiplyHigh64(lo, hi, magic);
+        if (!add)
+        {
+            Mov(qlo, tlo); Mov(qhi, thi); ShiftRight(qlo, qhi, shift);
+        }
+        else
+        {
+            // The 65-bit magic: ((n - t) >> 1) + t, then >> (shift - 1).
+            Mov(qlo, lo); Mov(qhi, hi);
+            Emit(MOp.Sub, qlo, tlo); Emit(MOp.Sbb, qhi, thi);
+            ShiftRight(qlo, qhi, 1);
+            Emit(MOp.Add, qlo, tlo); Emit(MOp.Adc, qhi, thi);
+            ShiftRight(qlo, qhi, shift - 1);
+        }
+        if (wantRemainder)
+        {
+            // n - q * c, mod 2^64: qlo*clo whole, the cross terms' low words above it.
+            MReg factor = Temp(), cross = Temp(), cross2 = Temp();
+            Mov(factor, Imm(unchecked((int)(uint)c)));
+            Mov(cross, qhi); Emit(MOp.Imul3, cross, cross, Imm(unchecked((int)(uint)c)));
+            Mov(cross2, qlo); Emit(MOp.Imul3, cross2, cross2, Imm(unchecked((int)(uint)(c >> 32))));
+            Mov(Eax, qlo); Emit(MOp.Mul, factor);
+            Emit(MOp.Add, Edx, cross); Emit(MOp.Add, Edx, cross2);
+            Mov(rlo, lo); Mov(rhi, hi);
+            Emit(MOp.Sub, rlo, Eax); Emit(MOp.Sbb, rhi, Edx);
+        }
+        return (qlo, qhi, rlo, rhi);
+    }
+
+    /// <summary>hi:lo >>= n, logical, 0 &lt;= n &lt; 64.</summary>
+    private void ShiftRight(MReg lo, MReg hi, int n)
+    {
+        if (n == 0) return;
+        if (n >= 32)
+        {
+            Mov(lo, hi);
+            if (n > 32) Emit(MOp.Shr, lo, Imm(n - 32));
+            Mov(hi, Imm(0));
+            return;
+        }
+        Emit(MOp.Shrd, lo, hi, Imm(n));
+        Emit(MOp.Shr, hi, Imm(n));
+    }
+
+    /// <summary>
+    /// The high 64 bits of (hi:lo) * m, unsigned: the four 32-by-32 products,
+    /// the low one's high word and the two cross products' low words added
+    /// with their carries into the high one. Two products when m fits 32
+    /// bits (2^63 - 1's magic is 2 and an add): the product is 96 bits then.
+    /// </summary>
+    private (MReg Lo, MReg Hi) MultiplyHigh64(MReg lo, MReg hi, ulong m)
+    {
+        MReg m0 = Temp(), w = Temp(), rlo = Temp(), rhi = Temp();
+        Mov(m0, Imm(unchecked((int)(uint)m)));
+        Mov(Eax, lo); Emit(MOp.Mul, m0); Mov(w, Edx);                 // hi(a0*m0)
+        if (m >> 32 == 0)
+        {
+            // A product of 96 bits: its high 64 are the top word of
+            // a1*m0 + hi(a0*m0), and nothing above.
+            Mov(Eax, hi); Emit(MOp.Mul, m0);                           // a1*m0
+            Emit(MOp.Add, Eax, w); Emit(MOp.Adc, Edx, Imm(0));
+            Mov(rlo, Edx); Mov(rhi, Imm(0));
+            return (rlo, rhi);
+        }
+        MReg m1 = Temp(), l01 = Temp(), h01 = Temp(), l10 = Temp(), h10 = Temp();
+        Mov(m1, Imm(unchecked((int)(uint)(m >> 32))));
+        Mov(Eax, lo); Emit(MOp.Mul, m1); Mov(l01, Eax); Mov(h01, Edx);  // a0*m1
+        Mov(Eax, hi); Emit(MOp.Mul, m0); Mov(l10, Eax); Mov(h10, Edx);  // a1*m0
+        Mov(Eax, hi); Emit(MOp.Mul, m1); Mov(rlo, Eax); Mov(rhi, Edx);  // a1*m1
+        Emit(MOp.Add, w, l01); Emit(MOp.Adc, rlo, h01); Emit(MOp.Adc, rhi, Imm(0));
+        Emit(MOp.Add, w, l10); Emit(MOp.Adc, rlo, h10); Emit(MOp.Adc, rhi, Imm(0));
+        return (rlo, rhi);
+    }
+
+    /// <summary>
+    /// The magic number for an unsigned 64-bit division by d (d &gt;= 3, not a
+    /// power of two): the least s with m = ceil(2^(64+s) / d) and
+    /// m*d - 2^(64+s) &lt;= 2^s, which makes floor(n*m / 2^(64+s)) = floor(n/d)
+    /// for every 64-bit n (Hacker's Delight 10-9). Where m needs 65 bits its
+    /// low 64 are returned with Add, for the ((n - t) >> 1) + t form.
+    /// </summary>
+    internal static (ulong Magic, int Shift, bool Add) MagicUnsigned64(ulong d)
+    {
+        System.Numerics.BigInteger divisor = d;
+        for (int s = 0; s < 64; s++)
+        {
+            System.Numerics.BigInteger power = System.Numerics.BigInteger.One << (64 + s);
+            System.Numerics.BigInteger m = (power + divisor - 1) / divisor;
+            if (m * divisor - power > (System.Numerics.BigInteger.One << s)) continue;
+            if (m < (System.Numerics.BigInteger.One << 64)) return ((ulong)m, s, false);
+            return ((ulong)(m - (System.Numerics.BigInteger.One << 64)), s, true);
+        }
+        throw new InvalidOperationException($"no magic number for {d}");
+    }
 
     /// <summary>
     /// The signed magic number and shift for `d` (not -1, 0, 1 or a power of
@@ -2487,6 +2794,8 @@ internal sealed partial class Selector
             Mov(Lo(i.Dest), rem ? Edx : Eax);
             return;
         }
+
+        if (i.Dest!.Type == IrType.I64 && SelectDivide64(i, signed, rem)) return;
 
         // The 486 has no 64-bit divide: a cdecl runtime helper does it.
         string helper = (signed, rem) switch

@@ -1,0 +1,208 @@
+// test: inline_64_bit_division_and_checked_multiply
+// expect-exit: 0
+// expect-output:
+// unsigned constants bad 0
+// signed constants bad 0
+// unsigned by 32 bits bad 0
+// signed by 32 bits bad 0
+// checked int bad 0
+// checked long bad 0
+// 0
+// 4607182418800017408
+// 4609434218613702656
+// -4613937818241073152
+// 4609434218613702656
+// -9223372036854775808
+// 4613937818241073152
+// 835
+// 4591870179573130566
+// -4627330009164036772
+// 4611686018427387904
+// NaN NaN
+// 4609434218613702656
+//
+// WHAT A 32-BIT TARGET DOES WITHOUT A CALL: a 64-bit division or remainder
+// by a constant (a multiplication by its reciprocal, or DIV on a 386 or 486),
+// by a value widened from 32 bits (DIV once or twice), signed and unsigned;
+// a checked multiply with no division back; and `%` on doubles by the x87's
+// FPREM. Every quotient and remainder against a division done a bit at a
+// time, every checked product against one checked by the runtime's own
+// 64-bit division, and each fmod against C's (the bits, from Python's
+// math.fmod): 1e300 % 3, % 7, 5.5 % 2 and its signs, -0 % 3, 3 % infinity,
+// denormals, 123456789 % 0.1, -7e22 % 0.3, 2^1000 % 7; 1 % 0 and
+// infinity % 2 are NaN; 7.5f % 2f.
+using System;
+
+static class Program
+{
+    static int bad;
+
+    static ulong Reference(ulong a, ulong b, out ulong left)
+    {
+        ulong q = 0, r = 0;
+        for (int i = 63; i >= 0; i--)
+        {
+            bool top = (r >> 63) != 0;
+            r = (r << 1) | ((a >> i) & 1);
+            if (top || r >= b) { r -= b; q |= 1UL << i; }
+        }
+        left = r;
+        return q;
+    }
+
+    static void U(ulong a, ulong b, ulong q, ulong r)
+    {
+        ulong left;
+        ulong want = Reference(a, b, out left);
+        if (q != want || r != left) { bad++; Console.WriteLine("U " + a + " / " + b + " = " + q + " r " + r + ", not " + want + " r " + left); }
+    }
+
+    static void S(long a, long b, long q, long r)
+    {
+        ulong ma = a < 0 ? (ulong)(0 - a) : (ulong)a, mb = b < 0 ? (ulong)(0 - b) : (ulong)b, left;
+        ulong m = Reference(ma, mb, out left);
+        long want = (a < 0) != (b < 0) ? (long)(0 - m) : (long)m;
+        long wantLeft = a < 0 ? (long)(0 - left) : (long)left;
+        if (q != want || r != wantLeft) { bad++; Console.WriteLine("S " + a + " / " + b + " = " + q + " r " + r + ", not " + want + " r " + wantLeft); }
+    }
+
+    static void UnsignedConstants(ulong a)
+    {
+        U(a, 3, a / 3, a % 3);
+        U(a, 7, a / 7, a % 7);
+        U(a, 10, a / 10, a % 10);
+        U(a, 1000, a / 1000, a % 1000);
+        U(a, 1000000000, a / 1000000000, a % 1000000000);
+        U(a, 0xFFFFFFFF, a / 0xFFFFFFFF, a % 0xFFFFFFFF);
+        U(a, 0x100000001, a / 0x100000001, a % 0x100000001);
+        U(a, 10000000000, a / 10000000000, a % 10000000000);
+        U(a, 0x8000000000000001, a / 0x8000000000000001, a % 0x8000000000000001);
+        U(a, 4096, a / 4096, a % 4096);
+        U(a, 1UL << 40, a / (1UL << 40), a % (1UL << 40));
+        U(a, 0x7FFFFFFFFFFFFFFF, a / 0x7FFFFFFFFFFFFFFF, a % 0x7FFFFFFFFFFFFFFF);
+        U(a, 1, a / 1, a % 1);
+    }
+
+    static void SignedConstants(long a)
+    {
+        S(a, 3, a / 3, a % 3);
+        S(a, -3, a / -3, a % -3);
+        S(a, 7, a / 7, a % 7);
+        S(a, 1000, a / 1000, a % 1000);
+        S(a, -1000, a / -1000, a % -1000);
+        S(a, 1000000000, a / 1000000000, a % 1000000000);
+        S(a, 10000000000, a / 10000000000, a % 10000000000);
+        S(a, -10000000000, a / -10000000000, a % -10000000000);
+        S(a, 4096, a / 4096, a % 4096);
+        S(a, -4096, a / -4096, a % -4096);
+        S(a, long.MinValue, a / long.MinValue, a % long.MinValue);
+        S(a, long.MaxValue, a / long.MaxValue, a % long.MaxValue);
+    }
+
+    static void UnsignedBy32(ulong a, uint d)
+    {
+        U(a, d, a / d, a % d);
+    }
+
+    static void SignedBy32(long a, int d)
+    {
+        // long.MinValue / -1 throws, as .NET has it.
+        if (d != -1 || a != long.MinValue) S(a, d, a / d, a % d);
+        if (d > 0) { uint u = (uint)d; S(a, u, a / u, a % u); }
+    }
+
+    static void CheckedInt(int a, int b, uint c, uint d)
+    {
+        long wide = (long)a * b;
+        bool want = wide < int.MinValue || wide > int.MaxValue, threw = false;
+        int got = 0;
+        try { got = checked(a * b); } catch (OverflowException) { threw = true; }
+        if (threw != want || !threw && got != (int)wide) { bad++; Console.WriteLine("int " + a + " * " + b); }
+        ulong uwide = (ulong)c * d;
+        bool uwant = uwide > uint.MaxValue, uthrew = false;
+        uint ugot = 0;
+        try { ugot = checked(c * d); } catch (OverflowException) { uthrew = true; }
+        if (uthrew != uwant || !uthrew && ugot != (uint)uwide) { bad++; Console.WriteLine("uint " + c + " * " + d); }
+    }
+
+    static void CheckedLong(long a, long b)
+    {
+        // The references divide by a full 64-bit value: the runtime's own
+        // division, not the code under test.
+        ulong ua = (ulong)a, ub = (ulong)b;
+        bool uwant = ua != 0 && ub > ulong.MaxValue / ua, uthrew = false;
+        ulong ugot = 0;
+        try { ugot = checked(ua * ub); } catch (OverflowException) { uthrew = true; }
+        if (uthrew != uwant || !uthrew && ugot != unchecked(ua * ub)) { bad++; Console.WriteLine("ulong " + ua + " * " + ub); }
+
+        ulong ma = a < 0 ? (ulong)(0 - a) : (ulong)a, mb = b < 0 ? (ulong)(0 - b) : (ulong)b;
+        ulong limit = (a < 0) != (b < 0) ? 1UL << 63 : (ulong)long.MaxValue;
+        bool want = ma != 0 && mb > limit / ma, threw = false;
+        long got = 0;
+        try { got = checked(a * b); } catch (OverflowException) { threw = true; }
+        if (threw != want || !threw && got != unchecked(a * b)) { bad++; Console.WriteLine("long " + a + " * " + b); }
+    }
+
+    static void Fmod(double a, double b)
+    {
+        double r = a % b;
+        Console.WriteLine(double.IsNaN(r) ? "NaN" : BitConverter.DoubleToInt64Bits(r).ToString());
+    }
+
+    static void Main()
+    {
+        ulong[] dividends =
+        {
+            0, 1, 2, 3, 7, 999, 999999999, 1000000000, 0xFFFFFFFF, 0x100000000, 0x1FFFFFFFF,
+            0x123456789ABCDEF0, ulong.MaxValue, ulong.MaxValue - 1, 1UL << 63, (1UL << 63) - 1, (1UL << 63) + 1,
+            1700000000123456789, 0xFFFFFFFF00000000, 0x00000000FFFFFFFF, 0x8000000080000000, 10000000000, 9999999999,
+        };
+        ulong seed = 88172645463325252;
+        ulong[] all = new ulong[dividends.Length + 200];
+        for (int i = 0; i < dividends.Length; i++) all[i] = dividends[i];
+        for (int i = dividends.Length; i < all.Length; i++)
+        {
+            seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+            all[i] = (i & 3) == 0 ? seed >> (int)(seed & 63) : seed;
+        }
+
+        foreach (ulong a in all) UnsignedConstants(a);
+        Console.WriteLine("unsigned constants bad " + bad); bad = 0;
+        foreach (ulong a in all) { SignedConstants((long)a); SignedConstants(-(long)(a >> 1)); }
+        Console.WriteLine("signed constants bad " + bad); bad = 0;
+        uint[] narrow = { 1, 2, 3, 10, 1000, 1000000000, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0xFFFFFFFE, 65537 };
+        foreach (ulong a in all) foreach (uint d in narrow) UnsignedBy32(a, d);
+        Console.WriteLine("unsigned by 32 bits bad " + bad); bad = 0;
+        int[] signedNarrow = { 1, 2, -2, 3, -3, 10, -1000000000, int.MaxValue, int.MinValue, -1, 1000000000, -7 };
+        foreach (ulong a in all) foreach (int d in signedNarrow) { SignedBy32((long)a, d); SignedBy32(-(long)(a >> 1), d); }
+        Console.WriteLine("signed by 32 bits bad " + bad); bad = 0;
+
+        int[] ints = { 0, 1, -1, 2, -2, 46340, 46341, -46341, 65535, 65536, int.MaxValue, int.MinValue, 1000000, -1000000, 3 };
+        foreach (int a in ints) foreach (int b in ints) CheckedInt(a, b, (uint)a, (uint)b);
+        Console.WriteLine("checked int bad " + bad); bad = 0;
+        long[] longs =
+        {
+            0, 1, -1, 2, -2, 3, 0xFFFFFFFF, 0x100000000, -0x100000000, 0xFFFFFFFFF, 3037000499, 3037000500, -3037000500,
+            long.MaxValue, long.MinValue, long.MinValue / 2, 4294967296, 4294967295, -4294967296, 0x7FFFFFFF, 0x80000000,
+            1L << 62, -(1L << 62), (1L << 62) + 1, 1000000000, 1000000000000, -1000000000000, 9223372036854775807 / 3,
+        };
+        foreach (long a in longs) foreach (long b in longs) CheckedLong(a, b);
+        Console.WriteLine("checked long bad " + bad);
+
+        Fmod(1e300, 3.0);
+        Fmod(1e300, 7.0);
+        Fmod(5.5, 2.0);
+        Fmod(-5.5, 2.0);
+        Fmod(5.5, -2.0);
+        Fmod(-0.0, 3.0);
+        Fmod(3.0, double.PositiveInfinity);
+        Fmod(1e-310, 3e-320);
+        Fmod(123456789.0, 0.1);
+        Fmod(-7e22, 0.3);
+        Fmod(Math.Pow(2, 1000), 7.0);
+        double nan1 = 1.0 % 0.0, nan2 = double.PositiveInfinity % 2.0;
+        Console.WriteLine((double.IsNaN(nan1) ? "NaN" : "number") + " " + (double.IsNaN(nan2) ? "NaN" : "number"));
+        float f = 7.5f % 2f;
+        Console.WriteLine(BitConverter.DoubleToInt64Bits((double)f));
+    }
+}

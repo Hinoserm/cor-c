@@ -6585,12 +6585,33 @@ public static partial class Runtime
     }
 
     /// C#'s `%` on doubles, which is C's fmod: the remainder of a truncating
-    /// division, with the sign of the dividend. Computed as a - b * trunc(a/b),
-    /// which is exact when the quotient is small and loses low bits when a is
-    /// enormous relative to b; a loop of exact subtractions would fix that at
-    /// a cost no caller here has asked for.
+    /// division, with the sign of the dividend, exactly.
     public static double Remainder(double x, double y)
     {
+#if TARGET_X86
+        // THE x87's OWN: FPREM is the truncating partial remainder, exact,
+        // each step taking the exponents up to 63 apart, and C2 set while it
+        // is not finished; looped until it clears it is fmod -- glibc's and
+        // NetBSD's i386 e_fmod.S, musl's i386 fmod.c and MSVC's CRT do the
+        // same. NaN for a zero divisor or an infinite dividend, the dividend
+        // for an infinite divisor, the dividend's sign on a zero result, as
+        // fmod has them. The steps below are some 2,000 shifts and compares
+        // for 1e300 % 3.0, FPREM's loop sixteen.
+        double r;
+        asm
+        {
+            fld y
+            fld x
+        again:
+            fprem
+            fnstsw ax
+            sahf
+            jp again
+            fstp r
+            fstp st(0)
+        }
+        return r;
+#else
         // EXACTLY, as C#'s `%` and C's fmod are: x - n*y with n the quotient
         // truncated, and no rounding anywhere -- the result is always
         // representable. `x - Truncate(x / y) * y` is not that once the
@@ -6670,6 +6691,7 @@ public static partial class Runtime
             mx = mx >> (1 - ex);
         }
         return Sys.FromBits((long)(mx | sign));
+#endif
     }
 
     /// Exact in single precision too: a float's remainder, taken exactly in

@@ -6109,9 +6109,18 @@ public sealed partial class Lowering
         return answer;
     }
 
-    /// <summary>The division itself: the machine's, or on a 32-bit target a 64-bit one through the runtime's helper.</summary>
+    /// <summary>
+    /// The division itself: the machine's. On a 32-bit target a 64-bit one is
+    /// the backend's inline where it can be (Select.SelectDivide64) -- by a
+    /// constant, a multiplication by its reciprocal; by a value widened from
+    /// 32 bits, DIV once or twice, as Linux's div_u64_rem and MSVC's
+    /// _aulldiv do -- and the runtime's helper only for a divisor that may
+    /// need all 64 bits, where the processor has no instruction for it.
+    /// </summary>
     private VReg MachineDivide(Node at, Opcode dop, VReg l, VReg r, Type operand)
     {
+        if (l.Type == IrType.I64 && !_t.NativeI64 && NarrowDivisor(r, dop is Opcode.DivS or Opcode.RemS) is Operand inline)
+            return _e.Binary(dop, R(l), inline, IrType.I64);
         if (l.Type == IrType.I64 && !_t.NativeI64)
         {
             string helper = dop switch
@@ -6122,6 +6131,74 @@ public sealed partial class Lowering
             return h is null ? l : _e.Call(CallLabel(h), IrType.I64, R(l), R(r))!;
         }
         return Canonical(_e.Binary(dop, l, r), operand);
+    }
+
+    /// <summary>
+    /// A 64-bit checked multiply without a 128-bit product or a division:
+    /// a*b from the 32-bit halves, ah:al and bh:bl. Unsigned it overflows
+    /// where both high halves are nonzero, where the one cross product
+    /// (ah*bl or al*bh) reaches past 32 bits, or where adding it, shifted, to
+    /// al*bl carries out -- each product of two zero-high values one MUL on a
+    /// 32-bit target. Signed it is the magnitudes' product, which may reach
+    /// 2^63 only for a negative result, and the sign given back. As LLVM's
+    /// umul.with.overflow is legalised for i386 (mull, seto, setb).
+    /// </summary>
+    private (VReg Result, VReg Overflow) CheckedMultiply64(VReg l, VReg r, bool unsigned)
+    {
+        if (unsigned) return UnsignedChecked64(l, r);
+        VReg ls = _e.Binary(Opcode.ShrS, R(l), Imm(63, IrType.I32), IrType.I64);
+        VReg rs = _e.Binary(Opcode.ShrS, R(r), Imm(63, IrType.I32), IrType.I64);
+        VReg lm = _e.Binary(Opcode.Sub, R(_e.Binary(Opcode.Xor, l, ls)), R(ls), IrType.I64);
+        VReg rm = _e.Binary(Opcode.Sub, R(_e.Binary(Opcode.Xor, r, rs)), R(rs), IrType.I64);
+        (VReg product, VReg wrapped) = UnsignedChecked64(lm, rm);
+        VReg negative = _e.Binary(Opcode.Xor, ls, rs);
+        // long.MaxValue, or 2^63 where the result is negative.
+        VReg limit = _e.Binary(Opcode.Sub, Imm(long.MaxValue, IrType.I64), R(negative), IrType.I64);
+        VReg beyond = _e.Binary(Opcode.GtU, R(product), R(limit), IrType.I32);
+        VReg result = _e.Binary(Opcode.Sub, R(_e.Binary(Opcode.Xor, product, negative)), R(negative), IrType.I64);
+        return (result, _e.Binary(Opcode.Or, wrapped, beyond));
+    }
+
+    private (VReg Result, VReg Overflow) UnsignedChecked64(VReg a, VReg b)
+    {
+        ImmOperand low32 = Imm(0xFFFFFFFFL, IrType.I64), zero = Imm(0, IrType.I64), thirtyTwo = Imm(32, IrType.I32);
+        VReg ah = _e.Binary(Opcode.ShrU, R(a), thirtyTwo, IrType.I64), al = _e.Binary(Opcode.And, R(a), low32, IrType.I64);
+        VReg bh = _e.Binary(Opcode.ShrU, R(b), thirtyTwo, IrType.I64), bl = _e.Binary(Opcode.And, R(b), low32, IrType.I64);
+        VReg both = _e.Binary(Opcode.And,
+            _e.Binary(Opcode.Ne, R(ah), zero, IrType.I32), _e.Binary(Opcode.Ne, R(bh), zero, IrType.I32));
+        // One of ah, bh is zero where it matters, so this is one product.
+        VReg cross = _e.Binary(Opcode.Add, _e.Binary(Opcode.Mul, ah, bl), _e.Binary(Opcode.Mul, al, bh));
+        VReg crossHigh = _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.ShrU, R(cross), thirtyTwo, IrType.I64)), zero, IrType.I32);
+        VReg low = _e.Binary(Opcode.Mul, al, bl);
+        VReg result = _e.Binary(Opcode.Add, low, _e.Binary(Opcode.Shl, R(cross), thirtyTwo, IrType.I64));
+        VReg carry = _e.Binary(Opcode.LtU, result, low);
+        return (result, _e.Binary(Opcode.Or, both, _e.Binary(Opcode.Or, crossHigh, carry)));
+    }
+
+    /// <summary>
+    /// A 64-bit divisor the backend divides by inline, as the operand to give
+    /// it: a constant other than zero (the constant itself, so no pass need
+    /// propagate it), or a register every definition of which is a widening
+    /// from 32 bits -- ZExt32, or SExt32 for a signed division, where the
+    /// magnitude still fits -- whose own definition the backend reads again.
+    /// Null for anything else: the runtime's helper.
+    /// </summary>
+    private Operand? NarrowDivisor(VReg r, bool signed, int depth = 0)
+    {
+        Instr? only = null;
+        foreach (Block block in _f.Blocks)
+            foreach (Instr instr in block.Instrs)
+                if (instr.Dest == r)
+                {
+                    if (only is not null) return null;
+                    only = instr;
+                }
+        if (only is null) return null;
+        if (only.Op == Opcode.Copy && only.Operands[0] is ImmOperand constant)
+            return constant.Value == 0 ? null : new ImmOperand(constant.Value, IrType.I64);
+        if (only.Op == Opcode.Copy && only.Operands[0] is RegOperand { Reg: { } source } && depth < 4)
+            return NarrowDivisor(source, signed, depth + 1) is Operand inner ? inner is ImmOperand ? inner : R(r) : null;
+        return only.Op == Opcode.ZExt32 || signed && only.Op == Opcode.SExt32 ? R(r) : null;
     }
 
     /// <summary>C# throws on integer division by zero; the machine would trap, but a trap is not an exception.</summary>
@@ -6169,8 +6246,12 @@ public sealed partial class Lowering
     /// <summary>
     /// Checked add, subtract and multiply: the operation, then the overflow
     /// test in plain arithmetic -- signed add overflows when the operands
-    /// agree in sign and the result disagrees; multiply is checked by
-    /// dividing back. On overflow the runtime throws.
+    /// agree in sign and the result disagrees; a 32-bit multiply is done 64
+    /// bits wide (one IMUL or MUL into EDX:EAX on a 32-bit target) and
+    /// overflows when the product does not narrow back; a 64-bit one is
+    /// checked from its halves (CheckedMultiply64), as LLVM's i386 lowering
+    /// of umul.with.overflow does, with no division anywhere. On overflow the
+    /// runtime throws.
     /// </summary>
     private VReg CheckedArith(Node at, BinOp op, VReg l, VReg r, Type operand)
     {
@@ -6210,29 +6291,20 @@ public sealed partial class Lowering
                 break;
 
             default:
-            {
-                result = _e.Binary(Opcode.Mul, l, r);
-                // If r is zero the product is zero and cannot overflow; otherwise
-                // dividing back must recover l exactly.
-                VReg dest = _f.NewReg(IrType.I32, "ovf");
-                Block rz = _f.NewBlock("mulrz");
-                Block rn = _f.NewBlock("mulrn");
-                Block end = _f.NewBlock("mulend");
-                _e.Branch(_e.Binary(Opcode.Eq, R(r), Imm(0, t), IrType.I32), rz, rn);
-                _e.SetBlock(rz);
-                _e.CopyTo(dest, Imm(0, IrType.I32));
-                _e.Jump(end);
-                _e.SetBlock(rn);
-                // The division back is the language's own: MinValue * -1,
-                // the one signed product whose quotient by r overflows too,
-                // throws there before the machine's division could trap.
-                VReg back = Divide(at, BinOp.Div, result, r, operand);
-                _e.CopyTo(dest, R(_e.Binary(Opcode.Ne, back, l)));
-                _e.Jump(end);
-                _e.SetBlock(end);
-                overflow = dest;
+                if (t == IrType.I32)
+                {
+                    // Every 32-bit product fits in 64 bits: done that wide, it
+                    // overflowed exactly when it does not narrow back.
+                    Opcode widen = un ? Opcode.ZExt32 : Opcode.SExt32;
+                    VReg wide = _e.Binary(Opcode.Mul, R(_e.Unary(widen, R(l), IrType.I64)), R(_e.Unary(widen, R(r), IrType.I64)), IrType.I64);
+                    result = _e.Unary(Opcode.Trunc64, R(wide), IrType.I32);
+                    overflow = un
+                        ? _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.ShrU, R(wide), Imm(32, IrType.I32), IrType.I64)), Imm(0, IrType.I64), IrType.I32)
+                        : _e.Binary(Opcode.Ne, R(_e.Unary(Opcode.SExt32, R(result), IrType.I64)), R(wide), IrType.I32);
+                    break;
+                }
+                (result, overflow) = CheckedMultiply64(l, r, un);
                 break;
-            }
         }
 
         // Narrow types overflow when the canonical value does not round-trip.
