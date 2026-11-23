@@ -349,10 +349,10 @@ based on an unchecked property or downloaded manifest is permitted.
 The default CPU budget is Environment.ProcessorCount: the logical processors
 available to this process. `--jobs N` can lower it. Independent dependency
 branches run concurrently; Steps and tasks within a target remain ordered.
-The host Compile adapter leases currently idle worker slots and supplies that
-count to MSBuild and DOTNET_PROCESSOR_COUNT. Leases share one global semaphore
-and are returned on success, failure and cancellation; nested compilers do not
-each receive the full machine count.
+The host Compile adapter leases the budget's currently idle tokens (below) and
+supplies that count to MSBuild and DOTNET_PROCESSOR_COUNT; they are returned on
+success, failure and cancellation, and nested compilers do not each receive the
+full machine count.
 
 THE WORKER BUDGET. A build's --jobs workers are one budget shared by every
 process of the build (tools/build/src/WorkerPool.cs holds the protocol): a

@@ -28,8 +28,13 @@ public sealed class ProcessRunner : IDisposable
         }
         catch
         {
-            owner?.Dispose();
-            try { Directory.Delete(budget, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            // Removed only if it was this build's: an owner held by another
+            // (a build of the same id in another PID namespace) keeps it.
+            if (owner is not null)
+            {
+                owner.Dispose();
+                try { Directory.Delete(budget, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
             throw;
         }
         this.jobs = jobs;

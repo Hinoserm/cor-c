@@ -19,6 +19,20 @@ public static class ProjectCommand
         return ProjectState.WriteIdentity(path);
     }
 
+    /// <summary>
+    /// Whether this compiler can start copies of itself to compile units: not
+    /// hosted as `dotnet corc.dll`, whose process path is the host's.
+    /// </summary>
+    public static bool CanStartWorkers => Environment.ProcessPath is string path
+        && !Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// How many compile processes the machine's free memory holds: two
+    /// gigabytes each, room for the biggest unit's peak (Processes).
+    /// </summary>
+    public static int WorkerSpaces() =>
+        (int)Math.Max(1, Math.Min(int.MaxValue, Corsac.Lang.Lto.MachineMemory.MachineAvailable() / (2L * 1024 * 1024 * 1024)));
+
     public static int Run(string[] arguments)
     {
         string? path = null, output = null, framework = null, targetName = null, regionReport = null, unusedReport = null;
@@ -400,18 +414,13 @@ public static class ProjectCommand
         // live size), and was counted as four -- six children on a machine
         // with thirty-two processors and twenty-six gigabytes free. Two keeps
         // room for the biggest units, which all start at once (biggest first).
-        const long Space = 2L * 1024 * 1024 * 1024;
         // IN PROCESS UNDER DOTNET ONLY: its heap copes with a dozen units at
         // once, and one warm JIT beats twelve cold ones. A native compiler, of
         // either word size, gives each unit a process: in long mode the in-
         // process build ran every unit's garbage through one heap at once and
         // took most of an hour for what the children do in minutes.
-        bool hosted = Environment.ProcessPath is string path
-            && Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
-        if (hosted || workers < 2 || units < 2 || Environment.ProcessPath is null) return 1;
-        long memory = Corsac.Lang.Lto.MachineMemory.MachineAvailable();
-        int spaces = (int)Math.Min(int.MaxValue, memory / Space);
-        return Math.Max(1, Math.Min(Math.Min(workers, spaces), units));
+        if (!CanStartWorkers || workers < 2 || units < 2) return 1;
+        return Math.Max(1, Math.Min(Math.Min(workers, WorkerSpaces()), units));
     }
 
     /// <summary>

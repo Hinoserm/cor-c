@@ -73,7 +73,7 @@ public static class ProjectCompile
         List<string> common = new();
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] is "--units" or "--jobs" or "--worker-pool" or "--claim-dir") { i++; continue; }
+            if (args[i] is "--units" or "--jobs" or "--worker-pool" or "--claim-dir" or "--units-facts") { i++; continue; }
             if (args[i] is "--unit-census") continue;
             common.Add(args[i]);
         }
@@ -95,7 +95,10 @@ public static class ProjectCompile
         string sessionIndex = Driver.Value(args, "--module-index") ?? index;
         using DeclarationSession session = new(sessionIndex, assembly, declBudget, tokBudget, srcBudget);
         using WorkerPool? pool = WorkerPool.Open(Driver.Value(args, "--worker-pool"));
-        int limit = pool is null ? workers : Math.Max(workers, pool.Size);
+        // A WORKER PROCESS (--claim-dir) RUNS --jobs UNITS AT ONCE, one, as it
+        // is told: given the budget's size it ran as many threads in one heap
+        // as the budget has, the pauses worker processes are there to end.
+        int limit = pool is null || Driver.Value(args, "--claim-dir") is not null ? workers : Math.Max(workers, pool.Size);
         Driver.Session = session;
         int failures = 0;
         object gate = new();
@@ -547,6 +550,10 @@ public static class ProjectCompile
         // THE FACTS THE LAST BUILD LEFT, the units' objects as they are: an
         // edit that moves no copy compiles its units right the first time.
         bool insideRounds = claims is null && InsideFactsApply(common);
+        // A WORKER PROCESS COMPILES WITH ITS PARENT'S FACTS (--units-facts), as
+        // the parent's own threads did: without them each unit was compiled,
+        // then moved by the rounds and compiled again.
+        if (claims is not null && Driver.Value(args, "--units-facts") is string handed) factsFile = handed;
         if (insideRounds)
         {
             factsFile = list + ".inside";
@@ -609,15 +616,36 @@ public static class ProjectCompile
         // worker, run its 509 units at seven and a half. Each child takes
         // units by claim file (--claim-dir) and a token for each (--worker-
         // pool); entry units, compiled above, are claimed first.
-        if (pool is not null && claims is null && threads > 1)
+        // Only the units that are stale (asked once, here: the children ask
+        // again as they take them), and not from a hosted `dotnet corc.dll`,
+        // whose path is the host's and would start `dotnet compile-project`.
+        Unit[] staleRest = pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers
+            ? rest.Where(unit => Stale(unit) is not null).ToArray() : Array.Empty<Unit>();
+        if (pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers)
         {
-            string claimDir = list + ".claims";
-            if (Directory.Exists(claimDir)) Directory.Delete(claimDir, recursive: true);
-            Directory.CreateDirectory(claimDir);
-            int entries = units.Count(unit => unit.Entry);
-            if (dynamic) for (int e = 0; e < entries; e++) File.WriteAllBytes(Path.Combine(claimDir, "e" + e), Array.Empty<byte>());
-            if (!InWorkerProcesses(list, claimDir, Driver.Value(args, "--worker-pool")!, common, census, threads)) failures++;
-            try { Directory.Delete(claimDir, recursive: true); } catch (IOException) { }
+            int current = rest.Length - staleRest.Length;
+            lock (gate) { skipped += current; done += current; }
+            if (staleRest.Length > 0)
+            {
+                string claimDir = list + ".claims";
+                try
+                {
+                    if (Directory.Exists(claimDir)) Directory.Delete(claimDir, recursive: true);
+                    Directory.CreateDirectory(claimDir);
+                    int entries = units.Count(unit => unit.Entry);
+                    if (dynamic) for (int e = 0; e < entries; e++) File.WriteAllBytes(Path.Combine(claimDir, "e" + e), Array.Empty<byte>());
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    return Driver.Fail("the units' claim directory cannot be made at " + claimDir + ": " + e.Message);
+                }
+                // And no more than free memory holds, two gigabytes each (WorkerSpaces).
+                int processes = Math.Min(Math.Min(threads, staleRest.Length), Corsac.Projects.ProjectCommand.WorkerSpaces());
+                if (InWorkerProcesses(list, claimDir, Driver.Value(args, "--worker-pool")!, factsFile, common, census, processes))
+                    lock (gate) { compiledNow.AddRange(staleRest); done += staleRest.Length; }
+                else failures++;
+                try { Directory.Delete(claimDir, recursive: true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            }
         }
         else if (threads <= 1) Worker();
         else
@@ -694,7 +722,7 @@ public static class ProjectCompile
     /// spent (Recycle) is started again in its place. Their output is this
     /// process's. Whether every one succeeded.
     /// </summary>
-    private static bool InWorkerProcesses(string list, string claimDir, string pool, List<string> common, bool census, int count)
+    private static bool InWorkerProcesses(string list, string claimDir, string pool, string? factsFile, List<string> common, bool census, int count)
     {
         List<System.Diagnostics.ProcessStartInfo> starts = new();
         for (int i = 0; i < count; i++)
@@ -715,6 +743,7 @@ public static class ProjectCompile
             start.ArgumentList.Add("--claim-dir"); start.ArgumentList.Add(claimDir);
             start.ArgumentList.Add("--jobs"); start.ArgumentList.Add("1");
             start.ArgumentList.Add("--worker-pool"); start.ArgumentList.Add(pool);
+            if (factsFile is not null) { start.ArgumentList.Add("--units-facts"); start.ArgumentList.Add(factsFile); }
             if (census) start.ArgumentList.Add("--unit-census");
             foreach (string option in common) start.ArgumentList.Add(option);
             starts.Add(start);
@@ -728,17 +757,26 @@ public static class ProjectCompile
             {
                 try
                 {
-                    int code;
+                    int code, id;
                     do
                     {
                         using System.Diagnostics.Process child = System.Diagnostics.Process.Start(start)!;
+                        id = child.Id;
                         child.WaitForExit();
                         code = child.ExitCode;
                     }
                     while (code == Recycle);
-                    if (code != 0) lock (gate) ok = false;
+                    // SAID AT ONCE, which and how: one killed by a signal (the
+                    // kernel's OOM killer) writes nothing of its own.
+                    if (code != 0)
+                        lock (gate)
+                        {
+                            ok = false;
+                            Console.Error.WriteLine("corc: compile-project worker pid " + id + " ended with " + (code > 128 ? "signal " + (code - 128) : "exit code " + code)
+                                + "; the build fails");
+                        }
                 }
-                catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException)
+                catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or OutOfMemoryException)
                 {
                     lock (gate) { ok = false; Console.Error.WriteLine("corc: a compile-project worker could not be started: " + e.Message); }
                 }
