@@ -622,7 +622,8 @@ public static class ProjectCompile
         // THE UNITS THAT ARE STALE, asked here on `threads` threads at once
         // (Stale reads only files and opens its own catalog, UnitDependencies),
         // and the current ones claimed before any worker starts -- never asked
-        // again; a stale one is asked once more by the worker that takes it.
+        // again; a stale one is asked once more by whoever compiles it, a
+        // worker or, the only one, the parent.
         //
         // None stale: nothing to do. One: the parent compiles it, its session
         // warm -- a process for one unit is a start and a cold session for
@@ -632,23 +633,25 @@ public static class ProjectCompile
         // share a heap however little memory there is. Never from a hosted
         // `dotnet corc.dll`, whose path is the host's.
         bool mayUseProcesses = pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers;
-        // The first asked alone, so the kernel index's stamp (DeclarationStamp,
-        // a pass over the whole index) is made once and found by the rest,
-        // not made by `threads` of them at once; any failure but memory's
-        // makes a unit stale, a worker compiling it and writing its receipt
-        // again, never the build's end. threads > 1 here (mayUseProcesses).
+        // THE INDEX OPENED ONCE FIRST, so a module index's stamp of its
+        // kernel's (DeclarationStamp, a pass over the whole kernel index) is
+        // made here and found by every unit asked below, not made by `threads`
+        // of them at once -- whichever unit happens to reach the index first.
+        // A receipt that cannot be read (its bytes not what a receipt is) makes
+        // its unit stale: whoever compiles it writes it again. threads > 1
+        // here (mayUseProcesses), so the scan's parallelism is never 0.
         bool StaleOrUnreadable(Unit unit)
         {
             try { return Stale(unit) is not null; }
-            catch (Exception failure) when (failure is not OutOfMemoryException) { return true; }
+            catch (Exception failure) when (failure is FormatException or ArgumentException or OverflowException
+                                            or InvalidDataException or EndOfStreamException) { return true; }
         }
         bool[] staleAt = Array.Empty<bool>();
         if (mayUseProcesses)
         {
-            staleAt = new bool[rest.Length];
-            staleAt[0] = StaleOrUnreadable(rest[0]);
-            bool[] others = rest.Skip(1).AsParallel().AsOrdered().WithDegreeOfParallelism(threads).Select(StaleOrUnreadable).ToArray();
-            Array.Copy(others, 0, staleAt, 1, others.Length);
+            try { using DeclarationCatalog warm = new(sessionIndex); }
+            catch (Exception failure) when (failure is IOException or InvalidDataException or UnauthorizedAccessException) { }
+            staleAt = rest.AsParallel().AsOrdered().WithDegreeOfParallelism(threads).Select(StaleOrUnreadable).ToArray();
         }
         int staleCount = staleAt.Count(stale => stale);
         int processes = mayUseProcesses ? Math.Min(Math.Min(threads, staleCount), Corsac.Projects.ProjectCommand.WorkerSpaces()) : 0;
