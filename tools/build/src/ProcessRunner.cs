@@ -2,30 +2,62 @@ using System.Diagnostics;
 
 namespace Corsac.Build;
 
-public sealed class ProcessRunner
+public sealed class ProcessRunner : IDisposable
 {
-    private readonly SemaphoreSlim slots;
+    private readonly WorkerPool pool;
+    private readonly int jobs;
+    private readonly string budget;
     private readonly string logs;
     private int sequence;
 
-    public ProcessRunner(int jobs, string logs)
+    /// <summary>
+    /// The processes of one build, drawing on its worker budget: `jobs`
+    /// tokens laid out in `budget` (WorkerPool), which every process of the
+    /// build -- this tool's own and what the tools it runs start -- shares.
+    /// </summary>
+    public ProcessRunner(int jobs, string logs, string budget)
     {
-        slots = new SemaphoreSlim(jobs);
+        WorkerPool.Create(budget, jobs);
+        pool = WorkerPool.Open(budget) ?? throw new BuildException("the worker budget could not be laid out at " + budget);
+        this.jobs = jobs;
+        this.budget = budget;
         this.logs = logs;
     }
 
+    public void Dispose() => pool.Dispose();
+
+    /// <summary>
+    /// A process run with its share of the budget:
+    /// - ONE TOKEN, held while it runs, for an ordinary task -- one process
+    ///   computing.
+    /// - NONE for a coordinator that is handed the budget itself (an argument
+    ///   naming $(WorkerPool)): it draws a token for each piece of work it
+    ///   does, so a module of 132 units and twenty of two run side by side
+    ///   on the same N, and it is told N, not what was free when it began.
+    /// - The tokens going spare when it starts, for a Workers="auto" task not
+    ///   handed the budget -- a tool that knows only a count, which it keeps.
+    /// - None for an interactive one, which waits on a person.
+    /// </summary>
     public async Task<ProcessResult> Run(string label, string executable, IEnumerable<string> arguments,
         string directory, IDictionary<string, string> environment, TimeSpan timeout, CancellationToken cancel,
         bool useAvailableWorkers = false, Func<int, IEnumerable<string>>? workerArguments = null, bool interactive = false)
     {
-        await slots.WaitAsync(cancel);
+        arguments = arguments.ToList();
+        bool drawsOwn = arguments.Any(argument => argument.Contains(budget, StringComparison.Ordinal));
+        int taken = 0;
         int workers = 1;
+        if (drawsOwn) workers = jobs;
+        else if (!interactive)
+        {
+            await pool.TakeAsync(cancel);
+            taken = 1;
+        }
         try
         {
-            // Never wait while holding a partial multi-slot reservation: two
-            // compilers each waiting for the rest would deadlock. Lease the
-            // currently idle budget and return every slot on all exit paths.
-            if (useAvailableWorkers) while (slots.Wait(0)) workers++;
+            // Never wait while holding a partial multi-token reservation: two
+            // compilers each waiting for the rest would deadlock. Lease what is
+            // idle now and give every token back on all exit paths.
+            if (useAvailableWorkers && !drawsOwn && !interactive) while (pool.TryTake()) { taken++; workers++; }
             Directory.CreateDirectory(logs);
             // A NAME NEVER USED BEFORE: the step, when it started and which
             // build ran it. Numbered from 1 each build, every run wrote over
@@ -76,6 +108,6 @@ public sealed class ProcessRunner
             return new ProcessResult { ExitCode = process.ExitCode, TimedOut = timedOut,
                 Elapsed = watch.Elapsed, LogPrefix = prefix };
         }
-        finally { slots.Release(workers); }
+        finally { for (int k = 0; k < taken; k++) pool.Give(); }
     }
 }

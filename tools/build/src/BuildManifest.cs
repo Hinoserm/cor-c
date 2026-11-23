@@ -154,7 +154,13 @@ public sealed class BuildManifest
     private static bool Reserved(string name) =>
         name.Equals("WorkspaceDirectory", StringComparison.OrdinalIgnoreCase) || name.Equals("ManifestDirectory", StringComparison.OrdinalIgnoreCase)
         || name.Equals("OutputDirectory", StringComparison.OrdinalIgnoreCase) || name.Equals("Jobs", StringComparison.OrdinalIgnoreCase)
-        || name.Equals("ClassLibraries", StringComparison.OrdinalIgnoreCase);
+        || name.Equals("ClassLibraries", StringComparison.OrdinalIgnoreCase) || name.Equals("WorkerPool", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// $(WorkerPool): the build's worker budget (WorkerPool's directory),
+    /// set when a build runs; a manifest hands it to the tools that draw on it.
+    /// </summary>
+    public void UseWorkerPool(string directory) => Properties["WorkerPool"] = directory;
 
     // Targets expand their tasks on several threads at once, so the file is
     // made once, under this lock, and never written into Properties.

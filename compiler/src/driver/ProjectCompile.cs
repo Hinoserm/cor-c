@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 #nullable enable
+using Corsac.Build;
 using Corsac.Lang.Metadata;
 using Corsac.Lang.Elf;
 using Corsac.Lang.Lto;
@@ -496,7 +497,7 @@ public static class ProjectCompile
             try
             {
                 if (pool is null) return One(unit);
-                while (!pool.TryTake()) Thread.Sleep(15);
+                pool.Take();                 // backs off, never spins (WorkerPool)
                 try { return One(unit); }
                 finally { pool.Give(); }
             }

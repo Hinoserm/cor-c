@@ -1,5 +1,5 @@
 #nullable enable
-namespace Corsac;
+namespace Corsac.Build;
 
 /// <summary>
 /// A worker budget shared by every process in one build.
@@ -10,16 +10,28 @@ namespace Corsac;
 /// right now. A fixed share decided when a project starts is wrong within
 /// seconds -- the eight one-file utilities finish and the kernel, which took
 /// one worker because the budget was full at the time, keeps plodding along
-/// with one while fifteen sit idle.
+/// with one while fifteen sit idle. It is GNU make's jobserver, made of files.
 ///
-/// So the budget is a directory of lock files, one per worker, and a worker
-/// is held only while a source is actually being compiled. A compiler that
-/// wants another source takes a lock if one is free and does not if it is
-/// not, which means the kernel picks up the utilities' workers as they finish
-/// without anybody being told to.
+/// THE PROTOCOL -- the one place it is written; ImageBuild (the kernel
+/// repository's tools/image) keeps a copy of TryTake/Give and must follow it:
 ///
-/// A lock file is exclusive to the process holding it, so a build that is
-/// killed leaves no permits behind: the operating system drops the locks.
+/// - THE BUDGET is a directory holding exactly N empty files named
+///   `worker-0` .. `worker-(N-1)`, N the build's --jobs. `corc build` makes one
+///   for every build (Create) and names it to manifests as $(WorkerPool); a
+///   process given one is told its path (`--worker-pool DIR`).
+/// - A TOKEN is one of those files opened read-write with no sharing
+///   (FileShare.None: an exclusive lock), and is held for as long as the
+///   handle is open. Closing the handle gives it back; so does the process
+///   ending, however it ends, so a killed build leaves no token behind.
+/// - HOLD ONE ONLY WHILE COMPUTING: one compile of one unit, one link, one
+///   tool's run. Never while waiting for another process, for input, or for
+///   a further token -- a holder that waits for a second token can deadlock
+///   with another doing the same.
+/// - A TAKER THAT FINDS NONE FREE WAITS WITHOUT SPINNING (Take): it sleeps,
+///   1 ms the first time, doubling to 32 ms, and tries again; a starved
+///   coordinator costs a few wakes a second and no core.
+/// - Tokens are not counted anywhere else: the files are the count. Nothing
+///   writes into them.
 /// </summary>
 public sealed class WorkerPool : IDisposable
 {
@@ -73,6 +85,32 @@ public sealed class WorkerPool : IDisposable
             catch (UnauthorizedAccessException) { }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Takes a worker, waiting for one: sleeps 1 ms, doubling to 32 ms,
+    /// between tries -- never spins. Holds none while it waits.
+    /// </summary>
+    public void Take(CancellationToken cancel = default)
+    {
+        int pause = 1;
+        while (!TryTake())
+        {
+            cancel.ThrowIfCancellationRequested();
+            Thread.Sleep(pause);
+            if (pause < 32) pause *= 2;
+        }
+    }
+
+    /// <summary>Take, for an async caller: the same backoff, no thread blocked.</summary>
+    public async Task TakeAsync(CancellationToken cancel = default)
+    {
+        int pause = 1;
+        while (!TryTake())
+        {
+            await Task.Delay(pause, cancel);
+            if (pause < 32) pause *= 2;
+        }
     }
 
     /// <summary>Gives a worker back for somebody else to take.</summary>

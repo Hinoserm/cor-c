@@ -31,7 +31,13 @@ public static class BuildCommand
             BuildGraph graph = new(target);
             string logs = Path.Combine(manifest.Root, "build", "logs", DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
             TestReport report = new();
-            ProcessRunner processes = new(options.Jobs, logs);
+            // THE BUILD'S WORKER BUDGET (WorkerPool): --jobs tokens every process
+            // of the build draws on, the build tool's own tasks included,
+            // named to manifests as $(WorkerPool). One directory per build,
+            // gone when it ends.
+            string budget = Path.Combine(manifest.Root, "build", "workers", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            manifest.UseWorkerPool(budget);
+            ProcessRunner processes = new(options.Jobs, logs, budget);
             TaskExecutor executor = new(manifest, options, processes, report);
             foreach (BuildTarget node in graph.Ordered)
             {
@@ -46,6 +52,8 @@ public static class BuildCommand
             {
                 foreach (BuildTarget node in graph.Ordered)
                     Console.WriteLine("/" + node.Path + " <- " + string.Join(", ", node.Edges.Select(t => "/" + t.Path)));
+                processes.Dispose();
+                try { Directory.Delete(budget, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 return 0;
             }
             using CancellationTokenSource cancel = new();
@@ -56,6 +64,8 @@ public static class BuildCommand
             {
                 Console.CancelKeyPress -= handler;
                 report.Write(Path.Combine(logs, "tests.xml"));
+                processes.Dispose();
+                try { Directory.Delete(budget, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
             return 0;
         }
