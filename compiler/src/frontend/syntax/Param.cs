@@ -19,7 +19,7 @@ public sealed class Param : Node
     private ParamRare Rare => _rare ??= new();
     private byte _flags;
 
-    private const byte RefFlag = 1, OutFlag = 2, ReadOnlyRefFlag = 4, ParamsFlag = 8, ThisFlag = 16, MaybeNullFlag = 32, NotNullFlag = 64;
+    private const byte RefFlag = 1, OutFlag = 2, ReadOnlyRefFlag = 4, ParamsFlag = 8, ThisFlag = 16, MaybeNullFlag = 32, NotNullFlag = 64, ScopedFlag = 128;
 
     private void SetFlag(byte flag, bool value) => _flags = value ? (byte)(_flags | flag) : (byte)(_flags & ~flag);
 
@@ -34,6 +34,8 @@ public sealed class Param : Node
     /// </summary>
     public bool IsReadOnlyRef { get => (_flags & ReadOnlyRefFlag) != 0; init => SetFlag(ReadOnlyRefFlag, value); }
     public bool IsParams { get => (_flags & ParamsFlag) != 0; init => SetFlag(ParamsFlag, value); }
+    /// <summary>`scoped` (C# 11): what it refers to, or the ref struct it is, does not escape the call (Binder.RefSafety).</summary>
+    public bool IsScoped { get => (_flags & ScopedFlag) != 0; init => SetFlag(ScopedFlag, value); }
 
     /// <summary>
     /// `this` on the first parameter of a static method: an EXTENSION METHOD.

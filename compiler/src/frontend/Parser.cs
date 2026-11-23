@@ -4646,8 +4646,9 @@ public sealed class Parser
             Token at = Cur;
 
             // `scoped` (C# 11) narrows how far a ref or a ref struct may
-            // escape, which nothing here lets one do past its call: read past.
-            if (Scoped() || At(Tok.Ident) && Cur.Text == "scoped" && Ahead().Kind is Tok.KwRef or Tok.KwIn or Tok.KwOut) _i++;
+            // escape (Param.IsScoped, Binder.RefSafety).
+            bool scoped = false;
+            if (Scoped() || At(Tok.Ident) && Cur.Text == "scoped" && Ahead().Kind is Tok.KwRef or Tok.KwIn or Tok.KwOut) { _i++; scoped = true; }
 
             // `this` before the first parameter of a static method makes it an
             // extension method: `list.Where(f)` for `Where(this List<T> l, ...)`.
@@ -4681,7 +4682,7 @@ public sealed class Parser
             Param read = new()
             {
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
-                IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver,
+                IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver, IsScoped = scoped,
                 NotNullWhen = whenProved, Caller = caller, CallerArgument = callerArgument,
                 MarshalAs = marshalAs, MaybeNull = maybeNull, NotNull = notNull, Default = def, Line = at.Line, Col = at.Col,
             };
@@ -7013,7 +7014,7 @@ public sealed class Parser
         (Param receiver, List<TypeParam> typeParams) = _extension!.Value;
         m.WritableParams.Insert(0, new Param
         {
-            Name = receiver.Name, Type = receiver.Type, IsThis = true, IsRef = receiver.IsRef, IsReadOnlyRef = receiver.IsReadOnlyRef,
+            Name = receiver.Name, Type = receiver.Type, IsThis = true, IsRef = receiver.IsRef, IsReadOnlyRef = receiver.IsReadOnlyRef, IsScoped = receiver.IsScoped,
             Line = m.Line, Col = m.Col,
         });
         for (int k = typeParams.Count - 1; k >= 0; k--)
@@ -8116,7 +8117,7 @@ public sealed class Parser
         {
             invoke.WritableParams.Add(new Param
             {
-                Type = p.Type, Name = p.Name, IsRef = p.IsRef, IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef,
+                Type = p.Type, Name = p.Name, IsRef = p.IsRef, IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef, IsScoped = p.IsScoped,
                 Line = p.Line, Col = p.Col,
             });
         }
@@ -9439,8 +9440,9 @@ public sealed class Parser
             int save = _i;
             bool constant = Take(Tok.KwConst);
             // `scoped Span<int> s = ...` (C# 11), whose word narrows how far
-            // the span may escape -- a ref struct's own rules keep it here.
-            if (!constant && Scoped()) _i++;
+            // the span may escape (LocalDecl.IsScoped, Binder.RefSafety).
+            bool scopedLocal = false;
+            if (!constant && Scoped()) { _i++; scopedLocal = true; }
 
             try
             {
@@ -9452,7 +9454,7 @@ public sealed class Parser
                     Expr? init = Take(Tok.Assign) ? Initialiser(type) : null;
                     LocalDecl first = new()
                     {
-                        Type = type, Name = name, Init = init, IsConst = constant,
+                        Type = type, Name = name, Init = init, IsConst = constant, IsScoped = scopedLocal,
                         Line = at.Line, Col = at.Col,
                     };
 

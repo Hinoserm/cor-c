@@ -7336,6 +7336,9 @@ public sealed partial class Binder
             LeaveFunctionBody();
             // A ref local in an async method or an iterator: no use across a suspension (CS9217).
             if (_sawRefLocal && _quiet == 0 && (_method.Async || md.Body.Iterator)) CheckRefLocalsAcrossSuspensions(md.Body);
+            // How far its ref structs' values go (CS8352 and the rest, Binder.RefSafety):
+            // not a generic copy's, whose template's are its own.
+            if (_quiet == 0 && !InGenericCopy() && NeedsRefSafety(md, _method.Returns)) CheckRefSafety(md, _method.Returns);
             _sawRefLocal = false;
             // Its calls resolved: CS8763 where it is marked [DoesNotReturn]
             // and can return, as C# has it.

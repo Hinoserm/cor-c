@@ -332,7 +332,8 @@ public static class Header
         // into an ordinary static method for every consuming compilation.
         string by = p.IsThis ? "this " : p.IsParams ? "params " : p.IsOut ? "out " : p.IsRef ? "ref " : "";
 
-        return by + Spell(p.Type, made) + " " + Lexer.Identifier(p.Name);
+        // And `scoped`, which a caller's escape rules ask (Binder.RefSafety).
+        return (p.IsScoped ? "scoped " : "") + by + Spell(p.Type, made) + " " + Lexer.Identifier(p.Name);
     }
 
     private static void TypeParams(StringBuilder s, List<TypeParam> ps)

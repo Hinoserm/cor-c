@@ -1,0 +1,36 @@
+// test: ref_struct_escapes_as_roslyn
+// expect-compile-error: CS8352: Cannot use variable 'st' in this context because it may expose referenced variables outside of their declaration scope
+//
+// HOW FAR A REF STRUCT'S VALUE MAY GO (C#'s ref safety rules): a span over
+// a stackalloc lives in its method, and may not be returned (CS8352, or
+// CS8353 for the stackalloc itself), stored through a ref or out parameter
+// or a ref struct's field, passed where a wider argument could keep it
+// (CS8350), or carried out by a call that returns what it was given
+// (CS8347); a span declared in an inner block may not leave it; a scoped
+// parameter may not be returned. A span over the heap, a u8 literal or a
+// string goes anywhere. The whole list is checked by
+// 2699_ref_struct_escapes_as_roslyn.sh.
+using System;
+ref struct Holder { public Span<int> S; public void Set(Span<int> s) { S = s; } }
+static class P
+{
+    static Span<int> Heap() { Span<int> h = new int[4]; return h; }
+    static Span<int> Stack1() { Span<int> st = stackalloc int[1]; return st; }
+    static Span<int> Stack2() { return stackalloc int[2]; }
+    static Span<int> Pass(Span<int> x) => x;
+    static Span<int> ViaCall() { Span<int> st = stackalloc int[1]; return Pass(st); }
+    static void Store(ref Span<int> outer) { Span<int> st = stackalloc int[1]; outer = st; }
+    static void Out(out Span<int> o) { Span<int> st = stackalloc int[1]; o = st; }
+    static void Field(ref Holder h) { Span<int> st = stackalloc int[1]; h.S = st; }
+    static void Method(ref Holder h) { Span<int> st = stackalloc int[1]; h.Set(st); }
+    static void Mix(ref Span<int> a, Span<int> b) { }
+    static void Args() { Span<int> wide = new int[2]; Span<int> narrow = stackalloc int[1]; Mix(ref wide, narrow); }
+    static Span<int> Cond(bool c) { Span<int> st = stackalloc int[1]; Span<int> h = new int[1]; return c ? st : h; }
+    static void Inner() { Span<int> outer = new int[1]; { Span<int> st = stackalloc int[1]; outer = st; } }
+    static Span<int> ScopedParam(scoped Span<int> s) => s;
+    static ReadOnlySpan<byte> Lit() => "abc"u8;
+    static ReadOnlySpan<char> Str(string s) => s.AsSpan(1);
+    static Span<int> Slice() { Span<int> st = stackalloc int[4]; return st.Slice(1); }
+    static Span<int> Ok(Span<int> x) { Span<int> y = x.Slice(1); return y; }
+    static void Main() { }
+}

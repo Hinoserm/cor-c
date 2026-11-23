@@ -30,6 +30,8 @@ public sealed class LocalDecl : Stmt
     /// naming that variable, and every read and write of the local goes there.
     /// </summary>
     public bool IsRef { get; init; }
+    /// <summary>`scoped` (C# 11): a ref struct local whose value lives no longer than its block (Binder.RefSafety).</summary>
+    public bool IsScoped { get; init; }
 
     /// <summary>`ref readonly T x = ref ...;`: a ref local nothing may write through.</summary>
     public bool IsReadOnlyRef { get; init; }

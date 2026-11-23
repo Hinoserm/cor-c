@@ -3395,7 +3395,7 @@ public sealed class Monomorphiser
                     copy.WritableParams.Add(new Param
                     {
                         Name = ip.Name, Type = Sub(ip.Type, map),
-                        IsRef = ip.IsRef, IsOut = ip.IsOut, IsReadOnlyRef = ip.IsReadOnlyRef,
+                        IsRef = ip.IsRef, IsOut = ip.IsOut, IsReadOnlyRef = ip.IsReadOnlyRef, IsScoped = ip.IsScoped,
                         NotNullWhen = ip.NotNullWhen, MaybeNull = ip.MaybeNull, NotNull = ip.NotNull, Caller = ip.Caller, CallerArgument = ip.CallerArgument, MarshalAs = ip.MarshalAs,
                         Line = ip.Line, Col = ip.Col,
                     });
@@ -3455,7 +3455,7 @@ public sealed class Monomorphiser
                     made.WritableParams.Add(new Param
                     {
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef, IsOut = p.IsOut,
-                        IsReadOnlyRef = p.IsReadOnlyRef, IsParams = p.IsParams, IsThis = p.IsThis,
+                        IsReadOnlyRef = p.IsReadOnlyRef, IsParams = p.IsParams, IsThis = p.IsThis, IsScoped = p.IsScoped,
                         NotNullWhen = p.NotNullWhen, MaybeNull = p.MaybeNull, NotNull = p.NotNull, Caller = p.Caller, CallerArgument = p.CallerArgument, MarshalAs = p.MarshalAs,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
                         Line = p.Line, Col = p.Col,
@@ -3574,7 +3574,7 @@ public sealed class Monomorphiser
                     // two of them -- then read the names as types nobody
                     // declared.
                     IsConst = d.IsConst,
-                    IsRef = d.IsRef, IsReadOnlyRef = d.IsReadOnlyRef,
+                    IsRef = d.IsRef, IsReadOnlyRef = d.IsReadOnlyRef, IsScoped = d.IsScoped,
                     Line = d.Line, Col = d.Col,
                 };
 
@@ -4218,7 +4218,7 @@ public sealed class Monomorphiser
                     made.WritableParams.Add(new Param
                     {
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef,
-                        IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef,
+                        IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef, IsScoped = p.IsScoped,
                         IsParams = p.IsParams, IsThis = p.IsThis,
                         NotNullWhen = p.NotNullWhen, MaybeNull = p.MaybeNull, NotNull = p.NotNull, Caller = p.Caller, CallerArgument = p.CallerArgument, MarshalAs = p.MarshalAs,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),

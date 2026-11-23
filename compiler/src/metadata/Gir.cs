@@ -323,8 +323,10 @@ public static class Gir
             Bool(p.IsParams);
 
             // `this` on a first parameter makes the method an extension, and a
-            // template's are read back by a consumer that has to know it.
-            Bool(p.IsThis);
+            // template's are read back by a consumer that has to know it. And
+            // `scoped`, which a caller's escape rules ask (Binder.RefSafety),
+            // in the same byte.
+            U8((byte)((p.IsThis ? 1 : 0) | (p.IsScoped ? 2 : 0)));
 
             // AND WHAT AN ANSWER PROVES ABOUT IT: [NotNullWhen(false)] on
             // string.IsNullOrEmpty is what makes the check usable, and a
@@ -1249,7 +1251,8 @@ public static class Gir
             bool isOut = Bool();
             bool readOnly = Bool();
             bool variadic = Bool();
-            bool receiver = Bool();
+            byte receiverAndScoped = U8();
+            bool receiver = (receiverAndScoped & 1) != 0;
             bool proves = Bool();
             bool provedWhen = Bool();
             CallerInfo caller = (CallerInfo)U8();
@@ -1259,7 +1262,7 @@ public static class Gir
             return new Param
             {
                 Name = name, Type = type, IsRef = byRef, IsOut = isOut,
-                IsReadOnlyRef = readOnly, IsParams = variadic, IsThis = receiver,
+                IsReadOnlyRef = readOnly, IsParams = variadic, IsThis = receiver, IsScoped = (receiverAndScoped & 2) != 0,
                 NotNullWhen = proves ? provedWhen : null, Caller = caller, CallerArgument = callerArgument, MarshalAs = marshalAs,
                 Default = Expr(),
             };
