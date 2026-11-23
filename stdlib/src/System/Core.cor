@@ -703,7 +703,7 @@ public static partial class String {
         return text;
     }
 
-    public static string Create<TState>(int length, TState state, SpanAction<char, TState> action) {
+    public static string Create<TState>(int length, TState state, SpanAction<char, TState> action) where TState : allows ref struct {
         if (action == null) { throw new ArgumentNullException("action"); }
         if (length <= 0) {
             if (length == 0) { return ""; }
@@ -10691,10 +10691,10 @@ public readonly struct ReadOnlyMemory<T> {
     public override string ToString() => typeof(T) == typeof(char) ? Span.ToString() : "System.ReadOnlyMemory<" + typeof(T).Name + ">[" + count + "]";
 }
 
-public ref struct Span<T> {
-    private T[] items;
-    private int from;
-    private int count;
+public readonly ref struct Span<T> {
+    private readonly T[] items;
+    private readonly int from;
+    private readonly int count;
 
     /// An empty span, as .NET's Span<T>.Empty.
     public static Span<T> Empty => new Span<T>(EmptyArray<T>.Value);
@@ -12330,18 +12330,18 @@ sealed class __ListDictionary : IDictionary {
 
 /// .NET's IEnumerator<T>, which is an IDisposable and an IEnumerator: a
 /// foreach disposes the enumerator it walked, however the loop ended.
-public interface IEnumerator<out T> : IDisposable, IEnumerator {
+public interface IEnumerator<out T> : IDisposable, IEnumerator where T : allows ref struct {
     T Current { get; }
 }
 
 /// A SEQUENCE READ BY AWAITING, as .NET's: each MoveNextAsync a ValueTask
 /// that says whether there is another, the enumerator disposed by awaiting.
 /// `await foreach` walks one, and an async iterator is one.
-public interface IAsyncEnumerable<out T> {
+public interface IAsyncEnumerable<out T> where T : allows ref struct {
     IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default);
 }
 
-public interface IAsyncEnumerator<out T> : System.IAsyncDisposable {
+public interface IAsyncEnumerator<out T> : System.IAsyncDisposable where T : allows ref struct {
     T Current { get; }
     System.Threading.Tasks.ValueTask<bool> MoveNextAsync();
 }
@@ -12706,7 +12706,7 @@ readonly struct AsyncIteratorYield<T> {
 /// what `await foreach` walks the sequence with, the token handed to its
 /// GetAsyncEnumerator and each MoveNextAsync and the DisposeAsync awaited as
 /// configured. .NET's, member for member.
-public readonly struct ConfiguredCancelableAsyncEnumerable<T> {
+public readonly struct ConfiguredCancelableAsyncEnumerable<T> where T : allows ref struct {
     readonly IAsyncEnumerable<T> _enumerable;
     readonly CancellationToken _cancellationToken;
     readonly bool _continueOnCapturedContext;
@@ -12793,7 +12793,7 @@ public static class TaskAsyncEnumerableExtensions {
 /// `out T`. Everything read from a sequence is a T, so a sequence of
 /// FieldDecl IS a sequence of MemberDecl -- which is what lets
 /// `decl.Members.AddRange(several.More)` be written at all.
-public interface IEnumerable<out T> : IEnumerable {
+public interface IEnumerable<out T> : IEnumerable where T : allows ref struct {
     IEnumerator<T> GetEnumerator();
 }
 
@@ -14128,7 +14128,7 @@ public class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 // type says its Equals is about VALUE rather than identity, and this
 // compiler's own Type says exactly that.
 
-public interface IEquatable<T> {
+public interface IEquatable<T> where T : allows ref struct {
     bool Equals(T other);
 }
 
@@ -19970,7 +19970,7 @@ public static class RuntimeHelpers {
 
     /// Whether a T is a reference or a struct holding one, as .NET answers:
     /// a constant of each instantiation (Sys.ElementsHoldReferences).
-    public static bool IsReferenceOrContainsReferences<T>() { return Sys.ElementsHoldReferences<T>(null); }
+    public static bool IsReferenceOrContainsReferences<T>() where T : allows ref struct { return Sys.ElementsHoldReferences<T>(null); }
 }
 
 /// .NET'S System.Array: what every array is, beside the helpers .NET keeps
@@ -20596,7 +20596,7 @@ public struct HashCode {
 // never that. StringComparer is what a table of strings is given instead.
 /// `in T`, as .NET declares it: a comparer only ever takes its values IN, so
 /// an IEqualityComparer of object can compare anything at all.
-public interface IEqualityComparer<in T> {
+public interface IEqualityComparer<in T> where T : allows ref struct {
     bool Equals(T a, T b);
     int GetHashCode(T value);
 }
@@ -21821,47 +21821,47 @@ public class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IE
 
 public delegate void Action();
 
-public delegate R Func<out R>();
+public delegate R Func<out R>() where R : allows ref struct;
 
-public delegate R Func<in A, out R>(A a);
+public delegate R Func<in A, out R>(A a) where A : allows ref struct where R : allows ref struct;
 
-public delegate R Func<in A, in B, out R>(A a, B b);
+public delegate R Func<in A, in B, out R>(A a, B b) where A : allows ref struct where B : allows ref struct where R : allows ref struct;
 
-public delegate R Func<in A, in B, in C, out R>(A a, B b, C c);
+public delegate R Func<in A, in B, in C, out R>(A a, B b, C c) where A : allows ref struct where B : allows ref struct where C : allows ref struct where R : allows ref struct;
 
-public delegate R Func<in A, in B, in C, in D, out R>(A a, B b, C c, D d);
+public delegate R Func<in A, in B, in C, in D, out R>(A a, B b, C c, D d) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where R : allows ref struct;
 
-public delegate R Func<in A, in B, in C, in D, in E, out R>(A a, B b, C c, D d, E e);
+public delegate R Func<in A, in B, in C, in D, in E, out R>(A a, B b, C c, D d, E e) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where E : allows ref struct where R : allows ref struct;
 
-public delegate R Func<in A, in B, in C, in D, in E, in F, out R>(A a, B b, C c, D d, E e, F f);
+public delegate R Func<in A, in B, in C, in D, in E, in F, out R>(A a, B b, C c, D d, E e, F f) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where E : allows ref struct where F : allows ref struct where R : allows ref struct;
 
-public delegate R Func<in A, in B, in C, in D, in E, in F, in G, out R>(A a, B b, C c, D d, E e, F f, G g);
+public delegate R Func<in A, in B, in C, in D, in E, in F, in G, out R>(A a, B b, C c, D d, E e, F f, G g) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where E : allows ref struct where F : allows ref struct where G : allows ref struct where R : allows ref struct;
 
-public delegate R Func<in A, in B, in C, in D, in E, in F, in G, in H, out R>(A a, B b, C c, D d, E e, F f, G g, H h);
+public delegate R Func<in A, in B, in C, in D, in E, in F, in G, in H, out R>(A a, B b, C c, D d, E e, F f, G g, H h) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where E : allows ref struct where F : allows ref struct where G : allows ref struct where H : allows ref struct where R : allows ref struct;
 
-public delegate void Action<in A>(A a);
+public delegate void Action<in A>(A a) where A : allows ref struct;
 
-public delegate void Action<in A, in B>(A a, B b);
+public delegate void Action<in A, in B>(A a, B b) where A : allows ref struct where B : allows ref struct;
 
-public delegate void Action<in A, in B, in C>(A a, B b, C c);
+public delegate void Action<in A, in B, in C>(A a, B b, C c) where A : allows ref struct where B : allows ref struct where C : allows ref struct;
 
-public delegate void Action<in A, in B, in C, in D>(A a, B b, C c, D d);
+public delegate void Action<in A, in B, in C, in D>(A a, B b, C c, D d) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct;
 
-public delegate void Action<in A, in B, in C, in D, in E>(A a, B b, C c, D d, E e);
+public delegate void Action<in A, in B, in C, in D, in E>(A a, B b, C c, D d, E e) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where E : allows ref struct;
 
-public delegate void Action<in A, in B, in C, in D, in E, in F>(A a, B b, C c, D d, E e, F f);
+public delegate void Action<in A, in B, in C, in D, in E, in F>(A a, B b, C c, D d, E e, F f) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where E : allows ref struct where F : allows ref struct;
 
-public delegate void Action<in A, in B, in C, in D, in E, in F, in G>(A a, B b, C c, D d, E e, F f, G g);
+public delegate void Action<in A, in B, in C, in D, in E, in F, in G>(A a, B b, C c, D d, E e, F f, G g) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where E : allows ref struct where F : allows ref struct where G : allows ref struct;
 
-public delegate void Action<in A, in B, in C, in D, in E, in F, in G, in H>(A a, B b, C c, D d, E e, F f, G g, H h);
+public delegate void Action<in A, in B, in C, in D, in E, in F, in G, in H>(A a, B b, C c, D d, E e, F f, G g, H h) where A : allows ref struct where B : allows ref struct where C : allows ref struct where D : allows ref struct where E : allows ref struct where F : allows ref struct where G : allows ref struct where H : allows ref struct;
 
 // A Func<A, bool> by another name, and the one a filter takes. .NET has both
 // and so does this, because `Predicate<T>` says what it is for.
-public delegate bool Predicate<in A>(A a);
+public delegate bool Predicate<in A>(A a) where A : allows ref struct;
 
 /// .NET's Converter<TInput, TOutput>: what List<T>.ConvertAll and
 /// Array.ConvertAll turn each element into.
-public delegate TOutput Converter<in TInput, out TOutput>(TInput input);
+public delegate TOutput Converter<in TInput, out TOutput>(TInput input) where TInput : allows ref struct where TOutput : allows ref struct;
 
 // C# lock's monitor, stored in the synchronization word present in every
 // object header. Acquire/release CAS makes writes inside the critical section
@@ -23149,7 +23149,7 @@ public class PlatformNotSupportedException : NotSupportedException
 /// Type is COM's (ComRemote).
 public static partial class Activator
 {
-    public static T CreateInstance<T>()
+    public static T CreateInstance<T>() where T : allows ref struct
     {
         throw new MissingMethodException("Cannot dynamically create an instance of type '" + typeof(T).FullName + "'. Reason: No parameterless constructor defined.");
     }
@@ -26684,7 +26684,7 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStora
 // and a sort takes a bare function with Comparison.
 
 /// A type that knows its own order. `class Version : IComparable<Version>`.
-public interface IComparable<T> {
+public interface IComparable<T> where T : allows ref struct {
     int CompareTo(T other);
 }
 
@@ -26699,13 +26699,13 @@ public interface IComparable {
 /// An order imposed from outside, for a type that has none or has the wrong
 /// one. This is what List.Sort and Array.Sort are given.
 /// `in T`, for the reason IEqualityComparer's is.
-public interface IComparer<in T> {
+public interface IComparer<in T> where T : allows ref struct {
     int Compare(T a, T b);
 }
 
 /// A bare comparing function, .NET's `delegate int Comparison<in T>`: a
 /// delegate as Func is (see Func), so it combines as one does.
-public delegate int Comparison<in T>(T a, T b);
+public delegate int Comparison<in T>(T a, T b) where T : allows ref struct;
 
 /// THE ORDER A TYPE HAS WHEN NOBODY SUPPLIES ONE.
 ///
@@ -36116,7 +36116,7 @@ namespace System.Buffers
 {
     /// What String.Create hands the new string's characters to, with the
     /// state it was given: .NET's delegate, for any span a method fills.
-    public delegate void SpanAction<T, in TArg>(Span<T> span, TArg arg);
+    public delegate void SpanAction<T, in TArg>(Span<T> span, TArg arg) where TArg : allows ref struct;
 
     /// How a span-to-span transcoding or parse ended.
     public enum OperationStatus
@@ -36873,38 +36873,38 @@ namespace System.Runtime.CompilerServices
     /// its address (Sys.AddressOf), a struct's the address of its bytes.
     public static unsafe class Unsafe
     {
-        public static int SizeOf<T>() { return sizeof(T); }
+        public static int SizeOf<T>() where T : allows ref struct { return sizeof(T); }
         public static T As<T>(object? o) where T : class? { return Sys.As<T>(o!); }
-        public static ref TTo As<TFrom, TTo>(ref TFrom source) { return ref *(TTo*)Sys.AddressOf(ref source); }
-        public static void* AsPointer<T>(ref T value) { return (void*)Sys.AddressOf(ref value); }
-        public static ref T AsRef<T>(void* source) { return ref *(T*)source; }
-        public static ref T Add<T>(ref T source, int elementOffset) { return ref *((T*)Sys.AddressOf(ref source) + elementOffset); }
-        public static ref T Add<T>(ref T source, nint elementOffset) { return ref *((T*)Sys.AddressOf(ref source) + elementOffset); }
-        public static void* Add<T>(void* source, int elementOffset) { return (byte*)source + (long)elementOffset * sizeof(T); }
-        public static ref T AddByteOffset<T>(ref T source, nint byteOffset) { return ref *(T*)((byte*)Sys.AddressOf(ref source) + byteOffset); }
-        public static ref T Subtract<T>(ref T source, int elementOffset) { return ref *((T*)Sys.AddressOf(ref source) - elementOffset); }
-        public static ref T Subtract<T>(ref T source, nint elementOffset) { return ref *((T*)Sys.AddressOf(ref source) - elementOffset); }
-        public static void* Subtract<T>(void* source, int elementOffset) { return (byte*)source - (long)elementOffset * sizeof(T); }
-        public static ref T SubtractByteOffset<T>(ref T source, nint byteOffset) { return ref *(T*)((byte*)Sys.AddressOf(ref source) - byteOffset); }
-        public static bool AreSame<T>(ref T left, ref T right) { return Sys.AddressOf(ref left) == Sys.AddressOf(ref right); }
-        public static bool IsAddressGreaterThan<T>(ref T left, ref T right) { return (ulong)Sys.AddressOf(ref left) > (ulong)Sys.AddressOf(ref right); }
-        public static bool IsAddressLessThan<T>(ref T left, ref T right) { return (ulong)Sys.AddressOf(ref left) < (ulong)Sys.AddressOf(ref right); }
-        public static nint ByteOffset<T>(ref T origin, ref T target) { return (nint)(Sys.AddressOf(ref target) - Sys.AddressOf(ref origin)); }
-        public static bool IsNullRef<T>(ref T source) { return Sys.AddressOf(ref source) == 0; }
-        public static ref T NullRef<T>() { return ref *(T*)null; }
-        public static T Read<T>(void* source) { return *(T*)source; }
-        public static T ReadUnaligned<T>(void* source) { return *(T*)source; }
-        public static T ReadUnaligned<T>(ref byte source) { return *(T*)Sys.AddressOf(ref source); }
-        public static void Write<T>(void* destination, T value) { *(T*)destination = value; }
-        public static void WriteUnaligned<T>(void* destination, T value) { *(T*)destination = value; }
-        public static void WriteUnaligned<T>(ref byte destination, T value) { *(T*)Sys.AddressOf(ref destination) = value; }
-        public static void Copy<T>(void* destination, ref T source) { *(T*)destination = source; }
-        public static void Copy<T>(ref T destination, void* source) { destination = *(T*)source; }
+        public static ref TTo As<TFrom, TTo>(ref TFrom source) where TFrom : allows ref struct where TTo : allows ref struct { return ref *(TTo*)Sys.AddressOf(ref source); }
+        public static void* AsPointer<T>(ref T value) where T : allows ref struct { return (void*)Sys.AddressOf(ref value); }
+        public static ref T AsRef<T>(void* source) where T : allows ref struct { return ref *(T*)source; }
+        public static ref T Add<T>(ref T source, int elementOffset) where T : allows ref struct { return ref *((T*)Sys.AddressOf(ref source) + elementOffset); }
+        public static ref T Add<T>(ref T source, nint elementOffset) where T : allows ref struct { return ref *((T*)Sys.AddressOf(ref source) + elementOffset); }
+        public static void* Add<T>(void* source, int elementOffset) where T : allows ref struct { return (byte*)source + (long)elementOffset * sizeof(T); }
+        public static ref T AddByteOffset<T>(ref T source, nint byteOffset) where T : allows ref struct { return ref *(T*)((byte*)Sys.AddressOf(ref source) + byteOffset); }
+        public static ref T Subtract<T>(ref T source, int elementOffset) where T : allows ref struct { return ref *((T*)Sys.AddressOf(ref source) - elementOffset); }
+        public static ref T Subtract<T>(ref T source, nint elementOffset) where T : allows ref struct { return ref *((T*)Sys.AddressOf(ref source) - elementOffset); }
+        public static void* Subtract<T>(void* source, int elementOffset) where T : allows ref struct { return (byte*)source - (long)elementOffset * sizeof(T); }
+        public static ref T SubtractByteOffset<T>(ref T source, nint byteOffset) where T : allows ref struct { return ref *(T*)((byte*)Sys.AddressOf(ref source) - byteOffset); }
+        public static bool AreSame<T>(ref T left, ref T right) where T : allows ref struct { return Sys.AddressOf(ref left) == Sys.AddressOf(ref right); }
+        public static bool IsAddressGreaterThan<T>(ref T left, ref T right) where T : allows ref struct { return (ulong)Sys.AddressOf(ref left) > (ulong)Sys.AddressOf(ref right); }
+        public static bool IsAddressLessThan<T>(ref T left, ref T right) where T : allows ref struct { return (ulong)Sys.AddressOf(ref left) < (ulong)Sys.AddressOf(ref right); }
+        public static nint ByteOffset<T>(ref T origin, ref T target) where T : allows ref struct { return (nint)(Sys.AddressOf(ref target) - Sys.AddressOf(ref origin)); }
+        public static bool IsNullRef<T>(ref T source) where T : allows ref struct { return Sys.AddressOf(ref source) == 0; }
+        public static ref T NullRef<T>() where T : allows ref struct { return ref *(T*)null; }
+        public static T Read<T>(void* source) where T : allows ref struct { return *(T*)source; }
+        public static T ReadUnaligned<T>(void* source) where T : allows ref struct { return *(T*)source; }
+        public static T ReadUnaligned<T>(ref byte source) where T : allows ref struct { return *(T*)Sys.AddressOf(ref source); }
+        public static void Write<T>(void* destination, T value) where T : allows ref struct { *(T*)destination = value; }
+        public static void WriteUnaligned<T>(void* destination, T value) where T : allows ref struct { *(T*)destination = value; }
+        public static void WriteUnaligned<T>(ref byte destination, T value) where T : allows ref struct { *(T*)Sys.AddressOf(ref destination) = value; }
+        public static void Copy<T>(void* destination, ref T source) where T : allows ref struct { *(T*)destination = source; }
+        public static void Copy<T>(ref T destination, void* source) where T : allows ref struct { destination = *(T*)source; }
         public static void CopyBlock(void* destination, void* source, uint byteCount) { Sys.MemoryCopy((nuint)destination, (nuint)source, byteCount); }
         public static void CopyBlockUnaligned(void* destination, void* source, uint byteCount) { Sys.MemoryCopy((nuint)destination, (nuint)source, byteCount); }
         public static void InitBlock(void* startAddress, byte value, uint byteCount) { Sys.MemorySet((nuint)startAddress, value, byteCount); }
         public static void InitBlockUnaligned(void* startAddress, byte value, uint byteCount) { Sys.MemorySet((nuint)startAddress, value, byteCount); }
-        public static void SkipInit<T>(out T value) { value = default!; }
+        public static void SkipInit<T>(out T value) where T : allows ref struct { value = default!; }
     }
 
     /// What every ValueTuple answers, boxed or not: how many items it has,

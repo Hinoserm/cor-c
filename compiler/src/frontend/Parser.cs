@@ -4664,7 +4664,13 @@ public sealed class Parser
             bool receiver = false, variadic = false, byRef = false, byOut = false, byIn = false;
             while (true)
             {
-                if (!receiver && Take(Tok.KwThis)) receiver = true;
+                if (!receiver && Take(Tok.KwThis))
+                {
+                    receiver = true;
+                    // `this scoped Span<T> s`, `this scoped ref T x`: the only
+                    // order C# reads for an extension's scoped receiver.
+                    if (!scoped && (Scoped() || At(Tok.Ident) && Cur.Text == "scoped" && Ahead().Kind is Tok.KwRef or Tok.KwIn or Tok.KwOut)) { _i++; scoped = true; }
+                }
                 else if (!variadic && Take(Tok.KwParams)) variadic = true;
                 else if (!byRef && !byOut && !byIn && Take(Tok.KwRef))
                 {
@@ -9471,7 +9477,7 @@ public sealed class Parser
                             Type = type, Name = next,
                             // As the first: `ulong[] a = { 1 }, b = { 2 };`.
                             Init = Take(Tok.Assign) ? Initialiser(type) : null,
-                            IsConst = constant,
+                            IsConst = constant, IsScoped = scopedLocal,
                             Line = where.Line, Col = where.Col,
                         });
                     }

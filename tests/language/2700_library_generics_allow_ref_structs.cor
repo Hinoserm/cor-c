@@ -1,0 +1,48 @@
+// test: library_generics_allow_ref_structs
+// expect-exit: 0
+// expect-output:
+// 5
+// 21
+// True False
+// True
+// 8
+// adgjm
+// 5
+// 65
+//
+// A SPAN WHERE .NET'S OWN GENERICS ALLOW ONE: Func, Action, Predicate,
+// Converter and Comparison say `allows ref struct` (since .NET 9), as do
+// IEnumerable, IEquatable, IComparer and their kin, string.Create's state
+// and the Unsafe helpers. A lambda over a span, a struct holding spans, a
+// stackalloc passed to an Action and a span through a user generic that
+// allows one all run as .NET runs them.
+using System;
+using System.Collections.Generic;
+
+ref struct Pair { public ReadOnlySpan<char> A, B; }
+
+static class P
+{
+    static int Apply<T>(Func<T, int> f, T value) where T : allows ref struct => f(value);
+
+    static void Main()
+    {
+        Func<ReadOnlySpan<char>, int> length = s => s.Length;
+        Console.WriteLine(length("hello"));
+        Action<Span<byte>> fill = b => b.Fill(7);
+        Span<byte> bytes = stackalloc byte[3];
+        fill(bytes);
+        Console.WriteLine(bytes[0] + bytes[1] + bytes[2]);
+        Predicate<ReadOnlySpan<char>> empty = s => s.IsEmpty;
+        Console.WriteLine(empty("") + " " + empty("x"));
+        Func<ReadOnlySpan<char>, ReadOnlySpan<char>, bool> same = (a, b) => a.SequenceEqual(b);
+        Console.WriteLine(same("ab", "ab"));
+        Console.WriteLine(Apply<ReadOnlySpan<char>>(s => s.Length * 2, "four"));
+        string made = string.Create(5, 3, (span, step) => { for (int i = 0; i < span.Length; i++) span[i] = (char)('a' + i * step); });
+        Console.WriteLine(made);
+        Func<Pair, int> both = p => p.A.Length + p.B.Length;
+        Console.WriteLine(both(new Pair { A = "abc", B = "de" }));
+        Converter<ReadOnlySpan<char>, int> first = s => s[0];
+        Console.WriteLine(first("A"));
+    }
+}

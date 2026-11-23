@@ -41,7 +41,8 @@ public sealed partial class Binder
         if (md.Body is null) return;
         _refSafety.Clear();
         _refSafetyMethod = md;
-        try { SafetyVisit(md.Body, 1, RefLike(returns)); }
+        // The body's statements are the method's own (1): its block adds none.
+        try { SafetyVisit(md.Body, 0, RefLike(returns)); }
         finally { _refSafetyMethod = null; _refSafety.Clear(); }
     }
 
@@ -101,18 +102,27 @@ public sealed partial class Binder
                 ArgumentsMustMatch(made, null, made.Args, ctor);
                 break;
         }
-        List<Node> children = new();
+        // A list per level of the walk, kept for the next method's.
+        List<Node> children = _safetyLists.Count > 0 ? _safetyLists.Pop() : new();
         Expr? marked = AddSafetyChildren(n, children);
         try
         {
-        foreach (Node child in children)
+            foreach (Node child in children)
+            {
+                if (child is Block) SafetyVisit(child, depth, returnsRefLike);
+                else SafetyVisit(child, child is Stmt and not Block && n is ForStmt or ForeachStmt ? depth + 1 : depth, returnsRefLike);
+            }
+        }
+        finally
         {
-            if (child is Block) SafetyVisit(child, depth, returnsRefLike);
-            else SafetyVisit(child, child is Stmt and not Block && n is ForStmt or ForeachStmt ? depth + 1 : depth, returnsRefLike);
+            if (marked is not null) _inOwnRewrite.Remove(marked);
+            children.Clear();
+            _safetyLists.Push(children);
         }
-        }
-        finally { if (marked is not null) _inOwnRewrite.Remove(marked); }
     }
+
+    /// <summary>The walk's child lists, free for reuse (SafetyVisit).</summary>
+    private readonly Stack<List<Node>> _safetyLists = new();
 
     // ---- the contexts ----------------------------------------------------------
 
@@ -201,7 +211,10 @@ public sealed partial class Binder
             case NameExpr name when _r.Resolved.TryGetValue(name, out Sym? sym):
                 return sym switch
                 {
-                    LocalSym { IsRef: true } => 1,
+                    // A ref local is as wide as what it refers to, which this
+                    // check does not follow: taken as the caller's, so that a
+                    // valid alias is never refused.
+                    LocalSym { IsRef: true } => 0,
                     LocalSym local => _refSafety.TryGetValue(local, out var known) ? known.Declared : 1,
                     ParamSym { ByRef: true } => 0,
                     ParamSym => 1,
@@ -224,6 +237,10 @@ public sealed partial class Binder
         MemberExpr { Target: ThisExpr } => 0,
         _ => SafeContext(target),
     };
+
+    /// <summary>A `readonly struct`'s value: none of its methods writes to it.</summary>
+    private static bool ReadonlyStruct(Type t)
+        => !t.IsArray && !t.IsPointer && !t.IsNullableValue && t.Symbol is { Kind: TypeKind.Struct, Decl: { } d } && (d.Mods & Mods.Readonly) != 0;
 
     /// <summary>Whether a parameter of the method checked is `scoped`.</summary>
     private bool ParamScoped(ParamSym parameter)
@@ -252,6 +269,7 @@ public sealed partial class Binder
     /// each ref struct argument's value, each argument passed by reference's
     /// variable, the receiver -- but a `scoped` parameter's. Which one made it
     /// so, for the message: its place (-1 the receiver) and the parameter.
+    /// An `out` argument gives it nothing: C# 11 makes `out` scoped.
     /// </summary>
     private (int Context, int Culprit, string? Parameter) ResultContext(Expr? receiver, IReadOnlyList<Expr> args, MethodSymbol m)
     {
@@ -260,7 +278,10 @@ public sealed partial class Binder
         string? parameter = null;
         for (int i = 0; i < args.Count && i < m.Params.Count; i++)
         {
-            if (m.Decl is { } d && i < d.Params.Count && d.Params[i].IsScoped) continue;
+            // A `scoped` parameter, and an `out` one (scoped since C# 11),
+            // gives the result nothing.
+            if (m.Decl is { } d && i < d.Params.Count && (d.Params[i].IsScoped || d.Params[i].IsOut)) continue;
+            if (args[i] is RefArgExpr { IsOut: true }) continue;
             Expr arg = args[i] is RefArgExpr { Target: { } passed } ? passed : args[i];
             int one = args[i] is RefArgExpr || m.Params[i].ByRef ? RefContext(arg) : SafeContext(arg);
             if (one > context) { context = one; culprit = i; parameter = m.Params[i].Name; }
@@ -278,7 +299,14 @@ public sealed partial class Binder
     {
         if (m is null) return;
         int into = int.MaxValue;
-        if (receiver is not null && !(m.Decl is { } readOnly && readOnly.Mods.HasFlag(Mods.Readonly))) into = SafeContext(receiver);
+        // A receiver the method cannot write to -- a readonly method's, or
+        // any method's of a readonly struct (ReadOnlySpan, Span) -- is
+        // nothing to store into.
+        if (receiver is not null && !(m.Decl is { } readOnly && readOnly.Mods.HasFlag(Mods.Readonly))
+            && !(_r.TypeOf(receiver) is { } owner && ReadonlyStruct(owner)))
+        {
+            into = SafeContext(receiver);
+        }
         for (int i = 0; i < args.Count && i < m.Params.Count; i++)
             if (args[i] is RefArgExpr { Target: { } written } && _r.TypeOf(written) is { } held && RefLike(held)
                 && !(m.Decl is { } d && i < d.Params.Count && d.Params[i].IsScoped))
@@ -298,16 +326,16 @@ public sealed partial class Binder
     // ---- the messages ----------------------------------------------------------
 
     /// <summary>
-    /// A value that may not go where it goes, said at what made it so: a
-    /// variable (CS8352), a stackalloc (CS8353), a call's result and then its
-    /// argument (CS8347), a reference to a local returned (CS8168).
-    /// </summary>
-    /// <summary>
     /// The ref struct a refused value goes into, where a return or an
     /// assignment says it: a stackalloc is named as the span it becomes.
     /// </summary>
     private Type? _escapeInto;
 
+    /// <summary>
+    /// A value that may not go where it goes, said at what made it so: a
+    /// variable (CS8352), a stackalloc (CS8353), a call's result and then its
+    /// argument (CS8347), a reference to a local returned (CS8168).
+    /// </summary>
     private void EscapeRefused(Expr e, int allowed, bool returning)
     {
         switch (e)
@@ -378,9 +406,21 @@ public sealed partial class Binder
     }
 
     /// <summary>Where an expression starts, as Roslyn places a call's message: the leftmost of a member chain.</summary>
-    private static Node Start(Node e)
+    /// <summary>
+    /// Where an expression begins, as Roslyn places its diagnostics: the
+    /// start of `a.b`, `a[i]` and `a.b(c)` is `a`'s.
+    /// </summary>
+    internal static Node Start(Node e)
     {
-        while (e is MemberExpr { Target: { } inner }) e = inner;
-        return e;
+        while (true)
+        {
+            switch (e)
+            {
+                case MemberExpr { Target: { } inner }: e = inner; continue;
+                case IndexExpr { Target: { } indexed }: e = indexed; continue;
+                case CallExpr { Target: MemberExpr { Target: { } called } }: e = called; continue;
+                default: return e;
+            }
+        }
     }
 }

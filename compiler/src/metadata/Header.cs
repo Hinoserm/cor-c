@@ -332,8 +332,10 @@ public static class Header
         // into an ordinary static method for every consuming compilation.
         string by = p.IsThis ? "this " : p.IsParams ? "params " : p.IsOut ? "out " : p.IsRef ? "ref " : "";
 
-        // And `scoped`, which a caller's escape rules ask (Binder.RefSafety).
-        return (p.IsScoped ? "scoped " : "") + by + Spell(p.Type, made) + " " + Lexer.Identifier(p.Name);
+        // And `scoped`, which a caller's escape rules ask (Binder.RefSafety):
+        // after `this`, the one order C# reads for an extension's receiver.
+        string scoped = p.IsScoped ? "scoped " : "";
+        return (p.IsThis ? by + scoped : scoped + by) + Spell(p.Type, made) + " " + Lexer.Identifier(p.Name);
     }
 
     private static void TypeParams(StringBuilder s, List<TypeParam> ps)
@@ -436,6 +438,9 @@ public static class Header
         if ((m & Mods.Readonly) != 0)  { s.Append("readonly "); }
         if ((m & Mods.Volatile) != 0)  { s.Append("volatile "); }
         if ((m & Mods.Const) != 0)     { s.Append("const "); }
+        // A ref struct's `ref`: right before `partial` and `struct`, the
+        // only place C# reads it, so a consumer keeps its rules.
+        if ((m & Mods.RefLike) != 0)   { s.Append("ref "); }
         if ((m & Mods.Partial) != 0)   { s.Append("partial "); }
 
         return s.ToString();

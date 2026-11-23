@@ -17169,14 +17169,15 @@ public sealed partial class Binder
                 }
 
                 // A REF STRUCT IS NO TUPLE'S ITEM (CS9244): a tuple's items are
-                // ValueTuple's type arguments, which allow none.
+                // ValueTuple's type arguments, which allow none -- each said,
+                // where it begins, and the tuple kept as typed, so that what
+                // takes it apart reports nothing more (as Roslyn).
                 for (int i = 0; i < elements.Count && !InGenericCopy(); i++)
                 {
                     if (RefLike(elements[i]))
                     {
-                        RefuseRefLikeArgument(tup.Items[i], RefLikeArgument(elements[i], "T" + (i + 1),
+                        RefuseRefLikeArgument(Start(tup.Items[i]), RefLikeArgument(elements[i], "T" + (i + 1),
                             "(" + string.Join(", ", Enumerable.Range(1, elements.Count).Select(k => "T" + k)) + ")"));
-                        return Type.Error;
                     }
                 }
 

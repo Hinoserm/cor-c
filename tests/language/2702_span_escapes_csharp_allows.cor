@@ -1,0 +1,66 @@
+// test: span_escapes_csharp_allows
+// expect-exit: 0
+// expect-output:
+// 3
+// 10
+// 128
+//
+// WHAT C#'S REF SAFETY RULES ALLOW, ACCEPTED: a readonly span's CopyTo
+// into a stackalloc (a readonly struct's receiver is nothing to store
+// into), a call's result with an `out` argument (scoped since C# 11), a ref
+// local's alias, a `scoped` local assigned to a method-wide span, a ref
+// struct holding and slicing its span, a span narrowed in a loop, spans
+// over fields, patterns and conditionals. Each one Roslyn compiles.
+using System;
+using System.Runtime.InteropServices;
+
+ref struct Reader
+{
+    ReadOnlySpan<byte> _data;
+    public Reader(ReadOnlySpan<byte> data) { _data = data; }
+    public ReadOnlySpan<byte> Rest => _data;
+    public ReadOnlySpan<byte> Take(int n) { ReadOnlySpan<byte> head = _data.Slice(0, n); _data = _data.Slice(n); return head; }
+}
+
+static class P
+{
+    static int[] _arr = { 1, 2, 3, 4 };
+    static ReadOnlySpan<byte> Take(ReadOnlySpan<byte> d, out int n) { n = 1; return d.Slice(1); }
+    static ReadOnlySpan<byte> Parse1(ReadOnlySpan<byte> d) { return Take(d, out int n); }
+    static ReadOnlySpan<byte> Parse2(ReadOnlySpan<byte> d) { int n; var r = Take(d, out n); return r; }
+    static ref int One(ref int x) { ref int r = ref x; return ref r; }
+    static Span<int> Field() => _arr.AsSpan();
+    static void Get(out Span<int> s, int[] a) { s = a; }
+    static ReadOnlySpan<char> Pick(object o) { if (o is string str) { ReadOnlySpan<char> x = str; return x; } return default; }
+    static Span<int> Either(bool c, int[] a, int[] b) => c ? a : b;
+
+    static int Sum()
+    {
+        Span<int> s = stackalloc int[4];
+        for (int i = 0; i < s.Length; i++) s[i] = i;
+        int total = 0;
+        while (!s.IsEmpty) { total += s[0]; s = s.Slice(1); }
+        foreach (int v in _arr.AsSpan()) total += v;
+        return total;
+    }
+
+    static void Main()
+    {
+        ReadOnlySpan<char> text = "abc";
+        Span<char> buf = stackalloc char[8];
+        text.CopyTo(buf);
+        Span<int> src = _arr;
+        Span<int> dst = stackalloc int[4];
+        src.CopyTo(dst);
+        src.TryCopyTo(dst);
+        scoped Span<int> a = default;
+        Span<int> b = stackalloc int[1];
+        b = a;
+        var r = new Reader(new byte[] { 1, 2, 3 });
+        Console.WriteLine(r.Take(1).Length + r.Rest.Length);
+        int x = 5;
+        Console.WriteLine(One(ref x) + Field()[1] + Parse1(new byte[] { 1, 2 }).Length + Parse2(new byte[] { 1, 2, 3 }).Length);
+        Get(out Span<int> got, _arr);
+        Console.WriteLine(got.Length + Pick("hey").Length + Either(true, _arr, _arr).Length + Sum() + buf[0] + dst[3]);
+    }
+}

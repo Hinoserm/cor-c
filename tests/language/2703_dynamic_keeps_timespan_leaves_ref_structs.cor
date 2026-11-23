@@ -1,0 +1,36 @@
+// test: dynamic_keeps_timespan_leaves_ref_structs
+// expect-exit: 0
+// expect-output:
+// 00:01:30
+// 00:02:00
+// 42
+// 7
+//
+// WHAT dynamic REACHES IS DECIDED BY THE TYPE, NOT ITS NAME: a TimeSpan
+// property and a method taking one are called late as .NET calls them,
+// while a method taking a user's ref struct (which no object may hold)
+// is left out of the late calls and still compiles and runs when called
+// directly.
+using System;
+
+ref struct Buf { public int N; }
+
+class Clock
+{
+    public TimeSpan Elapsed => TimeSpan.FromSeconds(90);
+    public TimeSpan Twice(TimeSpan t) => t + t;
+    public int Take(Buf b) => b.N;
+    public int Plain(int x) => x + 1;
+}
+
+static class P
+{
+    static void Main()
+    {
+        dynamic c = new Clock();
+        Console.WriteLine(c.Elapsed);
+        Console.WriteLine(c.Twice(TimeSpan.FromMinutes(1)));
+        Console.WriteLine(c.Plain(41));
+        Console.WriteLine(new Clock().Take(new Buf { N = 7 }));
+    }
+}

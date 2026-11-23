@@ -1,0 +1,38 @@
+// test: ref_struct_tuples_as_roslyn
+// expect-compile-error: CS9244: The type 'ReadOnlySpan<char>' may not be a ref struct or a type parameter allowing ref structs in order to use it as parameter 'T1' in the generic type or method '(T1, T2)'
+//
+// A SPAN IS NO TUPLE'S ITEM, EVEN ONE ONLY TAKEN APART: C# builds a
+// ValueTuple for a swap, a deconstruction or a switch on a tuple literal,
+// so each span item is refused (CS9244), where the item begins, and
+// nothing that takes the tuple apart says more. The whole list is checked
+// by 2701_ref_struct_tuples_as_roslyn.sh.
+using System;
+
+static class P
+{
+    static string Kind(ReadOnlySpan<char> a, ReadOnlySpan<char> b) => (a, b) switch
+    {
+        ({ IsEmpty: true }, _) => "first empty",
+        (_, { Length: 1 }) => "second short",
+        _ => "other",
+    };
+
+    static void Main()
+    {
+        ReadOnlySpan<char> a = "left", b = "right";
+        (a, b) = (b, a);
+        Console.WriteLine(a.ToString() + " " + b.ToString());
+        ReadOnlySpan<char> s = "head:tail";
+        int i = s.IndexOf(':');
+        (ReadOnlySpan<char> head, ReadOnlySpan<char> tail) = (s[..i], s[(i + 1)..]);
+        Console.WriteLine(head.ToString() + "|" + tail.ToString());
+        var (l, r) = (head, tail);
+        Console.WriteLine(l.Length + r.Length);
+        Console.WriteLine(Kind("", "x") + ", " + Kind("ab", "x") + ", " + Kind("ab", "xy"));
+        switch (head, tail)
+        {
+            case ({ Length: 4 }, { Length: 4 }): Console.WriteLine("four and four"); break;
+            default: Console.WriteLine("no"); break;
+        }
+    }
+}

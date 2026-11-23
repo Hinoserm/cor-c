@@ -67,6 +67,24 @@ public static class DynamicDeclarations
             if (sibling is not null) return sibling;
             return found.FirstOrDefault(t => t.Namespace == at.Namespace) ?? found[0];
         }
+
+        /// <summary>
+        /// Whether a written type is a ref struct (Span, ReadOnlySpan, a
+        /// user's `ref struct`), generic or not, nearest `at` first: what no
+        /// `object?` may hold.
+        /// </summary>
+        public bool RefLike(TypeRef? r, TypeDecl at)
+        {
+            if (r is null || r.IsFunctionPointer || r.ArrayRank > 0 || r.PointerDepth > 0) return false;
+            string name = r.Name;
+            int dot = name.LastIndexOf('.');
+            string simple = dot < 0 ? name : name[(dot + 1)..];
+            if (!ByName.TryGetValue(simple, out List<TypeDecl>? all)) return false;
+            List<TypeDecl> found = all.Where(t => t.TypeParams.Count == r.Args.Count).ToList();
+            TypeDecl? d = found.Count <= 1 ? found.FirstOrDefault()
+                : found.FirstOrDefault(t => t.Outer == at.Outer) ?? found.FirstOrDefault(t => t.Namespace == at.Namespace) ?? found[0];
+            return d is not null && (d.Mods & Mods.RefLike) != 0;
+        }
     }
 
     /// <summary>The classes and structs given their members; before binding, after ComDeclarations (Frontend).</summary>
@@ -215,14 +233,14 @@ public static class DynamicDeclarations
                             if (stored.Add(one.Name)) events.Add((one.Name, e.Type));
                         }
                         break;
-                    // Nor a span, which no `object? value` can be (SpanNamed).
-                    case FieldDecl f when Visible(f) && !f.IsEvent && !f.Mods.HasFlag(Mods.Const) && spellable(f.Type) && !SpanNamed(f.Type):
+                    // Nor a ref struct, which no `object? value` can be.
+                    case FieldDecl f when Visible(f) && !f.IsEvent && !f.Mods.HasFlag(Mods.Const) && spellable(f.Type) && !scope.RefLike(f.Type, at):
                         foreach (FieldDecl one in new[] { f }.Concat(f.More))
                         {
                             if (stored.Add(one.Name)) storage.Add(new Storage(one.Name, f.Type, true, !f.Mods.HasFlag(Mods.Readonly)));
                         }
                         break;
-                    case PropertyDecl p when Visible(p) && p.Params.Count == 0 && spellable(p.Type) && !SpanNamed(p.Type):
+                    case PropertyDecl p when Visible(p) && p.Params.Count == 0 && spellable(p.Type) && !scope.RefLike(p.Type, at):
                         if (stored.Add(p.Name)) storage.Add(new Storage(p.Name, p.Type, p.Auto || p.Getter is not null, p.HasSetter));
                         break;
                     case PropertyDecl ix when (ix.Mods.HasFlag(Mods.Public) || ix.Mods.HasFlag(Mods.Internal)) && !ix.Mods.HasFlag(Mods.Static)
@@ -416,7 +434,7 @@ public static class DynamicDeclarations
         // NOT ONE THAT TAKES OR GIVES A SPAN, a ref struct: no object holds
         // one (C#'s CS0029), so no late call can hand one in or take one out
         // -- `string.AsSpan` here boxed its result into `object? result`.
-        if (SpanNamed(md.Returns) || md.Params.Any(p => SpanNamed(p.Type))) return;
+        if (scope.RefLike(md.Returns, t) || md.Params.Any(p => scope.RefLike(p.Type, t))) return;
         callee ??= "this." + md.Name;
         string head = self is null ? "" : self;
         const string pad = "                ";
@@ -605,9 +623,6 @@ public static class DynamicDeclarations
         s.Append("        return 1;\n    }\n").Append(each).Append("}\n");
         return any ? s.ToString() : null;
     }
-
-    /// <summary>A Span, a ReadOnlySpan, or a ref struct named for one (SpanSplitEnumerator): what no object may hold.</summary>
-    static bool SpanNamed(TypeRef? r) => r is not null && r.ArrayRank == 0 && r.Name.Contains("Span", StringComparison.Ordinal);
 
     /// <summary>A library type's name as any file can write it.</summary>
     static string Qualified(TypeDecl t) => t.Namespace.Length == 0 ? t.Name : t.Namespace + "." + t.Name;

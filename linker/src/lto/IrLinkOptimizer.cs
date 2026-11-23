@@ -634,7 +634,14 @@ public static class IrLinkOptimizer
         {
             var plan = plans[k];
             ObjectFile original = inputs[plan.Index].Object;
-            if (lifetimes is null || !hints.TryGetValue(original, out LifetimeHints? own)) return null;
+            if (lifetimes is null || !hints.TryGetValue(original, out LifetimeHints? own))
+            {
+                // NO LIFETIMES TO GO BY, BUT THE ARGUMENT FACTS STILL: a unit
+                // planned because they touch it (ArgumentsTouch) must call
+                // what they made of its callees, or it names a function
+                // regenerated away. Nothing known of lifetimes frees nothing.
+                return argumentFacts is { IsEmpty: false } ? new LifetimeFacts { Arguments = argumentFacts } : null;
+            }
             LifetimeFacts facts;
             // One question of the solver at a time: it is not asked from
             // several threads anywhere else.
