@@ -207,23 +207,28 @@ internal static class ClassLibraries
     }
 
     /// <summary>
-    /// Of a library build's --ref sources, by full path, those the split puts
-    /// in a library not linked beneath it (no --link-shared names its
-    /// soname): built after it, so nothing of their code can be called from
-    /// it. A source the split does not name is no one's, and not among them.
+    /// Of a library build's --ref sources, by full path, those of a library
+    /// the split builds AFTER the one being built (the library its own
+    /// sources belong to): nothing of their code can be called from it.
+    /// Empty when its own sources are none of the split's -- a program, a
+    /// test's unit, a library of someone else's -- and a source the split
+    /// does not name is no one's, and never among them.
     /// </summary>
-    internal static HashSet<string> Above(string root, IEnumerable<string> references, IEnumerable<string> linked)
+    internal static HashSet<string> Above(string root, IEnumerable<string> own, IEnumerable<string> references)
     {
-        HashSet<string> below = new(linked.Select(Path.GetFileName).OfType<string>(), StringComparer.Ordinal);
-        Dictionary<string, string> owner = new(StringComparer.Ordinal);
-        foreach (Library library in Table)
-            foreach (string source in library.Sources)
-                owner[Path.GetFullPath(Path.Combine(root, source))] = library.Soname;
+        Dictionary<string, int> place = new(StringComparer.Ordinal);
+        for (int i = 0; i < Table.Length; i++)
+            foreach (string source in Table[i].Sources)
+                place[Path.GetFullPath(Path.Combine(root, source))] = i;
         HashSet<string> above = new(StringComparer.Ordinal);
+        int built = -1;
+        foreach (string path in own)
+            if (place.TryGetValue(Path.GetFullPath(path), out int at)) built = Math.Max(built, at);
+        if (built < 0) return above;
         foreach (string reference in references)
         {
             string full = Path.GetFullPath(reference);
-            if (owner.TryGetValue(full, out string? soname) && !below.Contains(soname)) above.Add(full);
+            if (place.TryGetValue(full, out int at) && at > built) above.Add(full);
         }
         return above;
     }

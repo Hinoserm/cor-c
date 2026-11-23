@@ -379,9 +379,9 @@ public sealed class TypeDecl : Node
     public bool Elsewhere { get; set; }
 
     /// <summary>
-    /// Read from a `--ref` source whose library is built after this one, not
-    /// linked beneath it (Frontend.LibrariesAbove): its code is nothing this
-    /// image can call.
+    /// Read from a `--ref` source whose library the class library's split
+    /// builds after this one (ClassLibraries.Above): its code is nothing
+    /// this image can call.
     /// </summary>
     public bool FromLibraryAbove { get; set; }
 

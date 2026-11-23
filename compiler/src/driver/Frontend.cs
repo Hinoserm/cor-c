@@ -122,6 +122,13 @@ public static class Frontend
                 elsewhere.Contains(Path.GetFullPath(path))));
         }
 
+        // A PART OF A CLASS IN A LIBRARY ABOVE THIS ONE holds no static state
+        // (RefuseStaticStateApart): which --ref sources those are, when this
+        // is a build of one of the class library's shared libraries.
+        HashSet<string> above = library && elsewhere.Count > 0 && Driver.LibraryRoot() is string splitRoot
+            ? ClassLibraries.Above(splitRoot, paths.Where(p => !elsewhere.Contains(Path.GetFullPath(p))), elsewhere)
+            : new HashSet<string>(StringComparer.Ordinal);
+
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("parse");
 #endif
@@ -155,7 +162,7 @@ public static class Frontend
                     if (decl.Scope is { } typeScope) typeScope.Path = decl.SourcePath;
                     decl.FromLibrary = isLibrary;
                     decl.Elsewhere = isElsewhere;
-                    decl.FromLibraryAbove = isElsewhere && path is not null && LibrariesAbove?.Contains(Path.GetFullPath(path)) == true;
+                    decl.FromLibraryAbove = isElsewhere && path is not null && above.Contains(Path.GetFullPath(path));
                     foreach (MemberDecl member in decl.Members)
                     {
                         member.File = file;
@@ -1159,7 +1166,7 @@ public static class Frontend
                 }
             }
 
-            if (part.FromLibraryAbove && !into.Elsewhere) RefuseStaticStateApart(into, part);
+            if (part.FromLibraryAbove && !into.FromLibraryAbove) RefuseStaticStateApart(into, part);
             into.Members.AddRange(part.Members);
             into.Mods |= part.Mods;
             into.FromLibrary |= part.FromLibrary;
@@ -1192,16 +1199,9 @@ public static class Frontend
     /// link. Refused here, naming the member, when the library beneath is
     /// built. (A part of a library beneath this one, linked, may hold them:
     /// its code is there to call.) A static field without an initialiser is
-    /// storage only, and allowed.
+    /// storage only, and allowed; a table of constants is refused with the
+    /// rest, being an initialiser until the binder makes it data.
     /// </summary>
-    /// <summary>
-    /// The `--ref` sources, by full path, of the class library's shared
-    /// libraries built after the one being built: those its split
-    /// (ClassLibraries) puts in a library not given with --link-shared. Set
-    /// by the driver; null outside a class library build.
-    /// </summary>
-    internal static HashSet<string>? LibrariesAbove { get; set; }
-
     private static void RefuseStaticStateApart(Lang.TypeDecl owner, Lang.TypeDecl part)
     {
         foreach (Lang.MemberDecl member in part.Members)

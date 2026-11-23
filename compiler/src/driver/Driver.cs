@@ -1092,10 +1092,6 @@ public static class Driver
             }
             sharedLibs.AddRange(found.Where(f => !sharedLibs.Contains(f)));
         }
-        // A PART OF A CLASS IN A LIBRARY ABOVE THIS ONE holds no static state
-        // (Frontend.RefuseStaticStateApart): which --ref sources those are.
-        Frontend.LibrariesAbove = LibraryRoot() is string splitRoot && references.Count > 0
-            ? ClassLibraries.Above(splitRoot, references, sharedLibs) : null;
 
         // --count-spills counts into the runtime's counters, named directly --
         // absolutely on i386, RIP-relatively on x86-64 -- not through a GOT,
