@@ -3397,7 +3397,7 @@ public sealed class Monomorphiser
                         Name = ip.Name, Type = Sub(ip.Type, map),
                         IsRef = ip.IsRef, IsOut = ip.IsOut, IsReadOnlyRef = ip.IsReadOnlyRef, IsScoped = ip.IsScoped,
                         NotNullWhen = ip.NotNullWhen, MaybeNull = ip.MaybeNull, NotNull = ip.NotNull, Caller = ip.Caller, CallerArgument = ip.CallerArgument, MarshalAs = ip.MarshalAs,
-                        Line = ip.Line, Col = ip.Col,
+                        Line = ip.Line, Col = ip.Col, NameLine = ip.NameLine, NameCol = ip.NameCol,
                     });
                 }
                 return copy;
@@ -3423,6 +3423,7 @@ public sealed class Monomorphiser
                     // renames its constructors too or they stop being ones.
                     Name = md.IsCtor ? owner : md.Name,
                     Mods = md.Mods,
+                    NameLine = md.NameLine, NameCol = md.NameCol,
                     Returns = md.Returns is null ? null : Sub(md.Returns, map),
                     IsCtor = md.IsCtor,
                     Body = Body(md.Body, map, template: md.TypeParams.Count > 0),
@@ -3458,7 +3459,7 @@ public sealed class Monomorphiser
                         IsReadOnlyRef = p.IsReadOnlyRef, IsParams = p.IsParams, IsThis = p.IsThis, IsScoped = p.IsScoped,
                         NotNullWhen = p.NotNullWhen, MaybeNull = p.MaybeNull, NotNull = p.NotNull, Caller = p.Caller, CallerArgument = p.CallerArgument, MarshalAs = p.MarshalAs,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
-                        Line = p.Line, Col = p.Col,
+                        Line = p.Line, Col = p.Col, NameLine = p.NameLine, NameCol = p.NameCol,
                     });
                 }
 
@@ -4222,7 +4223,7 @@ public sealed class Monomorphiser
                         IsParams = p.IsParams, IsThis = p.IsThis,
                         NotNullWhen = p.NotNullWhen, MaybeNull = p.MaybeNull, NotNull = p.NotNull, Caller = p.Caller, CallerArgument = p.CallerArgument, MarshalAs = p.MarshalAs,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
-                        Line = p.Line, Col = p.Col,
+                        Line = p.Line, Col = p.Col, NameLine = p.NameLine, NameCol = p.NameCol,
                     });
                 }
                 return made;

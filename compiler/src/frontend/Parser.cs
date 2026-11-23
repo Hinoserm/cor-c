@@ -2046,6 +2046,7 @@ public sealed class Parser
             _i++;
         }
 
+        Token typeName = Cur;
         string name = Expect(Tok.Ident, "a type name").Text;
         TypeDecl decl = new()
         {
@@ -2158,7 +2159,7 @@ public sealed class Parser
         // everything. A semicolon closes it instead of a brace.
         if ((isRecord || primary) && Take(Tok.Semi))
         {
-            if (isRecord) AddRecordMembers(decl, positional, start);
+            if (isRecord) AddRecordMembers(decl, positional, start, typeName);
             else AddPrimaryConstructor(decl, positional, start, new());
             decl.SourceFrom = start.Pos;
             decl.SourceTo = _t[_i - 1].Pos + 1;
@@ -2288,7 +2289,7 @@ public sealed class Parser
         Token close = Expect(Tok.RBrace, "'}' to close the type body");
 
         if (primary) AddPrimaryConstructor(decl, positional, start, bodies);
-        else if (isRecord) AddRecordMembers(decl, positional, start);
+        else if (isRecord) AddRecordMembers(decl, positional, start, typeName);
 
         // The whole declaration, brace to brace, so a generic can be written
         // into a header exactly as it was written here.
@@ -2634,7 +2635,7 @@ public sealed class Parser
     /// compiler's own records are held by identity -- but the compiler runs
     /// on .NET, where they have value equality already, and the tables that
     /// want identity say so with ReferenceEqualityComparer.
-    private void AddRecordMembers(TypeDecl decl, List<Param> positional, Token start)
+    private void AddRecordMembers(TypeDecl decl, List<Param> positional, Token start, Token named)
     {
         decl.IsRecord = true;
         // THE BASE RECORD, when there is one: what its record members chain to
@@ -2672,7 +2673,7 @@ public sealed class Parser
             ctor.WritableParams.Add(new Param
             {
                 Name = p.Name, Type = p.Type, Default = p.Default,
-                Line = p.Line, Col = p.Col,
+                Line = p.Line, Col = p.Col, NameLine = p.NameLine, NameCol = p.NameCol,
             });
             if (!own.Contains(p)) continue;
 
@@ -2682,6 +2683,9 @@ public sealed class Parser
                 Name = p.Name, Mods = Mods.Public, Type = p.Type,
                 Auto = true, HasSetter = true, FromRecord = true,
                 Line = p.Line, Col = p.Col,
+                // Said at the record's name, as Roslyn says a positional
+                // property's type (its parameter's at the parameter's).
+                NameLine = named.Line, NameCol = named.Col,
             });
 
             // And the constructor that fills it in. The parameter keeps the
@@ -3443,6 +3447,7 @@ public sealed class Parser
         // Expression-bodied property: a getter and nothing else.
         if (Take(Tok.FatArrow))
         {
+            Token named = _t[_i - 2];
             Token bodyAt = Cur;
             Block getter = ImplicitExpression(bodyAt, () =>
             {
@@ -3457,6 +3462,7 @@ public sealed class Parser
                 Name = name, Mods = mods, Type = type, Getter = getter,
                 Auto = false, HasSetter = false, Line = start.Line, Col = start.Col,
                 ExplicitInterface = explicitInterface, ExplicitInterfaceArgs = explicitArgs,
+                NameLine = named.Kind == Tok.Ident ? named.Line : 0, NameCol = named.Kind == Tok.Ident ? named.Col : 0,
             };
             return extending || _extension is { TypeParams.Count: 0 } ? ExtensionProperty(read, start, extending) : read;
         }
@@ -3467,6 +3473,7 @@ public sealed class Parser
             MethodDecl m = new()
             {
                 Name = name, Mods = mods, Returns = type,
+                NameLine = _t[_i - 1].Line, NameCol = _t[_i - 1].Col,
                 // `[return: NotNullIfNotNull(nameof(path))]`, which is how
                 // .NET's Path.ChangeExtension says it hands back a null only
                 // when it was given one. Read here, before the parameter list
@@ -4240,6 +4247,7 @@ public sealed class Parser
             NotNullIfNotNull = m.NotNullIfNotNull,
             ExplicitInterface = m.ExplicitInterface, ExplicitInterfaceArgs = m.ExplicitInterfaceArgs,
             Line = m.Line, Col = m.Col, Body = body, Init = init,
+            NameLine = m.NameLine, NameCol = m.NameCol,
         }.CopyListsFrom(m);
         made.StaticExtensionOf = m.StaticExtensionOf;
         // NOT A CONSTRUCTOR'S, NOR AN ASYNC METHOD'S: a call to an async
@@ -4383,6 +4391,7 @@ public sealed class Parser
 
     private PropertyDecl ParseIndexer(TypeRef type, Mods mods, Token start)
     {
+        Token self = Cur;
         _i++;                                   // 'this'
         Expect(Tok.LBracket, "'[' after 'this'");
 
@@ -4392,15 +4401,19 @@ public sealed class Parser
         {
             Token at = Cur;
             TypeRef pt = ParseTypeRef();
+            Token pnAt = Cur;
             string pn = Expect(Tok.Ident, "an index parameter name").Text;
 
-            parameters.Add(new Param { Name = pn, Type = pt, Line = at.Line, Col = at.Col });
+            parameters.Add(new Param { Name = pn, Type = pt, Line = at.Line, Col = at.Col, NameLine = pnAt.Line, NameCol = pnAt.Col });
         }
         while (Take(Tok.Comma));
 
         Expect(Tok.RBracket, "']' after the index parameters");
 
         PropertyDecl p = ParseProperty(type, "Item", mods, start);
+        // Its place is its `this`, as Roslyn says an indexer's.
+        p.NameLine = self.Line;
+        p.NameCol = self.Col;
 
         // AN INTERFACE'S INDEXER HAS NO BODIES, and that is not a mistake --
         // an interface member never has one. The refusal is about a CLASS
@@ -4704,11 +4717,13 @@ public sealed class Parser
                 else break;
             }
             TypeRef type = ParseTypeRef();
+            Token paramName = Cur;
             string name = Expect(Tok.Ident, "a parameter name").Text;
             Expr? def = Take(Tok.Assign) ? ParseExpr() : null;
 
             Param read = new()
             {
+                NameLine = paramName.Line, NameCol = paramName.Col,
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
                 IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver, IsScoped = scoped,
                 NotNullWhen = whenProved, Caller = caller, CallerArgument = callerArgument,
@@ -7998,6 +8013,8 @@ public sealed class Parser
         if (_t[j].Kind == Tok.KwVoid)
         {
             j++;
+            // `void*` and `void**`: a pointer returned.
+            while (j < _t.Count && _t[j].Kind == Tok.Star) j++;
         }
         else if (_t[j].Kind == Tok.LParen)
         {
@@ -8169,9 +8186,10 @@ public sealed class Parser
             if (Take(Tok.KwReadonly)) byReference |= Mods.RefReadonlyReturn;
         }
 
-        TypeRef? returns = byReference == Mods.None && Take(Tok.KwVoid)
+        // `void* F()` returns a pointer: the type then, read as void's is.
+        TypeRef? returns = byReference == Mods.None && At(Tok.KwVoid) && Ahead().Kind != Tok.Star && Take(Tok.KwVoid)
                          ? null
-                         : ParseTypeRef();
+                         : At(Tok.KwVoid) ? VoidType() : ParseTypeRef();
 
         string name = Expect(Tok.Ident, "the local function's name").Text;
 

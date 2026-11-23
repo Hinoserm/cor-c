@@ -5,13 +5,6 @@ public sealed class PropertyDecl : MemberDecl
 {
     public required TypeRef Type { get; init; }
 
-    /// <summary>
-    /// Where its name is written, as Roslyn places a diagnostic of the
-    /// declaration (CS9244 on its type): Line and Col are its start.
-    /// 0 where nobody wrote it.
-    /// </summary>
-    public int NameLine { get; init; }
-    public int NameCol { get; init; }
 
     /// <summary>
     /// This property came from a record's POSITIONAL LIST rather than from

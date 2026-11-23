@@ -84,6 +84,14 @@ public abstract class MemberDecl : Node
     public bool LocalCopy { get; set; }
 
     /// <summary>
+    /// Where its name is written, as Roslyn places a diagnostic of its
+    /// declared type (CS9244): Line and Col are its start. 0 where nobody
+    /// wrote it.
+    /// </summary>
+    public int NameLine { get; set; }
+    public int NameCol { get; set; }
+
+    /// <summary>
     /// Whether a shared generic copy's code in this member reads its type
     /// arguments through `this` (ICanonSlot): its initialiser's helper is then
     /// an instance method (InitializerMethods), which the constructor calls.

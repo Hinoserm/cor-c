@@ -3,14 +3,20 @@
 //
 // A REF STRUCT IN A FIELD'S OR A PROPERTY'S TYPE, of a generic type never
 // made or a plain one: `List<Span<int>> l` is refused at the member's name
-// (CS9244), as Roslyn places it, each name of `l, m` and a tuple
-// property's too; `Span<int>[] a` at its type (CS0611). A field of the
-// type's own T is fine.
+// (CS9244), as Roslyn places it -- each name of `l, m`, a tuple property,
+// an expression-bodied property, an indexer (at its `this`), a positional
+// record's property (at the record's name), through a `using` alias, and a
+// user ref struct whose name has an underscore; `Span<int>[] a` at its type
+// (CS0611). A field of the type's own T is fine.
 // The whole list is checked by 2707_ref_structs_in_member_types_as_roslyn.sh.
 using System;
 using System.Collections.Generic;
+using SpanAlias = System.Span<int>;
 
+ref struct My_Buf { public int N; }
 class G<T> { List<Span<int>> l; Span<int>[] a; T keep; List<T> fine; }
 class K<T> { public List<Span<byte>> Items { get; set; } }
 class N { List<Span<int>> l, m; public (Span<int>, int) Pair { get; } }
+class E { public List<Span<int>> Arrow => default!; public List<My_Buf> this[int i] => default!; List<SpanAlias> aliased; List<My_Buf> under; }
+record R(List<Span<int>> Spans);
 static class P { static void Main() { } }

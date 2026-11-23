@@ -1,0 +1,23 @@
+// test: void_pointer_local_functions
+// expect-exit: 0
+// expect-output:
+// 8
+// 0
+//
+// A LOCAL FUNCTION RETURNING `void*`, plain or generic: `void` followed by
+// `*` is a pointer type, not a void return and a name to come.
+using System;
+static unsafe class P
+{
+    static void Main()
+    {
+        int x = 7;
+        void* Same(void* p) { return p; }
+        static void* Nothing<T>() { return null; }
+        static void Clear<T>(T* p) where T : unmanaged { *p = default; }
+        int* at = &x;
+        Console.WriteLine(*(int*)Same(at) + (Nothing<int>() == null ? 1 : 0));
+        Clear(at);
+        Console.WriteLine(x);
+    }
+}

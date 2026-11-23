@@ -8,6 +8,13 @@ public sealed class Param : Node
     public required TypeRef Type { get; init; }
 
     /// <summary>
+    /// Where its name is written, as Roslyn places a diagnostic of its type
+    /// (CS9244); Line and Col are its start. 0 where nobody wrote it.
+    /// </summary>
+    public int NameLine { get; init; }
+    public int NameCol { get; init; }
+
+    /// <summary>
     /// THE FLAGS IN ONE BYTE, and what few parameters carry -- a default, a
     /// caller attribute, a marshalling or a null proof -- in a side object
     /// (ParamRare) made only when one of those is set to something other than

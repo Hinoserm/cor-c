@@ -343,6 +343,9 @@ public static class Gir
             // arguments are not kept here, so its parameters' matter only so.
             Str(p.MarshalAs);
             Expr(p.Default);
+            // Where its name is written (Roslyn's place for CS9244).
+            I32(p.NameLine);
+            I32(p.NameCol);
         }
 
         /// <summary>
@@ -428,6 +431,8 @@ public static class Gir
                     I32(d.TemplateIndex);
                     Type(d.Returns);
                     Bool(d.IsCtor);
+                    I32(d.NameLine);
+                    I32(d.NameCol);
 
                     // The parameter this method's result is null only for.
                     Str(d.NotNullIfNotNull ?? "");
@@ -1264,12 +1269,14 @@ public static class Gir
             string? callerArgument = StrOrNull();
             string? marshalAs = StrOrNull();
 
+            Expr? defaultValue = Expr();
+            int nameLine = I32(), nameCol = I32();
             return new Param
             {
                 Name = name, Type = type, IsRef = byRef, IsOut = isOut,
                 IsReadOnlyRef = readOnly, IsParams = variadic, IsThis = receiver, IsScoped = (receiverAndScoped & 2) != 0,
                 NotNullWhen = proves ? provedWhen : null, Caller = caller, CallerArgument = callerArgument, MarshalAs = marshalAs,
-                Default = Expr(),
+                Default = defaultValue, NameLine = nameLine, NameCol = nameCol,
             };
         }
 
@@ -1350,6 +1357,7 @@ public static class Gir
                     int index = I32();
                     TypeRef? returns = TypeOrNull();
                     bool ctor = Bool();
+                    int methodNameLine = I32(), methodNameCol = I32();
                     string onlyFor = Str();
                     string explicitInterface = Str();
                     List<AttributeRef> attributes = new();
@@ -1402,6 +1410,7 @@ public static class Gir
                     MethodDecl d = new()
                     {
                         Name = name, Mods = mods, Returns = returns, IsCtor = ctor,
+                        NameLine = methodNameLine, NameCol = methodNameCol,
                         Body = body, Init = init, TemplateIndex = index,
                         NotNullIfNotNull = onlyFor.Length == 0 ? null : onlyFor,
                         ExplicitInterface = explicitInterface.Length == 0 ? null : explicitInterface,
