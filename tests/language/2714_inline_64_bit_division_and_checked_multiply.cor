@@ -6,6 +6,7 @@
 // unsigned by 32 bits bad 0
 // signed by 32 bits bad 0
 // reassigned and wide divisors bad 0 1234567890123456789
+// pairs bad 0 overflow 1 zero 1
 // checked int bad 0
 // checked long bad 0
 // 0
@@ -163,6 +164,47 @@ static class Program
         return q * 1000 + r;
     }
 
+    // A quotient and a remainder of the same run-time values, either order;
+    // the dividend or the divisor written between them, by a compound
+    // assignment or a plain one.
+    static void Pairs(ulong a, ulong b)
+    {
+        ulong left;
+        ulong q = a / b; ulong r = a % b; U(a, b, q, r);
+        ulong r2 = a % b; ulong q2 = a / b; U(a, b, q2, r2);
+        ulong x = a; x /= b;
+        ulong rx = x % b;
+        ulong xq = Reference(a, b, out left);
+        Reference(xq, b, out left);
+        if (rx != left) { bad++; Console.WriteLine("x /= b; x % b " + a + " " + b); }
+        ulong y = a; ulong qy = y / b; y = 5; ulong ry = y % b;
+        Reference(5, b, out left);
+        ulong wantRy = left;
+        if (ry != wantRy || qy != Reference(a, b, out left)) { bad++; Console.WriteLine("y = 5 " + a + " " + b); }
+        ulong d = b; ulong qd = a / d; d = 3; ulong rd = a % d;
+        Reference(a, 3, out left);
+        ulong wantRd = left;
+        if (rd != wantRd || qd != Reference(a, b, out left)) { bad++; Console.WriteLine("d = 3 " + a + " " + b); }
+        long sa = (long)a, sb = (long)b;
+        if (sb != 0 && !(sb == -1 && sa == long.MinValue))
+        {
+            long sq = sa / sb; long sr = sa % sb; S(sa, sb, sq, sr);
+            long sr2 = sa % sb; long sq2 = sa / sb; S(sa, sb, sq2, sr2);
+        }
+    }
+
+    static int Overflows(long m, long d)
+    {
+        try { long q = m / d; long r = m % d; return (int)(q + r) & 0; }
+        catch (OverflowException) { return 1; }
+    }
+
+    static int Zeroes(ulong one, ulong z)
+    {
+        try { ulong q = one / z; ulong r = one % z; return (int)(q + r) & 0; }
+        catch (DivideByZeroException) { return 1; }
+    }
+
     static void CheckedInt(int a, int b, uint c, uint d)
     {
         long wide = (long)a * b;
@@ -247,6 +289,11 @@ static class Program
                 if (sb != 0 && !(sb == -1 && sa == long.MinValue)) S(sa, sb, sa / sb, sa % sb);
             }
         Console.WriteLine("reassigned and wide divisors bad " + bad + " " + Digits(1234567890123456789)); bad = 0;
+
+        foreach (ulong a in dividends)
+            foreach (ulong b in dividends)
+                if (b != 0) Pairs(a, b);
+        Console.WriteLine("pairs bad " + bad + " overflow " + Overflows(long.MinValue, -1) + " zero " + Zeroes(1, 0)); bad = 0;
 
         int[] ints = { 0, 1, -1, 2, -2, 46340, 46341, -46341, 65535, 65536, int.MaxValue, int.MinValue, 1000000, -1000000, 3 };
         foreach (int a in ints) foreach (int b in ints) CheckedInt(a, b, (uint)a, (uint)b);

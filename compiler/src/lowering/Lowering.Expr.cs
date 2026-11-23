@@ -6089,7 +6089,7 @@ public sealed partial class Lowering
     {
         bool un = operand.IsUnsigned;
         Opcode dop = op == BinOp.Div ? (un ? Opcode.DivU : Opcode.DivS) : (un ? Opcode.RemU : Opcode.RemS);
-        if (l.Type == IrType.I64 && !_t.NativeI64 && !InlinesLargeExpansions)
+        if (UsesPairedDivision(l))
             return DividePaired(at, op, l, r, !un);
         if (un)
             return MachineDivide(at, dop, l, r, operand);
@@ -6145,10 +6145,14 @@ public sealed partial class Lowering
     /// DivX and RemX by the divisor narrowed where it fits 32 bits (the one
     /// not used falls away; both used, DivRemReuse takes the remainder from
     /// the quotient), the runtime's quotient and l - q*r where it does not.
-    /// `q = a / b; r = a % b` then tests once and divides once: the second
-    /// takes the first's answer (_lastDivide), but only in the same block
-    /// with no instruction between writing l or r -- a local's register is
-    /// written again by its next assignment, and a loop's divisor changes.
+    /// `q = a / b; r = a % b` then tests once and divides once: the pair is
+    /// recorded here (_lastDivide), and PairedAnswer, asked before the next
+    /// `/` or `%` makes its own zero test, gives it back -- the test and the
+    /// division both skipped -- only in the same block with no instruction
+    /// between writing l or r: a local's register is written again by its
+    /// next assignment, and a loop's divisor changes. (The memo outlives its
+    /// function until the next division clears it; it can match only its own
+    /// function's blocks.)
     /// Signed, a divisor of -1 gives -l and 0 (long.MinValue throws, for
     /// both, as .NET does), as Divide's own test does.
     /// </summary>
@@ -6206,10 +6210,13 @@ public sealed partial class Lowering
     {
         if (_lastDivide is not { } memo) return null;
         if (memo.Block != _e.Block) { _lastDivide = null; return null; }
-        if (l.Type != IrType.I64 || _t.NativeI64 || InlinesLargeExpansions) return null;
+        if (!UsesPairedDivision(l)) return null;
         if (memo.L != l || memo.R != r || memo.Signed != signed || WrittenSince(memo.Block, memo.At, l, r)) return null;
         return op == BinOp.Div ? memo.Quotient : memo.Remainder;
     }
+
+    /// <summary>A 64-bit division on a 32-bit target with a small cache: DividePaired's, and PairedAnswer's to reuse. One test for both.</summary>
+    private bool UsesPairedDivision(VReg l) => l.Type == IrType.I64 && !_t.NativeI64 && !InlinesLargeExpansions;
 
     private sealed record DivideMemo(Block Block, int At, VReg L, VReg R, bool Signed, VReg Quotient, VReg Remainder);
     private DivideMemo? _lastDivide;
