@@ -5986,7 +5986,8 @@ public sealed class Parser
                 if (work is not CastExpr { Type.Name: "long" })
                     work = new CastExpr { Type = new TypeRef { Name = "long", Line = line, Col = col }, Operand = work, Line = line, Col = col };
                 work = new BinaryExpr { Op = BinOp.Mul, Left = work, Right = more, Line = line, Col = col };
-                if (step > long.MaxValue / by) return null;
+                // PackedSmall's step is an int (Prelude): past it, no cutoff.
+                if (step > int.MaxValue / by) return null;
                 step *= by;
             }
             return new CallExpr
@@ -6000,8 +6001,9 @@ public sealed class Parser
     }
 
     /// <summary>
-    /// The first loop in a loop's body (its own level, or under an if) that
-    /// holds a packed operation (`Packed.NAME(...)`, read by its spelling: the
+    /// The first loop in a loop's body -- its own level, or under an if, a
+    /// try (a lock's or a using's too), a catch, a switch's case or a label
+    /// -- that holds a packed operation (`Packed.NAME(...)`, read by its spelling: the
     /// parser binds nothing); null where none does.
     /// </summary>
     private static Stmt? InnerPackedLoop(Stmt? body)

@@ -1841,10 +1841,37 @@ public sealed partial class Binder
             BreakStmt or ContinueStmt or ReturnStmt or ThrowStmt or GotoStmt or GotoCaseStmt or LabeledStmt => true,
             Block b => b.Statements.Any(MayLeave),
             IfStmt i => MayLeave(i.Then) || MayLeave(i.Else),
-            SwitchStmt w => w.Cases.Any(c => c.Body.Any(MayLeave)),
+            // A case's own break ends the switch, not the pass (LeavesSwitch).
+            SwitchStmt w => w.Cases.Any(c => c.Body.Any(LeavesSwitch)),
             TryStmt t => MayLeave(t.Body) || t.Catches.Any(c => MayLeave(c.Body)) || MayLeave(t.Finally),
             // A nested loop's own break and continue are its own; a return,
             // a throw or a goto inside it leaves this pass too.
+            WhileStmt or DoStmt or ForStmt or ForeachStmt => LeavesOut(s),
+            _ => false,
+        };
+        // Inside a switch's case: its break and goto case stay in the switch;
+        // a continue, return, throw, goto or label leaves the pass.
+        static bool LeavesSwitch(Stmt? s) => s switch
+        {
+            null or BreakStmt or GotoCaseStmt => false,
+            ContinueStmt or ReturnStmt or ThrowStmt or GotoStmt or LabeledStmt => true,
+            Block b => b.Statements.Any(LeavesSwitch),
+            IfStmt i => LeavesSwitch(i.Then) || LeavesSwitch(i.Else),
+            SwitchStmt w => w.Cases.Any(c => c.Body.Any(LeavesSwitch)),
+            TryStmt t => LeavesSwitch(t.Body) || t.Catches.Any(c => LeavesSwitch(c.Body)) || LeavesSwitch(t.Finally),
+            WhileStmt or DoStmt or ForStmt or ForeachStmt => LeavesOut(s),
+            _ => false,
+        };
+        // Whether a do's body may skip its condition: a break, return, throw
+        // or goto of its own (a continue goes to the condition).
+        static bool SkipsCondition(Stmt? s) => s switch
+        {
+            null or ContinueStmt => false,
+            BreakStmt or ReturnStmt or ThrowStmt or GotoStmt or LabeledStmt => true,
+            Block b => b.Statements.Any(SkipsCondition),
+            IfStmt i => SkipsCondition(i.Then) || SkipsCondition(i.Else),
+            SwitchStmt w => w.Cases.Any(c => c.Body.Any(LeavesOut)),
+            TryStmt t => SkipsCondition(t.Body) || t.Catches.Any(c => SkipsCondition(c.Body)) || SkipsCondition(t.Finally),
             WhileStmt or DoStmt or ForStmt or ForeachStmt => LeavesOut(s),
             _ => false,
         };
@@ -1878,7 +1905,12 @@ public sealed partial class Binder
                 // A nested while, for or foreach may run its body no times: its
                 // condition, steps and sequence only. A do runs its body once.
                 case WhileStmt inner: Run(inner.Cond); return !MayLeave(inner);
-                case DoStmt inner: { bool on = Pass(inner.Body); Run(inner.Cond); return on && !MayLeave(inner); }
+                case DoStmt inner:
+                {
+                    bool on = Pass(inner.Body);
+                    if (!SkipsCondition(inner.Body)) Run(inner.Cond);
+                    return on && !MayLeave(inner);
+                }
                 case ForStmt inner: Pass(inner.Init); Run(inner.Cond); return !MayLeave(inner);
                 case ForeachStmt inner: Run(inner.Sequence); return !MayLeave(inner);
                 case TryStmt guarded:
