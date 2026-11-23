@@ -2343,7 +2343,7 @@ internal sealed partial class Selector
     /// - by ANY OTHER (SelectDivideAny64): its high word tested, DivideBy32
     ///   or the normalised division.
     ///
-    /// Always true: no 64-bit division leaves the backend as a call.
+    /// No 64-bit division leaves the backend as a call.
     /// </summary>
     private void SelectDivide64(Instr i, bool signed, bool rem)
     {

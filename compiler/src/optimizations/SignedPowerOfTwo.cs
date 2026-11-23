@@ -21,10 +21,6 @@ public sealed class SignedPowerOfTwo : IPass
             for (int n = 0; n < block.Instrs.Count; n++)
             {
                 Instr i = block.Instrs[n];
-                // On targets without native I64, lowering spells language
-                // division as these compiler-owned arithmetic helpers. They
-                // obey the same signed quotient/remainder contract; unrelated
-                // calls must never be treated as pure arithmetic.
                 // A CONSTANT DIVISOR TO ANY OF THE FOUR, found once propagation
                 // has made it one (a divisor wider than 32 bits, whose
                 // run-time test folded to the call): the IR division again,
@@ -41,19 +37,12 @@ public sealed class SignedPowerOfTwo : IPass
                     i = new Instr { Op = arithmetic, Dest = i.Dest, Line = i.Line, Operands = { i.Operands[0], i.Operands[1] } };
                 }
                 Opcode operation = i.Op;
-                if (i.Op == Opcode.Call && i.Dest?.Type == IrType.I64)
-                    operation = i.Callee switch
-                    {
-                        "m_Runtime_DivS_2_V$I64_V$I64_r$V$I64" => Opcode.DivS,
-                        "m_Runtime_RemS_2_V$I64_V$I64_r$V$I64" => Opcode.RemS,
-                        _ => i.Op,
-                    };
                 if (operation is not (Opcode.DivS or Opcode.RemS) || i.Dest?.Type is not (IrType.I32 or IrType.I64)
                     || i.Operands.Count != 2 || i.Operands[1] is not ImmOperand divisor)
                 { result?.Add(i); continue; }
                 // Let ordinary folding evaluate a wholly constant IR divide
                 // directly instead of expanding it into a chain needing more
-                // propagation rounds. Runtime calls have no such folder.
+                // propagation rounds.
                 if (i.Op != Opcode.Call && i.Operands[0] is ImmOperand)
                 { result?.Add(i); continue; }
                 IrType type = i.Dest.Type;
@@ -102,6 +91,9 @@ public sealed class SignedPowerOfTwo : IPass
         "m_Runtime_RemU_2_V$I64_V$I64_r$V$I64" => Opcode.RemU,
         "m_Runtime_DivS_2_V$I64_V$I64_r$V$I64" => Opcode.DivS,
         "m_Runtime_RemS_2_V$I64_V$I64_r$V$I64" => Opcode.RemS,
+        // What DivU and RemU are once inlined: their unsigned halves.
+        "m_Runtime_UDiv_2_V$U64_V$U64_r$V$U64" => Opcode.DivU,
+        "m_Runtime_URem_2_V$U64_V$U64_r$V$U64" => Opcode.RemU,
         _ => null,
     };
 }

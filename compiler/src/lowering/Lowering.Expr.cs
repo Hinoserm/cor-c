@@ -6085,6 +6085,8 @@ public sealed partial class Lowering
     {
         bool un = operand.IsUnsigned;
         Opcode dop = op == BinOp.Div ? (un ? Opcode.DivU : Opcode.DivS) : (un ? Opcode.RemU : Opcode.RemS);
+        if (l.Type == IrType.I64 && !_t.NativeI64 && !InlinesLargeExpansions)
+            return DividePaired(at, op, l, r, !un);
         if (un)
             return MachineDivide(at, dop, l, r, operand);
 
@@ -6112,16 +6114,11 @@ public sealed partial class Lowering
     /// <summary>
     /// The division itself: the machine's. On a 32-bit target with a cache
     /// that holds it (InlinesLargeExpansions) a 64-bit one is the backend's
-    /// whole (Select.SelectDivide64), with no call. With a small cache it
-    /// asks at run time whether the divisor is its low 32 bits extended, and
-    /// divides inline where it is (Select.SelectDivide64: DIV once or twice,
-    /// as Linux's div_u64_rem and MSVC's _aulldiv do; a constant, once the
-    /// test folds, a multiplication by its reciprocal). The divisor the inline
-    /// division is given is that extension, made here and defined once, so
-    /// the backend's proof of its width holds whatever else the function
-    /// assigns. NOT decided by scanning the function as lowered so far: a
+    /// whole (Select.SelectDivide64), with no call; with a small cache it
+    /// never comes here (Divide takes it to DividePaired). NOTHING about the
+    /// divisor is decided by scanning the function as lowered so far: a
     /// local's or a parameter's later assignments are not there yet, and a
-    /// loop's `divisor /= 10` was taken for its first value.
+    /// loop's `divisor /= 10` was once taken for its first value.
     /// </summary>
     private VReg MachineDivide(Node at, Opcode dop, VReg l, VReg r, Type operand)
     {
@@ -6134,29 +6131,79 @@ public sealed partial class Lowering
         // below and calls for the rare 64-bit divisor instead.
         if (l.Type == IrType.I64 && !_t.NativeI64 && InlinesLargeExpansions)
             return _e.Binary(dop, R(l), R(r), IrType.I64);
-        if (l.Type == IrType.I64 && !_t.NativeI64)
-        {
-            // ASKED AT RUN TIME: a divisor whose 64 bits are its 32 sign- or
-            // zero-extended -- nearly every one -- is divided inline (DIV
-            // once or twice); only a true 64-bit divisor calls the runtime,
-            // whose quotient then fits 32 bits and takes one DIV and a
-            // correction (Runtime.UDivLong). MSVC's _aulldiv makes the same
-            // test, behind a call; here it is at the division.
-            VReg answer = _f.NewReg(IrType.I64, "quotient64");
-            Block fits = _f.NewBlock("div64fits"), wide = _f.NewBlock("div64wide"), joined = _f.NewBlock("div64done");
-            VReg low = _e.Unary(Opcode.Trunc64, R(r), IrType.I32);
-            VReg narrowed = _e.Unary(signedDivision ? Opcode.SExt32 : Opcode.ZExt32, R(low), IrType.I64);
-            _e.Branch(_e.Binary(Opcode.Eq, R(narrowed), R(r), IrType.I32), fits, wide);
-            _e.SetBlock(fits);
-            _e.CopyTo(answer, R(_e.Binary(dop, R(l), R(narrowed), IrType.I64)));
-            _e.Jump(joined);
-            _e.SetBlock(wide);
-            _e.CopyTo(answer, R(RuntimeDivide(at, dop, l, r)));
-            _e.Jump(joined);
-            _e.SetBlock(joined);
-            return answer;
-        }
         return Canonical(_e.Binary(dop, l, r), operand);
+    }
+
+    /// <summary>
+    /// A 64-BIT `/` OR `%` WHERE THE DIVISION IS NOT EXPANDED INLINE (a small
+    /// instruction cache): the quotient and the remainder of l and r made
+    /// together, from one run-time test of the divisor's width -- inline
+    /// DivX and RemX by the divisor narrowed where it fits 32 bits (the one
+    /// not used falls away; both used, DivRemReuse takes the remainder from
+    /// the quotient), the runtime's quotient and l - q*r where it does not.
+    /// `q = a / b; r = a % b` then tests once and divides once: the second
+    /// takes the first's answer (_lastDivide), but only in the same block
+    /// with no instruction between writing l or r -- a local's register is
+    /// written again by its next assignment, and a loop's divisor changes.
+    /// Signed, a divisor of -1 gives -l and 0 (long.MinValue throws, for
+    /// both, as .NET does), as Divide's own test does.
+    /// </summary>
+    private VReg DividePaired(Node at, BinOp op, VReg l, VReg r, bool signed)
+    {
+        if (_lastDivide is { } memo && memo.Block == _e.Block && memo.L == l && memo.R == r && memo.Signed == signed
+            && !WrittenSince(memo.Block, memo.At, l, r))
+            return op == BinOp.Div ? memo.Quotient : memo.Remainder;
+
+        VReg quotient = _f.NewReg(IrType.I64, "quotient64"), remainder = _f.NewReg(IrType.I64, "remainder64");
+        Block? done = null;
+        if (signed)
+        {
+            Block normal = _f.NewBlock("divnormal"), minusOne = _f.NewBlock("divminusone");
+            Block fail = _f.NewBlock("divoverflow"), fits = _f.NewBlock("divfits");
+            done = _f.NewBlock("divdone");
+            _e.Branch(_e.Binary(Opcode.Ne, R(r), Imm(-1, r.Type), IrType.I32), normal, minusOne);
+            _e.SetBlock(minusOne);
+            _e.Branch(_e.Binary(Opcode.Eq, R(l), Imm(long.MinValue, IrType.I64), IrType.I32), fail, fits);
+            _e.SetBlock(fail);
+            MethodSymbol? thrower = RuntimeMethod("Overflow", 0);
+            if (thrower is not null) { Require(thrower); _e.Call(CallLabel(thrower), IrType.Void); }
+            _e.Emit(Opcode.Trap, null); _e.Unreachable();
+            _e.SetBlock(fits);
+            _e.CopyTo(quotient, R(_e.Unary(Opcode.Neg, l)));
+            _e.CopyTo(remainder, Imm(0, IrType.I64));
+            _e.Jump(done);
+            _e.SetBlock(normal);
+        }
+        Block inline = _f.NewBlock("div64fits"), wide = _f.NewBlock("div64wide"), joined = done ?? _f.NewBlock("div64done");
+        VReg low = _e.Unary(Opcode.Trunc64, R(r), IrType.I32);
+        VReg narrowed = _e.Unary(signed ? Opcode.SExt32 : Opcode.ZExt32, R(low), IrType.I64);
+        // The divisor the inline division is given is that extension, made
+        // here and defined once, so the backend's proof of its width holds
+        // whatever else the function assigns.
+        _e.Branch(_e.Binary(Opcode.Eq, R(narrowed), R(r), IrType.I32), inline, wide);
+        _e.SetBlock(inline);
+        _e.CopyTo(quotient, R(_e.Binary(signed ? Opcode.DivS : Opcode.DivU, R(l), R(narrowed), IrType.I64)));
+        _e.CopyTo(remainder, R(_e.Binary(signed ? Opcode.RemS : Opcode.RemU, R(l), R(narrowed), IrType.I64)));
+        _e.Jump(joined);
+        _e.SetBlock(wide);
+        VReg q = RuntimeDivide(at, signed ? Opcode.DivS : Opcode.DivU, l, r);
+        _e.CopyTo(quotient, R(q));
+        _e.CopyTo(remainder, R(_e.Binary(Opcode.Sub, l, _e.Binary(Opcode.Mul, q, r))));
+        _e.Jump(joined);
+        _e.SetBlock(joined);
+        _lastDivide = new DivideMemo(joined, joined.Instrs.Count, l, r, signed, quotient, remainder);
+        return op == BinOp.Div ? quotient : remainder;
+    }
+
+    private sealed record DivideMemo(Block Block, int At, VReg L, VReg R, bool Signed, VReg Quotient, VReg Remainder);
+    private DivideMemo? _lastDivide;
+
+    /// <summary>Whether any instruction of `block` from `from` on writes a or b.</summary>
+    private static bool WrittenSince(Block block, int from, VReg a, VReg b)
+    {
+        for (int k = from; k < block.Instrs.Count; k++)
+            if (block.Instrs[k].Dest is { } written && (written == a || written == b)) return true;
+        return false;
     }
 
     /// <summary>

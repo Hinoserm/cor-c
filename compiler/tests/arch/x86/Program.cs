@@ -1458,9 +1458,9 @@ internal static class Program
     }
 
     /// <summary>
-    /// The runtime helper the backend calls for unsigned 64-bit division,
-    /// as a shift-and-subtract loop in IR: the test's stand-in for the runtime's,
-    /// and a workout for every 64-bit operation the selector has.
+    /// A shift-and-subtract 64-bit division in IR, under the name of the
+    /// helper the backend once called (it calls none now: line 222 checks):
+    /// a workout for every 64-bit operation the selector has.
     /// </summary>
     private static void UDiv64(Module m)
     {

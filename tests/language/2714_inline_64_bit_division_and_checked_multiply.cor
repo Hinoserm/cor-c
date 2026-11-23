@@ -145,6 +145,24 @@ static class Program
         return a % d;
     }
 
+    // A quotient and a remainder of the same two values share one division;
+    // a divisor written between them does not.
+    static ulong PairChanged(ulong a, ulong b)
+    {
+        ulong q = a / b;
+        b = b + 1;
+        ulong r = a % b;
+        return q * 1000 + r;
+    }
+
+    static long PairChangedSigned(long a, long b)
+    {
+        long q = a / b;
+        a = a - 1;
+        long r = a % b;
+        return q * 1000 + r;
+    }
+
     static void CheckedInt(int a, int b, uint c, uint d)
     {
         long wide = (long)a * b;
@@ -211,6 +229,10 @@ static class Program
         foreach (ulong a in all) foreach (int d in signedNarrow) { SignedBy32((long)a, d); SignedBy32(-(long)(a >> 1), d); }
         Console.WriteLine("signed by 32 bits bad " + bad); bad = 0;
 
+        if (PairChanged(1000, 6) != 166 * 1000 + 6) bad++;
+        if (PairChanged(0x1234567890, 0x100000000) != 0x12 * 1000 + (0x1234567890UL % 0x100000001UL)) bad++;
+        if (PairChangedSigned(-1000, 7) != -142 * 1000 - 0) bad++;
+        if (PairChangedSigned(-1001, -7) != 143 * 1000 - 1) bad++;
         if (OnePath(1000, 7, false) != 142) bad++;
         if (OnePath(1000, 7, true) != 100) bad++;
         if (OnePathSigned(-1000, 7, false) != -6) bad++;

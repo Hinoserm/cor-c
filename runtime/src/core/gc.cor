@@ -10623,8 +10623,9 @@ public static class Gc
     /// registers included; `cut` the words cleared. Answers the words found
     /// in statics, roots and the heap; -1 when no collection could be made.
     /// For a kernel taking a module's image out whatever still points in.
-    /// The answer is the words the first round's walk found -- cutting as it
-    /// went, before any string was moved: what pointed in, not what still does. Strings still listed
+    /// The answer is the words the first round's walk found, cutting as it
+    /// went and before any string was moved: what pointed in, not what still
+    /// does. Strings still listed
     /// after the rounds are cleared by the last, as any other reference.
     ///
     /// EACH CALL ITS OWN STATE (CutState): two modules taken out at once
@@ -10652,6 +10653,7 @@ public static class Gc
             bool last = round == 7;
             CutState state = new CutState();
             state.StringVt = stringVt;
+            state.StringHeader = Sys.StringData("x") - Sys.ObjectAddress("x");
             if (!last)
             {
                 state.Slots = new nuint[MoveMost];
@@ -10720,6 +10722,7 @@ public static class Gc
         public nuint[]? Slots, Holders, Literals;
         public nuint Count;
         public nuint StringVt;
+        public nuint StringHeader;          // a string's characters from its start
         public long Cut;
     }
 
@@ -10860,9 +10863,12 @@ public static class Gc
             // there, then its length, then its characters' end -- a stray
             // word that only looked like a string's header is cleared, never
             // copied from past the range.
+            // Compared by what is left of the range, so a stray count cannot
+            // wrap the sum; the characters begin StringHeader bytes in (16 on
+            // i386, the header padded, 24 on x86-64).
             bool literal = moving != null && word + (nuint)WordSize.Bytes <= high && Sys.ReadAddress(word) == state.StringVt
-                && word + (nuint)ArrayCountAt + (nuint)WordSize.Bytes <= high
-                && word + (nuint)ArrayCountAt + (nuint)WordSize.Bytes + 2 * (Sys.ReadAddress(word + (nuint)ArrayCountAt) & 0x7FFFFFFF) <= high;
+                && state.StringHeader <= high - word
+                && (Sys.ReadAddress(word + (nuint)ArrayCountAt) & 0x7FFFFFFF) <= (high - word - state.StringHeader) / 2;
             if (literal)
             {
                 // A STRING PAST THE LIST'S END is left for the next round,
