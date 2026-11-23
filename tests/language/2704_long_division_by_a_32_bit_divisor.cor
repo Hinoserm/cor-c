@@ -1,0 +1,88 @@
+// test: long_division_by_a_32_bit_divisor
+// expect-exit: 0
+// expect-output:
+// cases 21840 wrong 0
+// ns 1795429999 123456789
+// big 4294967295 4294967293
+// neg -1795429999 -123456789
+// rem 999999999 0 1
+//
+// A 64-BIT VALUE DIVIDED BY ONE THAT FITS 32 BITS (Runtime.UDivShort and its
+// DivLU: on i386 the processor's DIV, EDX:EAX by 32 bits): every quotient
+// and remainder against a division done a bit at a time here, over dividends
+// and divisors at the edges -- a high word just below the divisor (the
+// largest quotient DIV can give), divisors of one bit, of all bits, and
+// those with the top bit set -- and the forms a clock makes: nanoseconds to
+// seconds and the rest, signed and unsigned.
+using System;
+
+static class Program
+{
+    // The long way: one bit of the quotient a step.
+    static ulong Slow(ulong a, ulong b, out ulong rest)
+    {
+        ulong q = 0, r = 0;
+        for (int i = 63; i >= 0; i--)
+        {
+            r = (r << 1) | ((a >> i) & 1);
+            q = q << 1;
+            if (r >= b) { r = r - b; q = q | 1; }
+        }
+        rest = r;
+        return q;
+    }
+
+    static int Main()
+    {
+        uint[] divisors = { 1, 2, 3, 7, 10, 255, 256, 65535, 65536, 65537, 1000000000, 0x7FFFFFFF, 0x80000000, 0x80000001, 0xFFFFFFFE, 0xFFFFFFFF, 1000, 60, 86400, 0x10001 };
+        ulong[] seeds = { 0, 1, 9, 0xFFFFFFFF, 0x100000000, 0x1FFFFFFFF, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF, 1795429999123456789, 0x0000000100000000, 0xFFFFFFFF00000000, 0x00000000FFFFFFFE };
+        int cases = 0, wrong = 0;
+        for (int d = 0; d < divisors.Length; d++)
+        {
+            ulong b = divisors[d];
+            for (int s = 0; s < seeds.Length; s++)
+            {
+                // Around each seed, and with the high word just under the divisor.
+                for (int k = -40; k <= 40; k++)
+                {
+                    ulong a = unchecked(seeds[s] + (ulong)(long)k);
+                    ulong rest;
+                    ulong want = Slow(a, b, out rest);
+                    if (a / b != want || a % b != rest) wrong++;
+                    cases++;
+                }
+                ulong edge = ((b - 1) << 32) | (seeds[s] & 0xFFFFFFFF);
+                ulong edgeRest;
+                ulong edgeWant = Slow(edge, b, out edgeRest);
+                if (edge / b != edgeWant || edge % b != edgeRest) wrong++;
+                cases++;
+                // The same through a divisor the compiler cannot see.
+                ulong hidden = Hide(b);
+                if (edge / hidden != edgeWant || edge % hidden != edgeRest) wrong++;
+                cases++;
+                // Signed.
+                long sa = unchecked((long)seeds[s]);
+                long sb = (long)(b & 0x7FFFFFFF);
+                if (sb != 0 && !(sa == long.MinValue && sb == 1))
+                {
+                    long sq = sa / sb, sr = sa % sb;
+                    if (sq * sb + sr != sa || (sr != 0 && (sr < 0) != (sa < 0))) wrong++;
+                    cases++;
+                }
+                else cases++;
+            }
+        }
+        Console.WriteLine("cases " + cases + " wrong " + wrong);
+        long nanos = 1795429999123456789;
+        long seconds = nanos / 1000000000;
+        Console.WriteLine("ns " + seconds + " " + (nanos - seconds * 1000000000));
+        ulong big = 0xFFFFFFFEFFFFFFFE;
+        Console.WriteLine("big " + (big / 0xFFFFFFFF) + " " + (big % 0xFFFFFFFF));
+        long neg = -1795429999123456789;
+        Console.WriteLine("neg " + (neg / 1000000000) + " " + (neg % 1000000000));
+        Console.WriteLine("rem " + (1999999999UL % 1000000000) + " " + (5000000000UL % 1000000000) + " " + (0xFFFFFFFFFFFFFFFFUL % 2));
+        return 0;
+    }
+
+    static ulong Hide(ulong v) { return v + (ulong)(Environment.TickCount64 & 0); }
+}
