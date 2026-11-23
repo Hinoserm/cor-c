@@ -179,6 +179,7 @@ public static class ProjectCompile
         // the same in a build log.
         string StampOf(Unit unit, byte[] source) => Hash(source) + " " + OptionsOf(unit);
         int skipped = 0;
+        HashSet<Unit>? knownCurrent = null;
         // WHY A UNIT IS COMPILED, or null when what it made is current: the
         // first of its stamp, its object and its receipt that says it is
         // not, as one sentence for the unit's line in the build log.
@@ -235,7 +236,9 @@ public static class ProjectCompile
 
         int OneUnit(Unit unit)
         {
-            string? reason = forced ?? Stale(unit);
+            // A unit the parent has just found current (knownCurrent) is not
+            // asked again: its source hashed and its receipt read twice.
+            string? reason = forced ?? (knownCurrent?.Contains(unit) == true ? null : Stale(unit));
             if (reason is null)
             {
                 lock (gate) { done++; skipped++; }
@@ -616,22 +619,23 @@ public static class ProjectCompile
         // worker, run its 509 units at seven and a half. Each child takes
         // units by claim file (--claim-dir) and a token for each (--worker-
         // pool); entry units, compiled above, are claimed first.
-        // Only the units that are stale (asked once, here: the children ask
-        // again as they take them), and not from a hosted `dotnet corc.dll`,
-        // whose path is the host's and would start `dotnet compile-project`.
+        // THE UNITS THAT ARE STALE, asked once, here, and the current ones
+        // claimed before any worker starts. None: nothing to do. One: the
+        // parent compiles it, its session warm -- a process for one unit is a
+        // start and a cold session for nothing (an edit of one file). Two or
+        // more: worker processes, as many as there are stale units, threads
+        // and free memory for, two gigabytes each (WorkerSpaces) -- one at the
+        // least, so units never share a heap however little memory there is.
+        // Never from a hosted `dotnet corc.dll`, whose path is the host's.
         bool mayUseProcesses = pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers;
         bool[] staleAt = mayUseProcesses ? rest.Select(unit => Stale(unit) is not null).ToArray() : Array.Empty<bool>();
         int staleCount = staleAt.Count(stale => stale);
-        // And no more processes than stale units, nor than free memory holds,
-        // two gigabytes each (WorkerSpaces). ONE OR NONE, and the parent, its
-        // session warm, compiles them itself: a process for one unit was a
-        // start and a cold session for nothing.
         int processes = mayUseProcesses ? Math.Min(Math.Min(threads, staleCount), Corsac.Projects.ProjectCommand.WorkerSpaces()) : 0;
         if (mayUseProcesses && staleCount == 0)
         {
             lock (gate) { skipped += rest.Length; done += rest.Length; }
         }
-        else if (mayUseProcesses && processes >= 2)
+        else if (mayUseProcesses && staleCount >= 2)
         {
             int current = rest.Length - staleCount;
             lock (gate) { skipped += current; done += current; }
@@ -658,11 +662,20 @@ public static class ProjectCompile
             else failures++;
             try { Directory.Delete(claimDir, recursive: true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
-        else if (threads <= 1) Worker();
         else
         {
-            Thread[] running = new Thread[threads];
-            for (int worker = 0; worker < threads; worker++)
+            if (mayUseProcesses)
+            {
+                knownCurrent = new HashSet<Unit>();
+                for (int i = 0; i < rest.Length; i++) if (!staleAt[i]) knownCurrent.Add(rest[i]);
+            }
+            if (threads <= 1) Worker();
+            else RunThreads(threads);
+        }
+        void RunThreads(int count)
+        {
+            Thread[] running = new Thread[count];
+            for (int worker = 0; worker < count; worker++)
             {
                 running[worker] = new Thread(Worker, 16 * 1024 * 1024) { IsBackground = true, Name = "compile-" + worker };
                 running[worker].Start();
