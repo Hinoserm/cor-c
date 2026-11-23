@@ -1,0 +1,40 @@
+// test: reverse_endianness_by_byte_swap
+// expect-exit: 0
+// expect-output:
+// 78563412 F0DEBC9A78563412 3412 FFFFFF80 8000000000000000 bad 0
+//
+// BinaryPrimitives.ReverseEndianness of every width and sign, by the
+// processor's byte swap (Sys.ByteSwap: BSWAP r32 for the 32-bit forms, two
+// for the 64-bit), against the bytes reversed one at a time.
+using System;
+using System.Buffers.Binary;
+
+static class Program
+{
+    static ulong Slow(ulong v, int bytes)
+    {
+        ulong r = 0;
+        for (int i = 0; i < bytes; i++) { r = (r << 8) | (v & 0xFF); v >>= 8; }
+        return r;
+    }
+
+    static void Main()
+    {
+        int bad = 0;
+        ulong seed = 0x9E3779B97F4A7C15;
+        for (int i = 0; i < 2000; i++)
+        {
+            seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+            if (BinaryPrimitives.ReverseEndianness(seed) != Slow(seed, 8)) bad++;
+            if (BinaryPrimitives.ReverseEndianness((long)seed) != (long)Slow(seed, 8)) bad++;
+            if (BinaryPrimitives.ReverseEndianness((uint)seed) != (uint)Slow((uint)seed, 4)) bad++;
+            if (BinaryPrimitives.ReverseEndianness((int)seed) != (int)(uint)Slow((uint)seed, 4)) bad++;
+            if (BinaryPrimitives.ReverseEndianness((ushort)seed) != (ushort)Slow((ushort)seed, 2)) bad++;
+        }
+        Console.WriteLine(BinaryPrimitives.ReverseEndianness(0x12345678u).ToString("X") + " "
+            + BinaryPrimitives.ReverseEndianness(0x123456789ABCDEF0ul).ToString("X") + " "
+            + BinaryPrimitives.ReverseEndianness((ushort)0x1234).ToString("X") + " "
+            + BinaryPrimitives.ReverseEndianness(unchecked((int)0x80FFFFFF)).ToString("X") + " "
+            + BinaryPrimitives.ReverseEndianness(0x80L).ToString("X") + " bad " + bad);
+    }
+}

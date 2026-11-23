@@ -572,6 +572,7 @@ public static class Prelude
             public static long LeadingZeroCount(long value) { return 0; }
             public static long TrailingZeroCount(long value) { return 0; }
             public static long ByteSwap(long value) { return 0; }
+            public static int ByteSwap(int value) { return 0; }
             public static long RotateLeft(long value, long count) { return 0; }
             public static long RotateRight(long value, long count) { return 0; }
             public static ulong MinUnsigned(ulong left, ulong right) { return 0; }

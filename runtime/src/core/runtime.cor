@@ -6927,6 +6927,14 @@ public static partial class Runtime
         return (long)r;
     }
 
+    /// Reverses the four bytes: BSWAP r32 where ByteSwapCalls finds the call,
+    /// the backend's rotations on a 386; this body only for a target with neither.
+    public static int ByteSwap(int value)
+    {
+        uint x = (uint)value;
+        return (int)((x >> 24) | ((x >> 8) & 0x0000FF00) | ((x << 8) & 0x00FF0000) | (x << 24));
+    }
+
     /// Rotations by any count; the count is taken modulo 64, and a rotate by
     /// zero is spelt out because shifting a 64-bit value by 64 is not.
     public static long RotateLeft(long value, long count)

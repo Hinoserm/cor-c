@@ -10613,11 +10613,6 @@ public static class Gc
         return ReferencesInto(low, high, max, false, true, out marked, out cut);
     }
 
-    // TODO(local to this checkout, NOT PUSHED -- re-apply after the COR-C#
-    // agent's pending runtime work lands; CORSAC86's modules.cor uses it):
-    // CutReferencesInto and its rounds, ReferencesInto's `cutting` and
-    // `first`, BlockWordInto's `described`, _cutting / _cut, and the move
-    // lists (_moveSlots, _moveHolders, _moveLiterals).
     /// THE REFERENCES INTO [low, high) CUT: ReferencesIntoReport's walk, and
     /// every word of a heap block that its descriptor says is a reference --
     /// an object's field, a reference array's element -- cleared as it is

@@ -12037,7 +12037,7 @@ public static class BinaryPrimitives {
     // backend's rotations on a 386), as .NET's is an intrinsic: four shifts,
     // two masks and three ORs otherwise, in every big-endian field read.
     public static uint ReverseEndianness(uint value) {
-        return (uint)((ulong)Sys.ByteSwap((long)(ulong)value) >> 32);
+        return (uint)Sys.ByteSwap((int)value);
     }
 
     public static int ReverseEndianness(int value) { return (int)ReverseEndianness((uint)value); }
