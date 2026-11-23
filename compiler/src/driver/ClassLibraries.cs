@@ -207,6 +207,28 @@ internal static class ClassLibraries
     }
 
     /// <summary>
+    /// Of a library build's --ref sources, by full path, those the split puts
+    /// in a library not linked beneath it (no --link-shared names its
+    /// soname): built after it, so nothing of their code can be called from
+    /// it. A source the split does not name is no one's, and not among them.
+    /// </summary>
+    internal static HashSet<string> Above(string root, IEnumerable<string> references, IEnumerable<string> linked)
+    {
+        HashSet<string> below = new(linked.Select(Path.GetFileName).OfType<string>(), StringComparer.Ordinal);
+        Dictionary<string, string> owner = new(StringComparer.Ordinal);
+        foreach (Library library in Table)
+            foreach (string source in library.Sources)
+                owner[Path.GetFullPath(Path.Combine(root, source))] = library.Soname;
+        HashSet<string> above = new(StringComparer.Ordinal);
+        foreach (string reference in references)
+        {
+            string full = Path.GetFullPath(reference);
+            if (owner.TryGetValue(full, out string? soname) && !below.Contains(soname)) above.Add(full);
+        }
+        return above;
+    }
+
+    /// <summary>
     /// One line per library, in build order: `soname|source source ...`, the
     /// sources relative to the library root.
     /// </summary>

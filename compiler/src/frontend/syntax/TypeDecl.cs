@@ -379,6 +379,13 @@ public sealed class TypeDecl : Node
     public bool Elsewhere { get; set; }
 
     /// <summary>
+    /// Read from a `--ref` source whose library is built after this one, not
+    /// linked beneath it (Frontend.LibrariesAbove): its code is nothing this
+    /// image can call.
+    /// </summary>
+    public bool FromLibraryAbove { get; set; }
+
+    /// <summary>
     /// How far under this compile's index its part was read from (0 its own;
     /// 1 a kernel's, compiling a module; more for a module on a module): the
     /// deepest sorted first, after the prelude, so the merged type is the

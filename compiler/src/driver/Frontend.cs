@@ -155,6 +155,7 @@ public static class Frontend
                     if (decl.Scope is { } typeScope) typeScope.Path = decl.SourcePath;
                     decl.FromLibrary = isLibrary;
                     decl.Elsewhere = isElsewhere;
+                    decl.FromLibraryAbove = isElsewhere && path is not null && LibrariesAbove?.Contains(Path.GetFullPath(path)) == true;
                     foreach (MemberDecl member in decl.Members)
                     {
                         member.File = file;
@@ -1158,6 +1159,7 @@ public static class Frontend
                 }
             }
 
+            if (part.FromLibraryAbove && !into.Elsewhere) RefuseStaticStateApart(into, part);
             into.Members.AddRange(part.Members);
             into.Mods |= part.Mods;
             into.FromLibrary |= part.FromLibrary;
@@ -1177,6 +1179,46 @@ public static class Frontend
         unit.Types.Clear();
         unit.Types.AddRange(merged);
         foreach (Lang.TypeDecl type in merged) MergePartialMethods(type);
+    }
+
+    /// <summary>
+    /// A CLASS IN TWO SHARED LIBRARIES KEEPS ITS STATIC STATE IN THE FIRST
+    /// PART'S: that part's library lays the statics out and its StaticInit$
+    /// starts them, so an initialiser or a static constructor written in a
+    /// part of a library built after it is code that StaticInit$ would have
+    /// to import from a library it does not link. SystemType's COM part held
+    /// `static readonly object Missing = new object();`, corsacrt's
+    /// StaticInit$ imported its Preinit$Missing, and libcorsacrt.so did not
+    /// link. Refused here, naming the member, when the library beneath is
+    /// built. (A part of a library beneath this one, linked, may hold them:
+    /// its code is there to call.) A static field without an initialiser is
+    /// storage only, and allowed.
+    /// </summary>
+    /// <summary>
+    /// The `--ref` sources, by full path, of the class library's shared
+    /// libraries built after the one being built: those its split
+    /// (ClassLibraries) puts in a library not given with --link-shared. Set
+    /// by the driver; null outside a class library build.
+    /// </summary>
+    internal static HashSet<string>? LibrariesAbove { get; set; }
+
+    private static void RefuseStaticStateApart(Lang.TypeDecl owner, Lang.TypeDecl part)
+    {
+        foreach (Lang.MemberDecl member in part.Members)
+        {
+            string? what = member switch
+            {
+                Lang.FieldDecl { Init: not null } f when f.Mods.HasFlag(Lang.Mods.Static) && !f.Mods.HasFlag(Lang.Mods.Const) => "a static initialiser",
+                Lang.PropertyDecl { Init: not null, Auto: true } p when p.Mods.HasFlag(Lang.Mods.Static) => "a static initialiser",
+                Lang.MethodDecl { IsCtor: true } m when m.Mods.HasFlag(Lang.Mods.Static) => "a static constructor",
+                _ => null,
+            };
+            if (what is null) continue;
+            string name = member is Lang.MethodDecl ? owner.Name : owner.Name + "." + member.Name;
+            throw new Lang.CompileError(member.File, member.Line, member.Col,
+                $"'{name}': {what} in a part of '{owner.Name}' built into a shared library above its part in {owner.File}, "
+                + $"whose library lays out and starts the class's static state and cannot call up into it; move it there");
+        }
     }
 
     /// <summary>
