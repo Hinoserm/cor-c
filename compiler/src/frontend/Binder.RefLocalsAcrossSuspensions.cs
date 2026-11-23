@@ -145,7 +145,9 @@ public sealed partial class Binder
         CrossWalk w = new();
         foreach (Node n in SafetyNodes(body))
         {
-            if (n is LocalDecl { IsRef: true } d && _r.LocalSymbols.TryGetValue(d, out LocalSym? made) && !w.Index.ContainsKey(made))
+            // A ref local, and a local of a ref struct's type (a Span), which
+            // no suspension may keep either (CS4007).
+            if (n is LocalDecl d && _r.LocalSymbols.TryGetValue(d, out LocalSym? made) && (d.IsRef || RefLike(made.Type)) && !w.Index.ContainsKey(made))
             {
                 w.Index[made] = w.Index.Count;
             }
@@ -228,12 +230,22 @@ public sealed partial class Binder
     {
         // Not while quiet (a lambda's first, trial binding): said, and kept
         // from being said again, only where it is heard.
-        if (_quiet > 0) return;
+        if (_quiet > 0 || _peeking > 0) return;
         if (_refAcrossReported.Add(use))
         {
             Error(use, $"CS9217: '{use.Name}' is a ref local, and an 'await' or 'yield' since it was bound would keep it across a suspension: "
                      + "a 'ref' local cannot be preserved across 'await' or 'yield' boundary");
         }
+    }
+
+    /// <summary>
+    /// A local of a ref struct's type used after a suspension since it was
+    /// bound: Roslyn's CS4007, at each such use.
+    /// </summary>
+    private void ReportRefLikeCrossed(NameExpr use, LocalSym local)
+    {
+        if (_quiet > 0 || _peeking > 0 || !_refAcrossReported.Add(use)) return;
+        Error(use, $"CS4007: Instance of type '{DotNetShown(local.Type)}' cannot be preserved across 'await' or 'yield' boundary.");
     }
 
     private Crossed WalkCrossStmt(Stmt s, Crossed c, CrossWalk w)
@@ -660,10 +672,11 @@ public sealed partial class Binder
                 return Suspended(WalkCrossExpr(a.Operand, c, w), w);
 
             case NameExpr n:
-                if (_r.Resolved.TryGetValue(n, out Sym? named) && named is LocalSym { IsRef: true } refLocal
+                if (_r.Resolved.TryGetValue(n, out Sym? named) && named is LocalSym refLocal && (refLocal.IsRef || RefLike(refLocal.Type))
                     && w.Index.TryGetValue(refLocal, out int used) && IsCrossed(c, used))
                 {
-                    ReportCrossed(n);
+                    if (refLocal.IsRef) ReportCrossed(n);
+                    else ReportRefLikeCrossed(n, refLocal);
                 }
                 return c;
 
@@ -748,8 +761,12 @@ public sealed partial class Binder
     private Crossed WalkCrossChain(Expr e, Crossed c, CrossWalk w, ref List<Crossed>? skipped)
     {
         if (c.Dead) return c;
-        // A rewritten link is walked as itself: its chain is the rewrite's.
-        if (_r.Rewrites.TryGetValue(e, out Expr? instead) && !ReferenceEquals(instead, e))
+        // A rewritten link is walked as itself: its chain is the rewrite's --
+        // not while inside that rewrite already (_inOwnRewrite), where the
+        // rewrite holds the link itself (a span's `s[0]` read as its
+        // indexer's call over `s`) and the two handed it to each other
+        // until the stack ran out.
+        if (_r.Rewrites.TryGetValue(e, out Expr? instead) && !ReferenceEquals(instead, e) && !_inOwnRewrite.Contains(e))
         {
             return WalkCrossExpr(e, c, w);
         }

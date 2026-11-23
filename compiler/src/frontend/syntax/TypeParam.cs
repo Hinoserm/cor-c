@@ -41,6 +41,12 @@ public sealed class TypeParam : Node
     /// </summary>
     public bool Made { get; set; }
 
+    /// <summary>
+    /// `where T : allows ref struct` (C# 13): a ref struct may be its type
+    /// argument (Binder's CS9244 refuses one for any other parameter).
+    /// </summary>
+    public bool AllowsRefStruct { get; set; }
+
     /// <summary>Whether `new T()` may be written: `new()`, `struct` and `unmanaged` each say so.</summary>
     public bool Constructible => New || Struct || Unmanaged;
 

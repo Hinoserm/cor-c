@@ -367,6 +367,12 @@ public static class Header
             {
                 s.Append(" where ").Append(p.Name).Append(" : new()");
             }
+            // And `allows ref struct`, which a consumer's ref struct argument
+            // needs (Binder, CS9244): after the one above, or alone.
+            if (p.AllowsRefStruct)
+            {
+                s.Append(p.Struct || p.Unmanaged || p.New ? ", allows ref struct" : " where " + p.Name + " : allows ref struct");
+            }
         }
     }
 

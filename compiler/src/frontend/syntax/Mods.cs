@@ -61,4 +61,12 @@ public enum Mods
 
     /// <summary>`ref readonly int Find(...)`: a variable the caller may only read.</summary>
     RefReadonlyReturn = 1 << 19,
+
+    /// <summary>
+    /// `ref struct` (C# 7.2): a type whose values live on the stack alone --
+    /// Span, ReadOnlySpan, a struct holding one. What a program may do with
+    /// one is C#'s rule (TypeSymbol.IsRefLike, Binder's CS8345, CS0611,
+    /// CS9244, CS0029, CS8175, CS4007); one C# accepts runs as any struct.
+    /// </summary>
+    RefLike = 1 << 20,
 }

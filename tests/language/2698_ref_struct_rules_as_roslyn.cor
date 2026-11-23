@@ -1,0 +1,58 @@
+// test: ref_struct_rules_as_roslyn
+// expect-compile-error: CS4007: Instance of type 'System.Span<int>' cannot be preserved across 'await' or 'yield' boundary.
+//
+// WHAT C# REFUSES OF A REF STRUCT (Span, ReadOnlySpan, a struct holding
+// one), each said as Roslyn says it and where: kept across an await or a
+// yield (CS4007), boxed to object, an interface, dynamic or ValueType
+// (CS0029, object's own members called on one too), an array of one
+// (CS0611), a type argument of one where the parameter does not say
+// `allows ref struct` (CS9244, a tuple's items too), one captured by a
+// lambda, an anonymous method or a local function (CS8175), a u8 literal as
+// a pattern's constant (CS9135); `o is Span<int>` is never (CS0184). A ref
+// struct holding a span, and `allows ref struct`, are fine. The whole list
+// is checked by 2698_ref_struct_rules_as_roslyn.sh.
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+ref struct Holder { public Span<int> S; }
+
+ref struct R : IDisposable { public void Dispose() { } }
+
+static class P
+{
+    static void Take<T>(T t) { }
+    static void TakeRef<T>(T t) where T : allows ref struct { }
+    static async Task Async()
+    {
+        Span<int> s = stackalloc int[2];
+        await Task.Yield();
+        s[0] = 1;
+    }
+    static IEnumerable<int> Iter()
+    {
+        Span<int> s = new int[2];
+        yield return 1;
+        s[0] = 1;
+    }
+    static void Main()
+    {
+        Span<int> s = new int[3];
+        object o = s;
+        IDisposable d = new R();
+        Span<int>[] arr = null!;
+        List<Span<int>> list = null!;
+        Take(s);
+        TakeRef(s);
+        Func<int> f = () => s[0];
+        Action a = delegate { s[0] = 1; };
+        int Local() => s[0];
+        ReadOnlySpan<byte> u = "a"u8;
+        object x = "a"u8;
+        Console.WriteLine(o is Span<int>);
+        Console.WriteLine(u is "a"u8);
+        var t = (s, 1);
+        dynamic dy = s;
+        R r = new R(); r.ToString(); r.GetHashCode();
+    }
+}

@@ -1745,6 +1745,67 @@ public sealed partial class Binder
         return call;
     }
 
+    /// <summary>
+    /// A type as Roslyn names one in a message: with its namespace, and the
+    /// class library's own -- Core.cor's, written in none -- with System's,
+    /// as .NET has them (`System.Span<int>`, `System.IDisposable`).
+    /// </summary>
+    private static string DotNetShown(Type t)
+        => t.Symbol?.Decl is { } d && !t.IsArray && !t.IsPointer
+            ? (d.Namespace.Length > 0 ? d.Namespace + "." : d.FromLibrary && d.Outer is null ? "System." : "") + t.Shown()
+            : t.Shown();
+
+    /// <summary>C#'s refusal of a ref struct as a type argument where the parameter does not allow one (CS9244).</summary>
+    private static string RefLikeArgument(Type a, string parameter, string generic)
+        => $"CS9244: The type '{a.Shown()}' may not be a ref struct or a type parameter allowing ref structs in order to use it as parameter '{parameter}' in the generic type or method '{generic}'";
+
+    /// <summary>
+    /// A WRITTEN TYPE'S REF STRUCTS WHERE C# HAS NONE: an array of one
+    /// (CS0611), or one as a type argument whose parameter does not say
+    /// `allows ref struct` (CS9244) -- a tuple's items are such arguments --
+    /// at any depth, at the place each was written. A copy the compiler made
+    /// (TypeRef.Written false) is its own business.
+    /// </summary>
+    private void RefLikeUses(TypeRef r, Type resolved)
+    {
+        // Not in a generic copy: its types are its template's, the argument
+        // that made it refused where that was written.
+        if (resolved.IsError || InGenericCopy()) return;
+        if (resolved.IsArray)
+        {
+            Type element = resolved;
+            while (element.IsArray && element.Element is Type inner) element = inner;
+            if (RefLike(element))
+            {
+                Error(r, $"CS0611: Array elements cannot be of type '{element.Shown()}'");
+            }
+            return;
+        }
+        if (resolved.AsNonNullable().Symbol is not { Decl: { Specialised: true } d } made || d.TemplateParams is not { } ps
+            || made.TemplateArgTypes.Count != ps.Count)
+        {
+            return;
+        }
+        // The arguments as written: folded into the copy's name, they are
+        // kept beside it (UseArgs).
+        List<TypeRef> written = r.Args.Count > 0 ? r.Args : r.UseArgs ?? r.Args;
+        for (int i = 0; i < ps.Count; i++)
+        {
+            Type argument = made.TemplateArgTypes[i];
+            TypeRef at = i < written.Count ? written[i] : r;
+            if (RefLike(argument) && !ps[i].AllowsRefStruct)
+            {
+                string generic = TupleArity(Type.Plain(made, Prim.Void)) is not null ? "(" + string.Join(", ", ps.Select(p => p.Name)) + ")"
+                    : BoxedFaces.Plain(d.Template ?? made.Name) + "<" + string.Join(", ", ps.Select(p => p.Name)) + ">";
+                RefuseRefLikeArgument(at, RefLikeArgument(argument, ps[i].Name, generic));
+            }
+            else if (i < written.Count)
+            {
+                RefLikeUses(written[i], argument);
+            }
+        }
+    }
+
     /// <summary>C#'s refusal of a type argument that does not meet `new()` (CS0310).</summary>
     private static string NotConstructible(Type a, string parameter, string generic)
         => $"CS0310: '{a}' must be a non-abstract type with a public parameterless constructor in order to use it as parameter '{parameter}' in the generic type or method '{generic}'";
@@ -1938,6 +1999,42 @@ public sealed partial class Binder
             return;
         }
 
+        // A GENERIC COPY MADE OVER A REF STRUCT says nothing of its own: the
+        // use that made it is refused (CS9244, RefuseRefLikeArgument), and the
+        // library's List<T> bound over a Span said a hundred things C# never
+        // gets to.
+        if (_refLikeArgumentRefused && InGenericCopy()) return;
+        CompileError said = new(Where(at), at.Line, at.Col, message);
+        _r.Errors.Add(said);
+        if (InGenericCopy()) (_copyErrors ??= new()).Add(said);
+    }
+
+    /// <summary>Whether a ref struct was refused as a type argument (CS9244): the copies made of it are quiet since.</summary>
+    private bool _refLikeArgumentRefused;
+
+    /// <summary>What generic copies said before one was: taken back then.</summary>
+    private List<CompileError>? _copyErrors;
+
+    /// <summary>
+    /// A REF STRUCT AS A TYPE ARGUMENT, refused where it was written (CS9244),
+    /// and what the copies made of it said, before or after, taken back.
+    /// </summary>
+    private void RefuseRefLikeArgument(Node at, string message)
+    {
+        if (_quiet > 0) return;
+        // In a look, said and taken back with it (Peek): nothing else undone.
+        if (_peeking > 0)
+        {
+            _r.Errors.Add(new CompileError(Where(at), at.Line, at.Col, message));
+            return;
+        }
+        if (_copyErrors is not null)
+        {
+            HashSet<CompileError> made = new(_copyErrors);
+            _r.Errors.RemoveAll(made.Contains);
+            _copyErrors = null;
+        }
+        _refLikeArgumentRefused = true;
         _r.Errors.Add(new CompileError(Where(at), at.Line, at.Col, message));
     }
 
@@ -5326,9 +5423,11 @@ public sealed partial class Binder
                         if (ConstantValue(bufferLength, sym) is long counted && counted > 0 && counted <= int.MaxValue) fixedLength = (int)counted;
                         else Error(bufferLength, "CS0133: a fixed buffer's length must be a positive constant");
                     }
+                    Type fieldType = Resolve(f.Type, sym);
+                    RefLikeStorage(fieldType, f.Mods.HasFlag(Mods.Static), sym, f.Type);
                     sym.WritableFields.Add(new FieldSymbol
                     {
-                        Name = f.Name, Type = Resolve(f.Type, sym), Owner = sym,
+                        Name = f.Name, Type = fieldType, Owner = sym,
                         Static = f.Mods.HasFlag(Mods.Static),
                         Mods = f.Mods, WriteMods = f.Mods, Declared = true,
                         Volatile = f.Mods.HasFlag(Mods.Volatile),
@@ -5383,6 +5482,7 @@ public sealed partial class Binder
 
                     if (p.Auto && !abstractAccessors)
                     {
+                        RefLikeStorage(propType, p.Mods.HasFlag(Mods.Static), sym, p.Type);
                         // An auto property is a field plus accessors, and the
                         // field is what layout and code generation use: `x.N`
                         // finds it and loads it, with no call at all.
@@ -6505,6 +6605,9 @@ public sealed partial class Binder
     private Type Resolve(TypeRef r, TypeSymbol? context)
     {
         Type resolved = ResolveWritten(r, context);
+        // Not for a generic copy's own names, whose owner is the copy (its
+        // signatures are resolved before binding enters it, InGenericCopy).
+        if (r.Written && context?.Decl is not ({ Specialised: true } or { InGenericCode: true } or { Canon: not null })) RefLikeUses(r, resolved);
         // A TYPE WRITTEN IN A BODY -- a cast, a test, typeof, an array made
         // of it -- is one lowering lays down a descriptor for: its members
         // are declared now, whatever kind of copy it is, and what that
@@ -7715,6 +7818,10 @@ public sealed partial class Binder
                 _r.LocalType[d] = type;
 
                 LocalSym made = new(slot, type, d.Name);
+                // A local of a ref struct's type in an async method or an
+                // iterator: the suspension walk refuses a use across one
+                // (CS4007, CheckRefLocalsAcrossSuspensions).
+                if (RefLike(type)) _sawRefLocal = true;
 
                 _r.LocalSymbols[d] = made;
                 _declOf[made] = d;
@@ -9367,6 +9474,14 @@ public sealed partial class Binder
             }
             return;
         }
+        // A REF STRUCT BOXED, in Roslyn's words (CS0029): the program wrote a
+        // conversion C# has none of, and says what C# says.
+        if (RefLike(from) && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true }) && !to.IsArray && !to.IsPointer)
+        {
+            string into = to.Dynamic ? "dynamic" : to.Prim == Prim.Any && to.Symbol is null ? "object" : DotNetShown(to.AsNonNullable());
+            Error(at, $"CS0029: Cannot implicitly convert type '{DotNetShown(from)}' to '{into}'");
+            return;
+        }
         Error(at, $"{what}: cannot convert '{from}' to '{to}'");
     }
 
@@ -9847,6 +9962,14 @@ public sealed partial class Binder
 
     private bool StandardConvertible(Type from, Type to)
     {
+        // A REF STRUCT IS NEVER BOXED (C# 16.2.3, CS0029): not to object,
+        // dynamic, an interface it implements, nor ValueType. Its own type,
+        // and a struct conversion of its own, are the rules below.
+        if (RefLike(from) && !InCanonicalCopy && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true }) && !to.IsArray && !to.IsPointer)
+        {
+            return false;
+        }
+
         // Anything is a machine word, which is the whole point of this type.
         if (to.Prim == Prim.Any || from.Prim == Prim.Any)
         {
@@ -10162,7 +10285,7 @@ public sealed partial class Binder
     {
         if (to.IsArray || to.IsPointer || to.IsNullableValue || to.Symbol is not { IsBoxBase: true } face) return false;
         Type v = from.AsNonNullable();
-        if (v.IsArray || v.IsPointer || v.IsError) return false;
+        if (v.IsArray || v.IsPointer || v.IsError || RefLike(v)) return false;
         if (v.ParamName is not null)
         {
             return ParamBoxesTo(v.ParamName, face);
@@ -10172,6 +10295,22 @@ public sealed partial class Binder
         return v.Symbol is { Kind: TypeKind.Struct }
             || v.Symbol is null && v.Prim is Prim.Bool or Prim.Char or Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32
                 or Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64;
+    }
+
+    /// <summary>A value of a `ref struct` (TypeSymbol.IsRefLike): a Span, a ReadOnlySpan, a struct holding one -- not an array of one, nor a pointer to one, nor its Nullable.</summary>
+    private static bool RefLike(Type t) => !t.IsArray && !t.IsPointer && !t.IsNullableValue && t.Symbol is { IsRefLike: true };
+
+    /// <summary>
+    /// A field or an auto property of a ref struct's type only as an instance
+    /// member of a ref struct (CS8345, Roslyn's words): anywhere else it would
+    /// be on the heap -- in a class, a plain struct's box, a static.
+    /// </summary>
+    private void RefLikeStorage(Type stored, bool isStatic, TypeSymbol owner, Node at)
+    {
+        if (RefLike(stored) && (isStatic || !owner.IsRefLike) && owner.Decl is not { Specialised: true })
+        {
+            Error(at, $"CS8345: Field or auto-implemented property cannot be of type '{stored.Shown()}' unless it is an instance member of a ref struct.");
+        }
     }
 
     /// <summary>Whether a type parameter's constraints promise a value that boxes to ValueType or Enum (BoxesTo).</summary>
@@ -12755,6 +12894,8 @@ public sealed partial class Binder
         int warnings = _r.Warnings.Count;
         int wanted = _r.Wanted.Count;
         int overrides = _r.WantedOverrides.Count;
+        int wanting = _r.Wanting.Count;
+        HashSet<string>? anonymous = _r.AnonymousDelegates.Count > 0 ? new(_r.AnonymousDelegates, StringComparer.Ordinal) : null;
         // WHAT THE LOOK DECLARED IS TAKEN BACK TOO. An `out var` or a pattern
         // variable in the expression declares a name in the scope it is
         // checked in, and the real check that follows declares it again: a
@@ -12764,7 +12905,14 @@ public sealed partial class Binder
         HashSet<string> names = new(scope.Keys, StringComparer.Ordinal);
         HashSet<string> nested = new(scope.NestedNames, StringComparer.Ordinal);
         int slot = _nextSlot;
-        Type had = CheckExpr(e);
+        // A LOOK REPORTS NOTHING IT KEEPS (_peeking): a use across a
+        // suspension is not marked reported (ReportCrossed), and a ref struct
+        // refused as a type argument takes no other error back
+        // (RefuseRefLikeArgument) -- the real check says each.
+        Type had;
+        _peeking++;
+        try { had = CheckExpr(e); }
+        finally { _peeking--; }
 
         foreach (string name in scope.Keys.Where(name => !names.Contains(name)).ToList())
         {
@@ -12773,12 +12921,19 @@ public sealed partial class Binder
         }
         scope.NestedNames.IntersectWith(nested);
         _nextSlot = slot;
-        _r.Errors.RemoveRange(errors, _r.Errors.Count - errors);
-        _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
-        _r.Wanted.RemoveRange(wanted, _r.Wanted.Count - wanted);
-        _r.WantedOverrides.RemoveRange(overrides, _r.WantedOverrides.Count - overrides);
+        static void Trim<T>(List<T> list, int to) { if (list.Count > to) list.RemoveRange(to, list.Count - to); }
+        Trim(_r.Errors, errors);
+        Trim(_r.Warnings, warnings);
+        Trim(_r.Wanted, wanted);
+        Trim(_r.WantedOverrides, overrides);
+        Trim(_r.Wanting, wanting);
+        if (anonymous is null) _r.AnonymousDelegates.Clear();
+        else _r.AnonymousDelegates.IntersectWith(anonymous);
         return had;
     }
+
+    /// <summary>How deep in looks (Peek) the binding is: what it reports is taken back.</summary>
+    private int _peeking;
 
     /// <summary>
     /// `await foreach`, as C# writes it (C# 13.9.5, the async form): the
@@ -17010,6 +17165,18 @@ public sealed partial class Binder
                     return Type.Error;
                 }
 
+                // A REF STRUCT IS NO TUPLE'S ITEM (CS9244): a tuple's items are
+                // ValueTuple's type arguments, which allow none.
+                for (int i = 0; i < elements.Count && !InGenericCopy(); i++)
+                {
+                    if (RefLike(elements[i]))
+                    {
+                        RefuseRefLikeArgument(tup.Items[i], RefLikeArgument(elements[i], "T" + (i + 1),
+                            "(" + string.Join(", ", Enumerable.Range(1, elements.Count).Select(k => "T" + k)) + ")"));
+                        return Type.Error;
+                    }
+                }
+
                 if (want is not null)
                 {
                     bool fits = true;
@@ -20429,6 +20596,11 @@ public sealed partial class Binder
                     {
                         Error(isx, $"a '{operand}' can only match its held '{operand.Underlying}' value");
                     }
+                }
+                else if (RefLike(tested) && !RefLike(operand) && !operand.IsError && (operand.IsReference || operand.Prim == Prim.Any) && !runTime)
+                {
+                    // NO OBJECT IS A REF STRUCT (CS0184): none is ever boxed.
+                    NeverOfTypeTest(isx, operand, tested);
                 }
                 else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && (operand.IsReference || operand.Prim == Prim.Any)
                          && !runTime)
@@ -26408,6 +26580,16 @@ public sealed partial class Binder
         // and is syntactic, so this is a note for the round after.
         MethodSymbol called = best;
 
+        // OBJECT'S OWN METHODS CALLED ON A REF STRUCT that does not declare
+        // them box it to ValueType, which C# refuses (CS0029, Roslyn's
+        // words): `span.GetHashCode()`, `r.ToString()` on a ref struct of no
+        // ToString of its own.
+        if (!best.Static && ReferenceEquals(best.Owner, Rooted()) && c.Target is MemberExpr { Target: { } boxedReceiver }
+            && _r.TypeOf(boxedReceiver) is { } received && RefLike(received))
+        {
+            Error(boxedReceiver, $"CS0029: Cannot implicitly convert type '{received.Shown()}' to 'System.ValueType'");
+        }
+
         if (best.TypeParams.Count > 0 && bound != null && best.Decl is { } generic)
         {
             List<TypeRef> spelt = new();
@@ -26435,6 +26617,16 @@ public sealed partial class Binder
                     {
                         Error(c, NotConstructible(given[i], generic.TypeParams[i].Name,
                             best.Name + "<" + string.Join(", ", generic.TypeParams.Select(p => p.Name)) + ">"));
+                    }
+                    // A REF STRUCT ONLY FOR `allows ref struct` (C# 13, CS9244).
+                    if (RefLike(given[i]) && !generic.TypeParams[i].AllowsRefStruct && !InGenericCopy())
+                    {
+                        // At the call's start, as Roslyn says it: the name called.
+                        Node callStart = c.Target;
+                        while (callStart is MemberExpr { Target: { } inner }) callStart = inner;
+                        RefuseRefLikeArgument(callStart, RefLikeArgument(given[i], generic.TypeParams[i].Name,
+                            best.Owner.Name + "." + best.Name + "<" + string.Join(", ", generic.TypeParams.Select(p => p.Name)) + ">("
+                            + string.Join(", ", generic.Params.Select(p => p.Type.Name)) + ")"));
                     }
                 }
             }
@@ -28024,6 +28216,14 @@ public sealed partial class Binder
         // with the symbols known, a name that is a type becomes the IsExpr it
         // means, as C# binds `is` against a type first. The mirror of the bare
         // name an IsExpr turns into a constant below.
+        // A UTF-8 LITERAL IS NO CONSTANT (C# 11, CS9135): `"a"u8` is a
+        // ReadOnlySpan<byte> made of data, which no pattern may name.
+        if (b.PatternConstant && b.Right is NewExpr { Utf8Bytes: not null } or NewExpr { Args: [NewExpr { Utf8Bytes: not null }] })
+        {
+            Error(b.Right, "CS9135: A constant value of type 'ReadOnlySpan<byte>' is expected");
+            return Type.Error;
+        }
+
         if (b.PatternConstant && b.Op == BinOp.Eq && Dotted(b.Right) is string dotted && dotted.Contains('.') && NamesType(dotted, b.Right))
         {
             IsExpr typeTest = new()

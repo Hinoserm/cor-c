@@ -348,7 +348,7 @@ public static class Gir
         /// `new()`, `unmanaged`, and constructed by its declaration (ReadParam).
         /// </summary>
         private static byte ParamKinds(TypeParam p)
-            => (byte)((p.Struct ? 1 : 0) | (p.New ? 2 : 0) | (p.Unmanaged ? 4 : 0) | (p.Made ? 8 : 0));
+            => (byte)((p.Struct ? 1 : 0) | (p.New ? 2 : 0) | (p.Unmanaged ? 4 : 0) | (p.Made ? 8 : 0) | (p.AllowsRefStruct ? 16 : 0));
 
         public void Decl(TypeDecl d)
         {
@@ -1133,7 +1133,7 @@ public static class Gir
         {
             string name = Str();
             byte kinds = U8();
-            return new TypeParam { Name = name, Struct = (kinds & 1) != 0, New = (kinds & 2) != 0, Unmanaged = (kinds & 4) != 0, Made = (kinds & 8) != 0 };
+            return new TypeParam { Name = name, Struct = (kinds & 1) != 0, New = (kinds & 2) != 0, Unmanaged = (kinds & 4) != 0, Made = (kinds & 8) != 0, AllowsRefStruct = (kinds & 16) != 0 };
         }
 
         public int I32()

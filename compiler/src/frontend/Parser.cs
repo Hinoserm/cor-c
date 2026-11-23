@@ -1847,11 +1847,12 @@ public sealed class Parser
                     m |= Mods.Partial;
                     break;
 
-                // `ref struct` (C# 7.2): a struct that lives on the stack only.
-                // The rule is what a program may do with one; one C# accepts
-                // runs the same as any struct here.
+                // `ref struct` (C# 7.2): a struct that lives on the stack only
+                // (Mods.RefLike). The rule is what a program may do with one;
+                // one C# accepts runs the same as any struct here.
                 case Tok.KwRef when _t[_i + 1].Kind == Tok.KwStruct
                                     || _t[_i + 1] is { Kind: Tok.Ident, Text: "partial" } && _t[_i + 2].Kind == Tok.KwStruct:
+                    m |= Mods.RefLike;
                     break;
 
                 // `file` (C# 11): a type seen in its own file only. Taken as
@@ -3100,6 +3101,15 @@ public sealed class Parser
                     Expect(Tok.LParen, "'(' after 'new' in a constraint");
                     Expect(Tok.RParen, "')' to close 'new()' in a constraint");
                     target.New = true;
+                    continue;
+                }
+
+                // `allows ref struct` (C# 13, TypeParam.AllowsRefStruct): a
+                // ref struct may be the argument.
+                if (At(Tok.Ident) && Cur.Text == "allows" && Ahead().Kind == Tok.KwRef && _t[_i + 2].Kind == Tok.KwStruct)
+                {
+                    target.AllowsRefStruct = true;
+                    _i += 3;
                     continue;
                 }
 
@@ -7009,7 +7019,7 @@ public sealed class Parser
         for (int k = typeParams.Count - 1; k >= 0; k--)
         {
             TypeParam p = typeParams[k];
-            TypeParam copy = new() { Name = p.Name, Variance = p.Variance, Struct = p.Struct, New = p.New, Unmanaged = p.Unmanaged, Made = p.Made, Line = p.Line, Col = p.Col };
+            TypeParam copy = new() { Name = p.Name, Variance = p.Variance, Struct = p.Struct, New = p.New, Unmanaged = p.Unmanaged, Made = p.Made, AllowsRefStruct = p.AllowsRefStruct, Line = p.Line, Col = p.Col };
             copy.WritableConstraints.AddRange(p.Constraints);
             m.WritableTypeParams.Insert(0, copy);
         }

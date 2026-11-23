@@ -1,5 +1,5 @@
 // test: ref local not captured
-// expect-compile-error: cannot use ref local 'count' inside a lambda or a local function
+// expect-compile-error: CS8175: Cannot use ref local 'count' inside an anonymous method, lambda expression, or query expression
 // A lambda is an object on the heap and may outlive the frame a ref local
 // points into, so C# refuses to let one name a ref local (CS8175).
 

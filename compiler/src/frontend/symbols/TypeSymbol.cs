@@ -141,6 +141,15 @@ public sealed class TypeSymbol
     /// </summary>
     public bool IsValueTypeClass => BoxBaseNamed("ValueType");
 
+    /// <summary>
+    /// A `ref struct` (Mods.RefLike): Span, ReadOnlySpan, a struct that holds
+    /// one -- every specialisation of one too, which keeps its template's
+    /// modifiers. What C# lets a program do with one is narrower than with
+    /// any struct: no box, no field outside another's instance, no array,
+    /// no type argument, no capture, no life across an await (Binder).
+    /// </summary>
+    public bool IsRefLike => Kind == TypeKind.Struct && Decl is { } d && (d.Mods & Mods.RefLike) != 0;
+
     /// <summary>The class library's System.Enum, which every boxed enum is, between its own type and ValueType.</summary>
     public bool IsEnumClass => BoxBaseNamed("Enum");
 

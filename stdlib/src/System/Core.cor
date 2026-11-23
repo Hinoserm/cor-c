@@ -10484,7 +10484,7 @@ public struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     void IList<T>.RemoveAt(int index) { throw new NotSupportedException(); }
 }
 
-public struct ReadOnlySpan<T> {
+public readonly ref struct ReadOnlySpan<T> {
     private T[] items;
     private int from;
     private int count;
@@ -10691,7 +10691,7 @@ public readonly struct ReadOnlyMemory<T> {
     public override string ToString() => typeof(T) == typeof(char) ? Span.ToString() : "System.ReadOnlyMemory<" + typeof(T).Name + ">[" + count + "]";
 }
 
-public struct Span<T> {
+public ref struct Span<T> {
     private T[] items;
     private int from;
     private int count;
@@ -36190,7 +36190,7 @@ namespace System
     /// between its separators, one at a time, as `foreach (Range r in
     /// span.Split((byte)'/'))` walks them. An empty span gives one empty range,
     /// and each separator ends one, as .NET's does.
-    public struct SpanSplitEnumerator<T> where T : IEquatable<T>
+    public ref struct SpanSplitEnumerator<T> where T : IEquatable<T>
     {
         readonly ReadOnlySpan<T> _source;
         readonly ReadOnlySpan<T> _separators;

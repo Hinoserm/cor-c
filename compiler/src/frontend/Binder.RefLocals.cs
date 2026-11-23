@@ -337,6 +337,14 @@ public sealed partial class Binder
     /// is an object on the heap and may outlive the frame the reference points
     /// into. Asked of what a lambda's body named from outside it.
     /// </summary>
+    /// <summary>The first use of a name in a lambda's or a local function's body, or null.</summary>
+    private NameExpr? UseIn(Node function, string name)
+    {
+        foreach (Node n in SafetyNodes(function, intoLambdas: true))
+            if (n is NameExpr { Name: var named } use && named == name) return use;
+        return null;
+    }
+
     private void RefuseCapturedRefLocals(Node at, IEnumerable<string> captured)
     {
         foreach (string name in captured)
@@ -344,9 +352,19 @@ public sealed partial class Binder
             for (int i = _scopes.Count - 1; i >= 0; i--)
             {
                 if (!_scopes[i].TryGetValue(name, out Sym? s)) continue;
-                if (s is LocalSym { IsRef: true })
+                // A REF LOCAL, OR ONE OF A REF STRUCT'S TYPE (a Span), names
+                // what lives in the frame the closure may outlive (CS8175); a
+                // parameter of a ref struct's type the same (CS9108). Roslyn's
+                // words.
+                // At the name inside the function, as Roslyn says it.
+                Node use = UseIn(at, name) ?? at;
+                if (s is LocalSym { IsRef: true } || s is LocalSym refLike && RefLike(refLike.Type))
                 {
-                    Error(at, $"cannot use ref local '{name}' inside a lambda or a local function");
+                    Error(use, $"CS8175: Cannot use ref local '{name}' inside an anonymous method, lambda expression, or query expression");
+                }
+                else if (s is ParamSym { ByRef: false } parameter && RefLike(parameter.Type))
+                {
+                    Error(use, $"CS9108: Cannot use parameter '{name}' that has ref-like type inside an anonymous method, lambda expression, query expression, or local function");
                 }
                 break;
             }
