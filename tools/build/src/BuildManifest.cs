@@ -42,13 +42,14 @@ public sealed class BuildManifest
             foreach (string name in options.Properties.Keys)
                 if (!declared.Contains(name)) Fail(root, "Unknown build property " + name);
         }
+        foreach (string name in options.Properties.Keys)
+            if (Reserved(name)) throw new BuildException("Reserved property " + name + " cannot be set on the command line");
         result.Properties["Configuration"] = "Release";
         foreach (var pair in options.Properties) result.Properties[pair.Key] = pair.Value;
         result.Properties["WorkspaceDirectory"] = result.Root;
         result.Properties["ManifestDirectory"] = result.Root;
         result.Properties["OutputDirectory"] = Path.Combine(result.Root, "build");
         result.Properties["Jobs"] = options.Jobs.ToString();
-        result.Properties.Remove("ClassLibraries");
         foreach (XElement element in root.Elements())
         {
             switch (element.Name.ToString())
@@ -60,7 +61,7 @@ public sealed class BuildManifest
                         if (property.HasAttributes || property.HasElements || property.Name.Namespace != XNamespace.None)
                             Fail(property, "Only simple orchestration properties are currently supported");
                         string name = property.Name.LocalName;
-                        if (name is "WorkspaceDirectory" or "ManifestDirectory" or "OutputDirectory" or "Jobs" or "ClassLibraries")
+                        if (Reserved(name))
                             Fail(property, "Reserved property " + name);
                         if (!options.Properties.ContainsKey(name)) result.Properties[name] = result.Expand(property.Value);
                     }
@@ -149,9 +150,20 @@ public sealed class BuildManifest
     /// </summary>
     public static Func<string>? ClassLibrarySplit { get; set; }
 
+    /// <summary>Names a manifest may read but neither it nor the command line may set.</summary>
+    private static bool Reserved(string name) =>
+        name.Equals("WorkspaceDirectory", StringComparison.OrdinalIgnoreCase) || name.Equals("ManifestDirectory", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("OutputDirectory", StringComparison.OrdinalIgnoreCase) || name.Equals("Jobs", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("ClassLibraries", StringComparison.OrdinalIgnoreCase);
+
+    // Targets expand their tasks on several threads at once, so the file is
+    // made once, under this lock, and never written into Properties.
+    private readonly object _classLibrariesGate = new();
+    private string? _classLibraries;
+
     public string Expand(string text) => Regex.Replace(text, @"\$\(([^)]+)\)", match =>
-        Properties.TryGetValue(match.Groups[1].Value, out string? value) ? value
-        : match.Groups[1].Value.Equals("ClassLibraries", StringComparison.OrdinalIgnoreCase) ? ClassLibrariesFile()
+        match.Groups[1].Value.Equals("ClassLibraries", StringComparison.OrdinalIgnoreCase) ? ClassLibrariesFile()
+        : Properties.TryGetValue(match.Groups[1].Value, out string? value) ? value
         : throw new BuildException("Undefined property " + match.Value));
 
     /// <summary>
@@ -163,6 +175,11 @@ public sealed class BuildManifest
     /// </summary>
     private string ClassLibrariesFile()
     {
+        lock (_classLibrariesGate) return _classLibraries ??= WriteClassLibraries();
+    }
+
+    private string WriteClassLibraries()
+    {
         if (ClassLibrarySplit is null) throw new BuildException("$(ClassLibraries) needs the toolchain's build command (corc build)");
         string text = ClassLibrarySplit();
         string path = Path.Combine(Properties["OutputDirectory"], "toolchain", "class-libraries.txt");
@@ -173,7 +190,6 @@ public sealed class BuildManifest
             System.IO.File.WriteAllText(temporary, text);
             System.IO.File.Move(temporary, path, overwrite: true);
         }
-        Properties["ClassLibraries"] = path;
         return path;
     }
 

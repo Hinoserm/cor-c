@@ -19,8 +19,9 @@ namespace Corsac;
 ///
 /// Drawing, the GUI seat and Forms call each other, so they are one image. A
 /// class whose parts lie in two libraries keeps its static state in the
-/// first one's part (Type.Missing is System.Reflection.Missing.Value in
-/// Core.cor, not a static of ComRemote.cor's part).
+/// first one's part: SystemType's statics are started by the runtime's
+/// StaticInit$, which imported the COM part's Preinit$Missing and did not
+/// link, so Type.Missing is System.Reflection.Missing.Value in Core.cor.
 /// </summary>
 internal static class ClassLibraries
 {
@@ -177,9 +178,6 @@ internal static class ClassLibraries
             "stdlib/src/System/Windows/Forms/PrintPreview.cor",
         ]),
     ];
-
-    /// <summary>The split, after <see cref="Check"/> has passed.</summary>
-    internal static IReadOnlyList<Library> Libraries => Table;
 
     /// <summary>
     /// What is wrong with the table against the library root's hosted

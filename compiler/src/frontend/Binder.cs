@@ -22284,6 +22284,13 @@ public sealed partial class Binder
             foreach (Sym both in byLeft)
             {
                 if (!byRight.Contains(both)) continue;
+                // A variable both sides assigned (one bound through a rewrite
+                // each side reaches) is assigned, not proved non-null.
+                if (both is AssignedSym assignedBoth)
+                {
+                    if (_assigned.Add(assignedBoth.Local)) added.Add(both);
+                    continue;
+                }
                 if (both is PathSym { Spelt: var spelt } ? _notNullPaths.Add(spelt) : _notNull.Add(both)) added.Add(both);
             }
         }
