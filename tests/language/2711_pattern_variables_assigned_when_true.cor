@@ -7,7 +7,9 @@
 // in `o is int n || n > 0` it is not; in `&&`'s right side, after a guard
 // clause `if (!(o is int n)) return;`, `is not int n`, a `var` pattern, a
 // loop's body, `!(o is string s) || ...`, a foreach's `if`, a switch arm's
-// `when` and a property pattern it is.
+// `when` and a property pattern it is; and a `var` pattern's variable is
+// assigned wherever the test was evaluated, even after the test failed or
+// was stored, however long the `&&` chain before its use.
 // The whole list is checked by 2711_pattern_variables_assigned_when_true.sh.
 using System;
 using System.Collections.Generic;
@@ -27,8 +29,13 @@ static class P
     static int Good7(object o) { if (o is int n && n > 1 || o is long) return 1; return 0; }
     static int Good8(List<object> xs) { int t = 0; foreach (object x in xs) if (x is int i) t += i; return t; }
     static int Good9(object o) => o switch { _ when o is int n => n, _ => 0 };
+    static object Good10(object o) { bool ok = o is var x; return ok ? x : null!; }
+    static object Good11() { if (Make() is var r) { } return r; }
+    static int Good12(object o) { Console.WriteLine(o is var v ? 1 : 2); return v == null ? 0 : 1; }
+    static int Good13(object o, int a) => o is int x && a > 0 && a > 1 && a > 2 && a > 3 && a > 4 && a > 5 && a > 6 && a > 7 ? x : 0;
+    static object Make() => 5;
     static void Main()
     {
-        Console.WriteLine(Good1(3) + " " + Good2(4) + " " + Good3(5) + " " + Good4(null!) + " " + Good5(new[] { 7 }) + " " + Good6("x") + " " + Good7(2) + " " + Good8(new() { 1, 2 }) + " " + Good9(9));
+        Console.WriteLine(Good1(3) + " " + Good2(4) + " " + Good3(5) + " " + Good4(null!) + " " + Good5(new[] { 7 }) + " " + Good6("x") + " " + Good7(2) + " " + Good8(new() { 1, 2 }) + " " + Good9(9) + " " + Good10(1) + " " + Good11() + " " + Good12(2) + " " + Good13(3, 9));
     }
 }

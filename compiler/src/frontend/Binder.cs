@@ -7898,7 +7898,9 @@ public sealed partial class Binder
     private bool BoundAgain(IsExpr isx)
     {
         if (!_r.PatternSym.TryGetValue(isx, out LocalSym? had) || !ReferenceEquals(Lookup(isx.Binding!), had)) return false;
-        _assigned.Add(had);
+        // A var pattern's holds always; any other's only where its test held
+        // (Assume), checked again or not.
+        if (isx.Type.Name == TypeRef.Anything) _assigned.Add(had);
         return true;
     }
 
@@ -21225,8 +21227,8 @@ public sealed partial class Binder
                     Declare(isx, isx.Binding, pattern);
                     // ASSIGNED WHERE THE TEST HELD, as C# has it (CS0165):
                     // Assume makes it so in a branch, a right operand, a loop's
-                    // body. `o is var x` holds always, and assigns always.
-                    if (isx.Type.Name == "var") _assigned.Add(pattern);
+                    // body. (`o is var x` holds always, and assigns always:
+                    // its own path, TypeRef.Anything, above.)
                 }
                 return Type.Bool;
             }
@@ -22153,7 +22155,7 @@ public sealed partial class Binder
         try
         {
             List<Sym> added = AssumeCore(cond, holds);
-            AssumeAssigned(cond, holds, added, 0);
+            AssumeAssigned(cond, holds, added);
             return added;
         }
         finally { _assuming--; }
@@ -22170,30 +22172,40 @@ public sealed partial class Binder
     /// and whatever the binder put in a condition's place. Each is undone
     /// with the condition's other proofs (Forget).
     /// </summary>
-    private void AssumeAssigned(Expr cond, bool holds, List<Sym> added, int depth)
+    private void AssumeAssigned(Expr cond, bool holds, List<Sym> added)
     {
-        if (depth > 64) return;
-        switch (cond)
+        // A walk of its own, not a recursion: `a is X x && c1 && ... && cN`
+        // leans left as deep as the chain is long.
+        List<(Expr Cond, bool Holds)> pending = new() { (cond, holds) };
+        HashSet<Expr> followed = new(ReferenceEqualityComparer.Instance);
+        while (pending.Count > 0)
         {
-            case IsExpr { Binding: not null } bound when holds:
-                if (_r.PatternSym.TryGetValue(bound, out LocalSym? boundLocal) && _assigned.Add(boundLocal)) added.Add(new AssignedSym(boundLocal));
-                break;
-            case UnaryExpr { Op: UnOp.Not } negated:
-                AssumeAssigned(negated.Operand, !holds, added, depth + 1);
-                return;
-            case BinaryExpr { Op: BinOp.AndAlso } both when holds:
-                AssumeAssigned(both.Left, true, added, depth + 1);
-                AssumeAssigned(both.Right, true, added, depth + 1);
-                return;
-            case BinaryExpr { Op: BinOp.OrElse } either when !holds:
-                AssumeAssigned(either.Left, false, added, depth + 1);
-                AssumeAssigned(either.Right, false, added, depth + 1);
-                return;
-            case PatternExpr tested:
-                AssumeAssigned(tested.Test, holds, added, depth + 1);
-                return;
+            (Expr at, bool when) = pending[^1];
+            pending.RemoveAt(pending.Count - 1);
+            switch (at)
+            {
+                case IsExpr { Binding: not null } bound when when:
+                    if (_r.PatternSym.TryGetValue(bound, out LocalSym? boundLocal) && _assigned.Add(boundLocal)) added.Add(new AssignedSym(boundLocal));
+                    break;
+                case UnaryExpr { Op: UnOp.Not } negated:
+                    pending.Add((negated.Operand, !when));
+                    continue;
+                case BinaryExpr { Op: BinOp.AndAlso } both when when:
+                    pending.Add((both.Right, true));
+                    pending.Add((both.Left, true));
+                    continue;
+                case BinaryExpr { Op: BinOp.OrElse } either when !when:
+                    pending.Add((either.Right, false));
+                    pending.Add((either.Left, false));
+                    continue;
+                case PatternExpr tested:
+                    pending.Add((tested.Test, when));
+                    continue;
+            }
+            // What the binder put in its place, once: a rewrite may hold the
+            // expression it replaced.
+            if (_r.Rewrites.TryGetValue(at, out Expr? instead) && !ReferenceEquals(instead, at) && followed.Add(at)) pending.Add((instead, when));
         }
-        if (_r.Rewrites.TryGetValue(cond, out Expr? instead) && !ReferenceEquals(instead, cond)) AssumeAssigned(instead, holds, added, depth + 1);
     }
 
     private List<Sym> AssumeCore(Expr cond, bool holds)
@@ -22272,11 +22284,6 @@ public sealed partial class Binder
             foreach (Sym both in byLeft)
             {
                 if (!byRight.Contains(both)) continue;
-                if (both is AssignedSym assignedBoth)
-                {
-                    if (_assigned.Add(assignedBoth.Local)) added.Add(both);
-                    continue;
-                }
                 if (both is PathSym { Spelt: var spelt } ? _notNullPaths.Add(spelt) : _notNull.Add(both)) added.Add(both);
             }
         }
