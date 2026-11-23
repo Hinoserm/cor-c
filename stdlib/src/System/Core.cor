@@ -12033,19 +12033,17 @@ public static class BinaryPrimitives {
 
     public static short ReverseEndianness(short value) { return (short)ReverseEndianness((ushort)value); }
 
+    // The processor's own instruction (BSWAP on a 486 and later; the
+    // backend's rotations on a 386), as .NET's is an intrinsic: four shifts,
+    // two masks and three ORs otherwise, in every big-endian field read.
     public static uint ReverseEndianness(uint value) {
-        return (value >> 24)
-             | ((value >> 8) & (uint)0x0000FF00)
-             | ((value << 8) & (uint)0x00FF0000)
-             | (value << 24);
+        return (uint)((ulong)Sys.ByteSwap((long)(ulong)value) >> 32);
     }
 
     public static int ReverseEndianness(int value) { return (int)ReverseEndianness((uint)value); }
 
     public static ulong ReverseEndianness(ulong value) {
-        ulong low = (ulong)ReverseEndianness((uint)(value & (ulong)0xFFFFFFFF));
-        ulong high = (ulong)ReverseEndianness((uint)(value >> 32));
-        return (low << 32) | high;
+        return (ulong)Sys.ByteSwap((long)value);
     }
 
     public static long ReverseEndianness(long value) { return (long)ReverseEndianness((ulong)value); }
