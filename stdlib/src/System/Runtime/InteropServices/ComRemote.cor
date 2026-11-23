@@ -1853,7 +1853,11 @@ public static partial class Activator
 /// </summary>
 static partial class SystemType
 {
-    public static readonly object Missing = new object();
+    // NO STATIC STATE IN THIS PART: SystemType is in two libraries (its
+    // other part is the runtime's, Core.cor), and a class's statics are laid
+    // out and started by one image -- the runtime's, which cannot call up
+    // into this library for an initialiser written here. Type.Missing is
+    // there, as .NET has it in CoreLib.
 
     public static Type? GetTypeFromProgID(string progID) { return GetTypeFromProgID(progID, false); }
 

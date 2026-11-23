@@ -22402,6 +22402,10 @@ internal static class BoxedConvertible
 /// (Binder: a Type's members are SystemType's, as a string's are String's).
 static partial class SystemType
 {
+    /// .NET's Type.Missing: System.Reflection.Missing.Value, the one object
+    /// that stands for an argument left out of a late-bound call.
+    public static readonly object Missing = System.Reflection.Missing.Value;
+
     /// .NET's Type.BaseType: null for object and an interface; Array for an
     /// array; for a class or a box the entry below its own in its display
     /// (BaseDescriptor$), and object for a root class or a string; for a
@@ -34419,6 +34423,18 @@ public static class MathF {
             x = whole / scale;
         }
         return x;
+    }
+}
+
+namespace System.Reflection
+{
+    /// .NET's System.Reflection.Missing: a class of one object, Value,
+    /// passed for a parameter's default in a late-bound call (Type.Missing
+    /// is it).
+    public sealed class Missing
+    {
+        public static readonly Missing Value = new Missing();
+        private Missing() { }
     }
 }
 
