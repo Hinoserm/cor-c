@@ -55,6 +55,20 @@ public sealed class Parser
     /// them: what a type written inside takes first (TypeDecl.OuterParams).
     /// </summary>
     private List<string> _enclosingParams = new();
+
+    /// <summary>
+    /// The enclosing type's own parameters, beside their names: a nested
+    /// type's copy of one keeps its `allows ref struct` (OuterParam), parsed
+    /// before the body that holds the nested type.
+    /// </summary>
+    private List<TypeParam> _enclosingTypeParams = new();
+
+    /// <summary>A nested declaration's copy of its enclosing type's k-th parameter.</summary>
+    private TypeParam OuterParam(int k, int line, int col) => new()
+    {
+        Name = _enclosingParams[k], Line = line, Col = col,
+        AllowsRefStruct = k < _enclosingTypeParams.Count && _enclosingTypeParams[k].Name == _enclosingParams[k] && _enclosingTypeParams[k].AllowsRefStruct,
+    };
     private bool _templateMethod;
     private bool SkipImplementation => _declarationsOnly && !(_includeTemplateBodies && (_templateDepth > 0 || _templateMethod));
 
@@ -2053,12 +2067,14 @@ public sealed class Parser
         // `class Outer<T> { class Inner { T Value; } }` makes Outer.Inner<T>,
         // whose every use is given Outer's argument (FinishFamily).
         List<string> enclosing = _enclosingParams;
+        List<TypeParam> enclosingDecls = _enclosingTypeParams;
         if (enclosing.Count > 0)
         {
-            for (int k = enclosing.Count - 1; k >= 0; k--) decl.WritableTypeParams.Insert(0, new TypeParam { Name = enclosing[k], Line = start.Line, Col = start.Col });
+            for (int k = enclosing.Count - 1; k >= 0; k--) decl.WritableTypeParams.Insert(0, OuterParam(k, start.Line, start.Col));
             decl.OuterParams = enclosing.Count;
         }
         _enclosingParams = decl.TypeParams.Select(p => p.Name).ToList();
+        _enclosingTypeParams = decl.TypeParams.ToList();
         if (decl.TypeParams.Count > 0) _templateDepth++;
 
         // THE POSITIONAL PARAMETERS, which are the whole point of a record: a
@@ -2149,6 +2165,7 @@ public sealed class Parser
             decl.MemberwiseCopied = NamesMemberwiseClone(startIndex);
             _typePath = outer;
             _enclosingParams = enclosing;
+            _enclosingTypeParams = enclosingDecls;
             return decl;
         }
 
@@ -2280,6 +2297,7 @@ public sealed class Parser
         decl.MemberwiseCopied = NamesMemberwiseClone(startIndex);
         _typePath = outer;
         _enclosingParams = enclosing;
+        _enclosingTypeParams = enclosingDecls;
         return decl;
     }
 
@@ -2307,7 +2325,7 @@ public sealed class Parser
         if (At(Tok.Lt)) ParseTypeParams(declaration.WritableTypeParams);
         if (_enclosingParams.Count > 0)
         {
-            for (int k = _enclosingParams.Count - 1; k >= 0; k--) declaration.WritableTypeParams.Insert(0, new TypeParam { Name = _enclosingParams[k], Line = start.Line, Col = start.Col });
+            for (int k = _enclosingParams.Count - 1; k >= 0; k--) declaration.WritableTypeParams.Insert(0, OuterParam(k, start.Line, start.Col));
             declaration.OuterParams = _enclosingParams.Count;
         }
         MethodDecl invoke = new()
@@ -2569,7 +2587,7 @@ public sealed class Parser
             for (int k = delegateDecl.OuterParams - 1; k >= 0; k--)
             {
                 TypeParam outer = delegateDecl.TypeParams[k];
-                made.WritableTypeParams.Insert(0, new TypeParam { Name = outer.Name, Line = outer.Line, Col = outer.Col });
+                made.WritableTypeParams.Insert(0, new TypeParam { Name = outer.Name, Line = outer.Line, Col = outer.Col, AllowsRefStruct = outer.AllowsRefStruct });
             }
             made.OuterParams = delegateDecl.OuterParams;
         }
@@ -8110,7 +8128,7 @@ public sealed class Parser
         };
         for (int k = _enclosingParams.Count - 1; k >= 0; k--)
         {
-            declaration.WritableTypeParams.Insert(0, new TypeParam { Name = _enclosingParams[k], Line = at.Line, Col = at.Col });
+            declaration.WritableTypeParams.Insert(0, OuterParam(k, at.Line, at.Col));
         }
         declaration.OuterParams = _enclosingParams.Count;
         MethodDecl invoke = new()

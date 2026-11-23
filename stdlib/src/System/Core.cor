@@ -10485,9 +10485,9 @@ public struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
 }
 
 public readonly ref struct ReadOnlySpan<T> {
-    private T[] items;
-    private int from;
-    private int count;
+    private readonly T[] items;
+    private readonly int from;
+    private readonly int count;
 
     /// No array is an empty span, as .NET's constructor makes it.
     public ReadOnlySpan(T[]? source) {

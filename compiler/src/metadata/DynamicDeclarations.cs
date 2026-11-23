@@ -79,11 +79,32 @@ public static class DynamicDeclarations
             string name = r.Name;
             int dot = name.LastIndexOf('.');
             string simple = dot < 0 ? name : name[(dot + 1)..];
-            if (!ByName.TryGetValue(simple, out List<TypeDecl>? all)) return false;
-            List<TypeDecl> found = all.Where(t => t.TypeParams.Count == r.Args.Count).ToList();
+            // Span and ReadOnlySpan whatever the unit has loaded so far: a
+            // library type is read in as it is named, and one named only in
+            // a base's signature may not be yet.
+            if (!ByName.TryGetValue(simple, out List<TypeDecl>? all)) return simple is "Span" or "ReadOnlySpan" && r.Args.Count == 1;
+            // Its own parameters: a type nested in a generic one carries the
+            // outer's first (OuterParams), which `Outer<T>.Inner` never writes.
+            List<TypeDecl> found = all.Where(t => t.TypeParams.Count - t.OuterParams == r.Args.Count).ToList();
+            // A qualified name, `Lock.Scope`, `System.Span<int>`: the type
+            // whose enclosing path ends with what is written.
+            if (dot > 0 && found.Count > 1)
+            {
+                string written = name[..dot];
+                List<TypeDecl> qualified = found.Where(t => Path(t).EndsWith(written, StringComparison.Ordinal)).ToList();
+                if (qualified.Count > 0) found = qualified;
+            }
             TypeDecl? d = found.Count <= 1 ? found.FirstOrDefault()
                 : found.FirstOrDefault(t => t.Outer == at.Outer) ?? found.FirstOrDefault(t => t.Namespace == at.Namespace) ?? found[0];
             return d is not null && (d.Mods & Mods.RefLike) != 0;
+        }
+
+        /// <summary>Where a type is declared: its namespace, then the types it is inside.</summary>
+        static string Path(TypeDecl t)
+        {
+            string outer = t.Outer is { Length: > 0 } o ? o : "";
+            if (t.Namespace.Length == 0) return outer;
+            return outer.Length == 0 ? t.Namespace : t.Namespace + "." + outer;
         }
     }
 

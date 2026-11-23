@@ -1,0 +1,29 @@
+// test: ref_structs_in_generics_patterns_and_awaits
+// expect-compile-error: CS0611: Array elements cannot be of type 'Span<int>'
+//
+// A REF STRUCT WHERE C# HAS NONE, HOWEVER IT GETS THERE: in a generic
+// method's or a generic type's body never called (each refused from the
+// template, CS0611, CS9244), an array made by `new[] { s }` or `new
+// Span<int>[n]`, `Span<int>?` (Nullable's T allows none), a written tuple
+// type; a span from `out var` or `var` kept across an await (CS4007), while
+// one written anew after the await is a value of its own and fine. Nothing
+// the library's copies over a span would say is shown.
+// The whole list is checked by 2704_ref_structs_in_generics_patterns_and_awaits.sh.
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+class G<T> { }
+static class P
+{
+    static void InGeneric<T>() { Span<int>[] a = null; List<Span<int>> l = null; (Span<int>, int) t = default; }
+    static async Task WriteAfter(Task t) { Span<int> s = default; await t; s = new int[1]; s[0] = 1; }
+    static async Task VarAcross(Task t) { var s = new int[1].AsSpan(); await t; Console.WriteLine(s.Length); }
+    static bool Get(out Span<int> s) { s = default; return true; }
+    static async Task OutAcross(Task t) { Get(out var s); await t; Console.WriteLine(s.Length); }
+    static async Task ForeachAcross(Task t) { foreach (var s in new Span<int>[0]) { } await t; }
+    static void ArrayOf() { Span<int> s = default; var a = new[] { s }; }
+    static void Nullable() { Span<int>? n = null; }
+    static void Main() { }
+}
+class H<T> { void M() { List<Span<int>> l = null; Span<int>[] a = null; } }

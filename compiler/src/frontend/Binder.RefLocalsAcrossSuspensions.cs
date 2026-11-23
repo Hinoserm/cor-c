@@ -5,7 +5,10 @@ namespace Corsac.Lang;
 /// A REF LOCAL IN AN ASYNC METHOD OR AN ITERATOR, as C# 13 allows one: used
 /// anywhere its binding has not crossed an `await` or a `yield return`, and
 /// refused (CS9217) at each use a suspension since its binding reaches --
-/// C#'s rule, kept as Roslyn keeps it, no more and no less.
+/// C#'s rule, kept as Roslyn keeps it, no more and no less. A LOCAL OF A REF
+/// STRUCT'S TYPE (a Span) the same way, however declared -- a declaration,
+/// `out var`, a type pattern -- refused as CS4007, and a new value written
+/// to one is a binding of its own: the old one is dead.
 ///
 /// What Roslyn lets through keeps an address across a suspension here and is
 /// safe all the same (`s.X = await F()` through a ref local: the field's
@@ -47,13 +50,13 @@ namespace Corsac.Lang;
 /// </summary>
 public sealed partial class Binder
 {
-    /// <summary>Whether the body being bound declared a ref local: the walk is made only then.</summary>
+    /// <summary>Whether the body being bound declared a ref local or a local of a ref struct's type: the walks (suspensions, escapes) are made only then.</summary>
     private bool _sawRefLocal;
 
     /// <summary>The uses already refused, so a body bound twice (a generic copy) says each once.</summary>
     private readonly HashSet<Node> _refAcrossReported = new(ReferenceEqualityComparer.Instance);
 
-    /// <summary>The ref locals whose binding a suspension has crossed, on the paths to a point; Dead where none reach.</summary>
+    /// <summary>The ref locals and ref struct locals whose binding a suspension has crossed, on the paths to a point; Dead where none reach.</summary>
     private readonly struct Crossed
     {
         public readonly bool Dead;
@@ -133,6 +136,18 @@ public sealed partial class Binder
         return new Crossed(false, made);
     }
 
+    /// <summary>
+    /// The local an expression declares, where it is one of a ref struct's
+    /// or a ref local the walk follows: an `out` argument's, a type
+    /// pattern's.
+    /// </summary>
+    private LocalSym? DeclaredInExpr(Node n) => n switch
+    {
+        RefArgExpr { Name: not null, Target: NameExpr declared } when _r.Resolved.TryGetValue(declared, out Sym? s) && s is LocalSym { IsRef: false } local => local,
+        IsExpr { Binding: not null } isx when _r.PatternSym.TryGetValue(isx, out LocalSym? local) && !local.IsRef => local,
+        _ => null,
+    };
+
     private static bool IsCrossed(Crossed c, int index)
         => !c.Dead && c.Bits is { } bits && (bits[index >> 6] & (1UL << (index & 63))) != 0;
 
@@ -150,6 +165,13 @@ public sealed partial class Binder
             if (n is LocalDecl d && _r.LocalSymbols.TryGetValue(d, out LocalSym? made) && (d.IsRef || RefLike(made.Type)) && !w.Index.ContainsKey(made))
             {
                 w.Index[made] = w.Index.Count;
+            }
+            // A ref struct's local declared in an expression: `out var s`,
+            // `out Span<int> s`, `x is Span<int> s` -- bound where it is
+            // declared (DeclaredInExpr).
+            else if (DeclaredInExpr(n) is { } inExpr && RefLike(inExpr.Type) && !w.Index.ContainsKey(inExpr))
+            {
+                w.Index[inExpr] = w.Index.Count;
             }
         }
         if (w.Index.Count == 0) return;
@@ -686,6 +708,22 @@ public sealed partial class Binder
                 when _r.Resolved.TryGetValue(pointed, out Sym? target) && target is LocalSym { IsRef: true } repointed
                      && w.Index.TryGetValue(repointed, out int index):
                 return Rebound(WalkCrossExpr(referred, c, w), index);
+
+            // `out var s`: s bound afresh by the call, after its arguments.
+            case RefArgExpr { Name: not null } declaring when DeclaredInExpr(declaring) is { } fresh && w.Index.TryGetValue(fresh, out int declaredAt):
+                return Rebound(c, declaredAt);
+
+            // `x is Span<int> s`: s bound afresh by the test.
+            case IsExpr { Binding: not null } binds when DeclaredInExpr(binds) is { } bound && w.Index.TryGetValue(bound, out int boundAt):
+                return Rebound(WalkCrossExpr(binds.Operand, c, w), boundAt);
+
+            // `s = new int[1];` of a ref struct local: a new value, so the
+            // name on the left is no use of the one held across a suspension
+            // -- Roslyn hoists by liveness, and the old value is dead here.
+            case AssignExpr { Op: null, Value: not RefArgExpr, Target: NameExpr written }
+                when _r.Resolved.TryGetValue(written, out Sym? target) && target is LocalSym { IsRef: false } overwritten
+                     && RefLike(overwritten.Type) && w.Index.TryGetValue(overwritten, out int index):
+                return Rebound(WalkCrossExpr(((AssignExpr)e).Value, c, w), index);
 
             case ThrowExpr t:
                 WalkCrossExpr(t.Value, c, w);

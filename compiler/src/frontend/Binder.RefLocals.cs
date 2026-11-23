@@ -332,11 +332,6 @@ public sealed partial class Binder
         return true;
     }
 
-    /// <summary>
-    /// C# REFUSES A REF LOCAL INSIDE A LAMBDA OR A LOCAL FUNCTION: a closure
-    /// is an object on the heap and may outlive the frame the reference points
-    /// into. Asked of what a lambda's body named from outside it.
-    /// </summary>
     /// <summary>The first use of a name in a lambda's or a local function's body, or null.</summary>
     private NameExpr? UseIn(Node function, string name)
     {
@@ -345,6 +340,11 @@ public sealed partial class Binder
         return null;
     }
 
+    /// <summary>
+    /// C# REFUSES A REF LOCAL INSIDE A LAMBDA OR A LOCAL FUNCTION: a closure
+    /// is an object on the heap and may outlive the frame the reference points
+    /// into. Asked of what a lambda's body named from outside it.
+    /// </summary>
     private void RefuseCapturedRefLocals(Node at, IEnumerable<string> captured)
     {
         foreach (string name in captured)

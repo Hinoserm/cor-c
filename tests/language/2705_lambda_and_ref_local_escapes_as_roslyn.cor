@@ -1,0 +1,25 @@
+// test: lambda_and_ref_local_escapes_as_roslyn
+// expect-compile-error: CS8347: Cannot use a result of 'R.R(ref int)' in this context because it may expose variables referenced by parameter 'v' outside of their declaration scope
+//
+// HOW FAR A SPAN GOES FROM A LAMBDA, AND FROM A REF LOCAL: a lambda's
+// stackalloc returned (CS8352, CS8353) as a method's would be, a heap span
+// or a parameter's slice returned freely; a ref struct made over a ref local
+// that aliases a local may not be returned (CS8347, CS8157), one over an
+// alias of a ref parameter may.
+// The whole list is checked by 2705_lambda_and_ref_local_escapes_as_roslyn.sh.
+using System;
+ref struct R { public R(ref int v) { } }
+static class P
+{
+    static int[] _arr = new int[4];
+    static R F() { int x = 0; ref int r = ref x; return new R(ref r); }
+    static R G(ref int y) { ref int r = ref y; return new R(ref r); }
+    static void Main()
+    {
+        Func<Span<int>> bad = () => { Span<int> t = stackalloc int[4]; return t; };
+        Func<Span<int>> bad2 = () => stackalloc int[2];
+        Func<Span<int>> good = () => _arr;
+        Func<Span<int>, Span<int>> pass = s => s.Slice(1);
+        Action<Span<int>> store = s => { Span<int> local = stackalloc int[1]; s[0] = local[0]; };
+    }
+}

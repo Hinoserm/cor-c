@@ -634,21 +634,27 @@ public static class IrLinkOptimizer
         {
             var plan = plans[k];
             ObjectFile original = inputs[plan.Index].Object;
+            LifetimeFacts facts;
             if (lifetimes is null || !hints.TryGetValue(original, out LifetimeHints? own))
             {
                 // NO LIFETIMES TO GO BY, BUT THE ARGUMENT FACTS STILL: a unit
                 // planned because they touch it (ArgumentsTouch) must call
                 // what they made of its callees, or it names a function
-                // regenerated away. Nothing known of lifetimes frees nothing.
-                return argumentFacts is { IsEmpty: false } ? new LifetimeFacts { Arguments = argumentFacts } : null;
+                // regenerated away -- with every fact the image shares (its
+                // regions, its heap) as any other unit has them. Nothing
+                // known of lifetimes frees nothing.
+                if (argumentFacts is not { IsEmpty: false }) return null;
+                facts = new LifetimeFacts();
             }
-            LifetimeFacts facts;
-            // One question of the solver at a time: it is not asked from
-            // several threads anywhere else.
-            lock (solving)
-                facts = lifetimes.For(own, archives[original].Entries.Values.SelectMany(record => record.Calls)
-                    .Concat(plan.Imports.SelectMany(import => import.Body.Calls))
-                    .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal));
+            else
+            {
+                // One question of the solver at a time: it is not asked from
+                // several threads anywhere else.
+                lock (solving)
+                    facts = lifetimes.For(own, archives[original].Entries.Values.SelectMany(record => record.Calls)
+                        .Concat(plan.Imports.SelectMany(import => import.Body.Calls))
+                        .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal));
+            }
             facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields;
             facts.Arguments = argumentFacts;
             facts.Regions = regionFacts?.GetValueOrDefault(original);

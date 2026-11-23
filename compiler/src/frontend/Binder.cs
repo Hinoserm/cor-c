@@ -1777,8 +1777,28 @@ public sealed partial class Binder
             while (element.IsArray && element.Element is Type inner) element = inner;
             if (RefLike(element))
             {
-                Error(r, $"CS0611: Array elements cannot be of type '{element.Shown()}'");
+                RefuseRefLikeArgument(r, $"CS0611: Array elements cannot be of type '{element.Shown()}'");
             }
+            return;
+        }
+        // `(Span<int>, int)` WRITTEN AS A TYPE: its items are ValueTuple's
+        // type arguments, which allow none (CS9244, each where it is written).
+        if (TupleArity(resolved) is int arity && resolved.Symbol is { } shape)
+        {
+            List<FieldSymbol> items = shape.Fields.Where(f => !f.Static).ToList();
+            string generic = "(" + string.Join(", ", Enumerable.Range(1, arity).Select(k => "T" + k)) + ")";
+            for (int i = 0; i < items.Count; i++)
+            {
+                TypeRef at = i < r.Args.Count ? r.Args[i] : r;
+                if (RefLike(items[i].Type)) RefuseRefLikeArgument(at, RefLikeArgument(items[i].Type, "T" + (i + 1), generic));
+                else if (i < r.Args.Count) RefLikeUses(r.Args[i], items[i].Type);
+            }
+            return;
+        }
+        // `Span<int>?`: Nullable<T>'s T allows no ref struct (CS9244).
+        if (resolved.IsNullableValue && resolved.AsNonNullable() is { } under && RefLike(under))
+        {
+            RefuseRefLikeArgument(r, RefLikeArgument(under, "T", "Nullable<T>"));
             return;
         }
         if (resolved.AsNonNullable().Symbol is not { Decl: { Specialised: true } d } made || d.TemplateParams is not { } ps
@@ -1804,6 +1824,92 @@ public sealed partial class Binder
                 RefLikeUses(written[i], argument);
             }
         }
+    }
+
+    /// <summary>
+    /// A GENERIC METHOD'S WRITTEN TYPES THAT NAME NONE OF ITS TYPE PARAMETERS
+    /// -- `List<Span<int>>`, `Span<int>[]`, `(Span<int>, int)` -- are what
+    /// they are in every copy, and in none if it is never called: Roslyn
+    /// refuses a ref struct in them where it is written (CS0611, CS9244), and
+    /// so does this, from its template. Only those refusals: anything else a
+    /// name says outside its body's context is the copies' to say.
+    /// </summary>
+    private void CheckTemplateTypes(MethodDecl md, TypeDecl owner, TypeSymbol sym)
+    {
+        if (md.Body is null || _quiet > 0 || !_templatesChecked.Add(md) || IsLibraryDecl(owner)) return;
+        HashSet<string> open = new(StringComparer.Ordinal);
+        foreach (TypeParam p in md.TypeParams) open.Add(p.Name);
+        foreach (TypeParam p in owner.TypeParams) open.Add(p.Name);
+        MemberDecl? before = _member;
+        _member = md;
+        try
+        {
+            foreach (Node n in SafetyNodes(md.Body, intoLambdas: true))
+            {
+                TypeRef? written = n switch
+                {
+                    LocalDecl d => d.Type,
+                    NewExpr nw => nw.Type,
+                    CastExpr c => c.Type,
+                    AsExpr a => a.Type,
+                    IsExpr i => i.Type,
+                    TypeOfExpr o => o.Type,
+                    DefaultExpr de => de.Type,
+                    _ => null,
+                };
+                if (written is not { Written: true } || written.Name is "var" or "" || MentionsAny(written, open)) continue;
+                int errors = _r.Errors.Count, warnings = _r.Warnings.Count;
+                Type resolved = Resolve(written, sym);
+                // Resolve checks a written type only outside a copy, and a
+                // generic type's template is shared code (Canon): asked here.
+                bool said = false;
+                for (int k = errors; k < _r.Errors.Count; k++)
+                    said |= _r.Errors[k].Message.StartsWith("CS0611:", StringComparison.Ordinal) || _r.Errors[k].Message.StartsWith("CS9244:", StringComparison.Ordinal);
+                if (!said && resolved.Symbol?.Decl is { Specialised: false }) TemplateArgumentsRefLike(written, resolved, sym);
+                else if (!said) RefLikeUses(written, resolved);
+                if (n is NewExpr { ArraySize: not null } && RefLike(resolved))
+                    RefuseRefLikeArgument(written, $"CS0611: Array elements cannot be of type '{resolved.Shown()}'");
+                for (int k = _r.Errors.Count - 1; k >= errors; k--)
+                    if (!_r.Errors[k].Message.StartsWith("CS0611:", StringComparison.Ordinal) && !_r.Errors[k].Message.StartsWith("CS9244:", StringComparison.Ordinal))
+                        _r.Errors.RemoveAt(k);
+                _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
+            }
+        }
+        finally { _member = before; }
+    }
+
+    private readonly HashSet<MethodDecl> _templatesChecked = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A declaration of the class library's (or one of no source, as IsLibraryType counts it).</summary>
+    private static bool IsLibraryDecl(TypeDecl d) => d.SourcePath is not { } path || LibrarySource is null || LibrarySource(path);
+
+    /// <summary>
+    /// A generic type named with its arguments where no copy is made of it
+    /// (a template's body): each argument against the parameter it is given
+    /// to, at any depth (CS9244), as RefLikeUses asks a copy.
+    /// </summary>
+    private void TemplateArgumentsRefLike(TypeRef r, Type resolved, TypeSymbol context)
+    {
+        if (r.Args.Count == 0 || resolved.AsNonNullable().Symbol?.Decl is not { } d) return;
+        List<TypeParam> ps = d.TemplateParams ?? d.TypeParams;
+        if (ps.Count != r.Args.Count) return;
+        string generic = BoxedFaces.Plain(d.Template ?? d.Name) + "<" + string.Join(", ", ps.Select(p => p.Name)) + ">";
+        for (int i = 0; i < ps.Count; i++)
+        {
+            Type argument = Resolve(r.Args[i], context);
+            if (RefLike(argument) && !ps[i].AllowsRefStruct) RefuseRefLikeArgument(r.Args[i], RefLikeArgument(argument, ps[i].Name, generic));
+            else if (argument.IsArray && argument.Element is Type element && RefLike(element))
+                RefuseRefLikeArgument(r.Args[i], $"CS0611: Array elements cannot be of type '{element.Shown()}'");
+            else TemplateArgumentsRefLike(r.Args[i], argument, context);
+        }
+    }
+
+    /// <summary>Whether a written type names any of these type parameters, at any depth.</summary>
+    private static bool MentionsAny(TypeRef r, HashSet<string> names)
+    {
+        if (names.Contains(r.Name)) return true;
+        foreach (TypeRef a in r.Args) if (MentionsAny(a, names)) return true;
+        return false;
     }
 
     /// <summary>C#'s refusal of a type argument that does not meet `new()` (CS0310).</summary>
@@ -1921,6 +2027,7 @@ public sealed partial class Binder
         // handler: across the unit, now that every body is bound
         // (Binder.AwaitChecks).
         b.CheckAsyncSafety();
+        b.ReleaseHeldCopyErrors();
         // WHAT LOWERING BINDS IS ITS OWN, not a body someone wrote: only a
         // body it asks for (WantBodyLate) has its members' access checked.
         b._r.OnMemberBound(null);
@@ -1999,25 +2106,88 @@ public sealed partial class Binder
             return;
         }
 
-        // A GENERIC COPY MADE OVER A REF STRUCT says nothing of its own: the
-        // use that made it is refused (CS9244, RefuseRefLikeArgument), and the
-        // library's List<T> bound over a Span said a hundred things C# never
-        // gets to.
-        if (_refLikeArgumentRefused && InGenericCopy()) return;
         CompileError said = new(Where(at), at.Line, at.Col, message);
+        // A GENERIC COPY MADE OVER A REF STRUCT where its parameter allows
+        // none says nothing of its own once the use that made it is refused
+        // (CS9244, RefuseRefLikeArgument): the library's List<T> bound over a
+        // Span said a hundred things C# never gets to. ONLY SUCH A COPY: any
+        // other's errors are the program's. Held until a refusal is said,
+        // and shown after all if none ever is (ReleaseHeldCopyErrors), so
+        // that nothing is ever hidden from a build that would pass.
+        if (InGenericCopy() && CopyOverRefLike())
+        {
+            if (_refLikeArgumentRefused) return;
+            if (!_heldReleased)
+            {
+                (_heldCopyErrors ??= new()).Add(said);
+                return;
+            }
+        }
         _r.Errors.Add(said);
-        if (InGenericCopy()) (_copyErrors ??= new()).Add(said);
     }
 
-    /// <summary>Whether a ref struct was refused as a type argument (CS9244): the copies made of it are quiet since.</summary>
+    /// <summary>Whether a ref struct was refused as a type argument (CS9244) or an array's element (CS0611).</summary>
     private bool _refLikeArgumentRefused;
 
-    /// <summary>What generic copies said before one was: taken back then.</summary>
-    private List<CompileError>? _copyErrors;
+    /// <summary>What copies over a ref struct said before any refusal was: dropped then, or shown at the end.</summary>
+    private List<CompileError>? _heldCopyErrors;
+
+    /// <summary>Whether binding has ended: a copy's errors go straight in since.</summary>
+    private bool _heldReleased;
+
+    /// <summary>
+    /// The end of binding: what copies over a ref struct said, shown where
+    /// no refusal explains it -- a ref struct reached a copy some way no
+    /// check refuses, and the program is not to build as though it had not.
+    /// </summary>
+    private void ReleaseHeldCopyErrors()
+    {
+        _heldReleased = true;
+        if (_heldCopyErrors is null) return;
+        if (!_refLikeArgumentRefused) _r.Errors.AddRange(_heldCopyErrors);
+        _heldCopyErrors = null;
+    }
+
+    /// <summary>
+    /// Whether the code being bound is a copy over a ref struct where its
+    /// template's parameter allows none: `List$Span$int`, a type nested in
+    /// one, or a type over one of those (`IEnumerable<List<Span<int>>>`).
+    /// </summary>
+    private bool CopyOverRefLike()
+    {
+        for (TypeSymbol? t = _thisType; t is not null; )
+        {
+            if (OverRefLike(t, 0)) return true;
+            if (t.Decl?.Outer is not { } outer || !FindMadeType(outer, out TypeSymbol? up) || up is null || ReferenceEquals(up, t)) break;
+            t = up;
+        }
+        return false;
+    }
+
+    private bool OverRefLike(TypeSymbol t, int depth)
+    {
+        if (depth > 8 || t.Decl is not { Specialised: true } d) return false;
+        if (_overRefLike.TryGetValue(t, out bool known)) return known;
+        bool over = false;
+        List<TypeParam>? ps = d.TemplateParams;
+        for (int i = 0; i < t.TemplateArgTypes.Count && !over; i++)
+        {
+            Type a = t.TemplateArgTypes[i];
+            bool allows = ps is not null && i < ps.Count && ps[i].AllowsRefStruct;
+            over = RefLike(a) && !allows
+                   || a.IsArray && a.Element is Type e && RefLike(e)
+                   || a.AsNonNullable().Symbol is { } inner && !ReferenceEquals(inner, t) && OverRefLike(inner, depth + 1);
+        }
+        _overRefLike[t] = over;
+        return over;
+    }
+
+    private readonly Dictionary<TypeSymbol, bool> _overRefLike = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// A REF STRUCT AS A TYPE ARGUMENT, refused where it was written (CS9244),
-    /// and what the copies made of it said, before or after, taken back.
+    /// or as an array's element (CS0611): what the copies made over it said
+    /// is dropped, before (held) or after (Error).
     /// </summary>
     private void RefuseRefLikeArgument(Node at, string message)
     {
@@ -2028,12 +2198,7 @@ public sealed partial class Binder
             _r.Errors.Add(new CompileError(Where(at), at.Line, at.Col, message));
             return;
         }
-        if (_copyErrors is not null)
-        {
-            HashSet<CompileError> made = new(_copyErrors);
-            _r.Errors.RemoveAll(made.Contains);
-            _copyErrors = null;
-        }
+        _heldCopyErrors = null;
         _refLikeArgumentRefused = true;
         _r.Errors.Add(new CompileError(Where(at), at.Line, at.Col, message));
     }
@@ -3927,6 +4092,7 @@ public sealed partial class Binder
             {
                 _bodyWork.Add((d, sym, null));
             }
+            else if (d.TypeParams.Count > 0 && !d.Specialised) _templateDecls.Add(d);
         }
 
         // AND THE BODIES OF THE EXTENDING DECLARATIONS, which the loop above
@@ -3948,6 +4114,9 @@ public sealed partial class Binder
         _bodiesListed = true;
     }
 
+    /// <summary>The unit's generic types as written, for their templates' written types (CheckBodyWork).</summary>
+    private readonly List<TypeDecl> _templateDecls = new();
+
     private void CheckBodyWork()
     {
         // Still serial until synthetic symbols and binding results have
@@ -3959,6 +4128,25 @@ public sealed partial class Binder
         _inBodies = true;
         try
         {
+            // A GENERIC TYPE'S METHODS, unchecked as templates, still have their
+            // written types that name none of the type parameters refused where
+            // they hold a ref struct, as Roslyn refuses them (CheckTemplateTypes):
+            // a type never instantiated has no copy to say it. Once the list is
+            // made and the bodies are under way, so that a copy one asks for
+            // joins the work with its arguments resolved.
+            foreach (TypeDecl d in _templateDecls)
+            {
+                if (d.TypeParams.Count == 0 || d.Specialised || IsLibraryDecl(d)) continue;
+                if (!_r.Types.TryGetValue(TypeKey(d), out TypeSymbol? template) || !ReferenceEquals(template.Decl, d) || template.MembersPending) continue;
+                TypeSymbol? thisBefore = _thisType;
+                _thisType = template;
+                try
+                {
+                    foreach (MethodDecl md in d.Members.OfType<MethodDecl>()) CheckTemplateTypes(md, d, template);
+                }
+                finally { _thisType = thisBefore; }
+            }
+
             for (int ordinal = 0; ; ordinal++)
             {
                 // AND WHAT THE BODIES CHECKED SO FAR USE, through a table no
@@ -7210,6 +7398,9 @@ public sealed partial class Binder
             // what gets checked and compiled.
             if (md.TypeParams.Count > 0)
             {
+                // Its written types that name none of its type parameters are
+                // checked here, once: no copy is made of a method never called.
+                CheckTemplateTypes(md, d, sym);
                 continue;
             }
 
@@ -7411,6 +7602,10 @@ public sealed partial class Binder
 
     private void Declare(Node at, string name, Sym sym)
     {
+        // A ref struct's local however declared -- `out var`, a pattern's, a
+        // foreach's -- in an async method or an iterator: the suspension
+        // walk refuses a use across one (CS4007).
+        if (sym is LocalSym { IsRef: false } declared && RefLike(declared.Type)) _sawRefLocal = true;
         // A generic local function being probed is told what it declares
         // itself: never a variable it captures through a call
         // (SettleGenericCaptures).
@@ -11278,6 +11473,11 @@ public sealed partial class Binder
         // An async or iterator lambda or local function's own ref locals: no use across a suspension (CS9217).
         // Not in a trial binding (quiet): the real one walks it again and is heard.
         if (_sawRefLocal && _quiet == 0 && lam.BlockBody is { } lambdaBody && (lam.Async || lambdaBody.Iterator)) CheckRefLocalsAcrossSuspensions(lambdaBody);
+        // And how far its ref structs' values go, as a method's
+        // (Binder.RefSafety): `() => { Span<int> t = stackalloc int[4];
+        // return t; }` is CS8352 in a lambda as anywhere.
+        if (_quiet == 0 && !InGenericCopy() && (RefLike(closureReturns) || _sawRefLocal || run.Params.Any(p => RefLike(p.Type))))
+            CheckRefSafety(body, closureReturns);
         _sawRefLocal = outerSawRefLocal;
         _r.FrameSize[body] = _nextSlot;
         PopScope();
@@ -12899,6 +13099,10 @@ public sealed partial class Binder
         int overrides = _r.WantedOverrides.Count;
         int wanting = _r.Wanting.Count;
         HashSet<string>? anonymous = _r.AnonymousDelegates.Count > 0 ? new(_r.AnonymousDelegates, StringComparer.Ordinal) : null;
+        // And whether another round is wanted: what the look asked for (a
+        // natural type's delegate, a type not made yet) the real check asks
+        // again, and a round asked for nothing declares nothing.
+        bool reexpand = _r.Reexpand;
         // WHAT THE LOOK DECLARED IS TAKEN BACK TOO. An `out var` or a pattern
         // variable in the expression declares a name in the scope it is
         // checked in, and the real check that follows declares it again: a
@@ -12932,6 +13136,7 @@ public sealed partial class Binder
         Trim(_r.Wanting, wanting);
         if (anonymous is null) _r.AnonymousDelegates.Clear();
         else _r.AnonymousDelegates.IntersectWith(anonymous);
+        _r.Reexpand = reexpand;
         return had;
     }
 
@@ -18219,6 +18424,11 @@ public sealed partial class Binder
                         had.Add(checkedOne);
                     }
                     Type element = type;
+                    // `new Span<int>[n]`: refused at the element's type (CS0611).
+                    if (nw.Type.Name.Length != 0 && RefLike(element) && !InGenericCopy())
+                    {
+                        RefuseRefLikeArgument(nw.Type, $"CS0611: Array elements cannot be of type '{element.Shown()}'");
+                    }
                     if (nw.Type.Name.Length == 0)
                     {
                         if (BestCommonType(had) is not Type best)
@@ -18230,6 +18440,12 @@ public sealed partial class Binder
                             return Type.Error;
                         }
                         element = best;
+                        // `new[] { span }`: an array of a ref struct no less
+                        // for being unwritten (CS0611, at the `new`).
+                        if (RefLike(element) && !InGenericCopy())
+                        {
+                            RefuseRefLikeArgument(nw, $"CS0611: Array elements cannot be of type '{element.Shown()}'");
+                        }
                     }
 
                     for (int i = 0; i < written.Count; i++)
@@ -18269,6 +18485,11 @@ public sealed partial class Binder
                     if (!size.IsError && !size.IsInteger)
                     {
                         Error(nw.ArraySize, $"an array length must be an integer, not '{size}'");
+                    }
+                    // `new Span<int>[n]`: refused at the element's type (CS0611).
+                    if (RefLike(type) && !InGenericCopy())
+                    {
+                        RefuseRefLikeArgument(nw.Type, $"CS0611: Array elements cannot be of type '{type.Shown()}'");
                     }
                     return Type.ArrayOf(type);
                 }
@@ -26613,6 +26834,7 @@ public sealed partial class Binder
 
             // `where T : new()` OF THE METHOD, against what T was given or
             // worked out to be (CS0310).
+            bool refusedCopy = false;
             if (spelt.Count == best.TypeParams.Count)
             {
                 for (int i = 0; i < given.Count && i < generic.TypeParams.Count; i++)
@@ -26626,14 +26848,16 @@ public sealed partial class Binder
                     if (RefLike(given[i]) && !generic.TypeParams[i].AllowsRefStruct && !InGenericCopy())
                     {
                         // At the call's start, as Roslyn says it: the name called.
-                        Node callStart = c.Target;
-                        while (callStart is MemberExpr { Target: { } inner }) callStart = inner;
-                        RefuseRefLikeArgument(callStart, RefLikeArgument(given[i], generic.TypeParams[i].Name,
+                        RefuseRefLikeArgument(Start(c.Target), RefLikeArgument(given[i], generic.TypeParams[i].Name,
                             best.Owner.Name + "." + best.Name + "<" + string.Join(", ", generic.TypeParams.Select(p => p.Name)) + ">("
                             + string.Join(", ", generic.Params.Select(p => p.Type.Name)) + ")"));
+                        refusedCopy = true;
                     }
                 }
             }
+            // NO COPY OVER A REFUSED REF STRUCT: the program does not build,
+            // and the copy's body over it would only say what C# never does.
+            if (refusedCopy) spelt.Clear();
 
             // A TYPE ARGUMENT ONLY RUN TIME KNOWS: a shared copy's T, or a
             // shared method copy's own, handed on (Type.CanonParam). The

@@ -330,12 +330,15 @@ public static class Header
         // `this` is just as much part of a callable signature as `ref` and
         // `out`: dropping it turns an extension method in a compiled library
         // into an ordinary static method for every consuming compilation.
-        string by = p.IsThis ? "this " : p.IsParams ? "params " : p.IsOut ? "out " : p.IsRef ? "ref " : "";
+        // How it is passed, `in` kept as `in` (a ref the callee may not
+        // write), and for a receiver after `this`: `this ref Point p`.
+        string passed = p.IsOut ? "out " : p.IsRef ? (p.IsReadOnlyRef ? "in " : "ref ") : "";
 
         // And `scoped`, which a caller's escape rules ask (Binder.RefSafety):
         // after `this`, the one order C# reads for an extension's receiver.
         string scoped = p.IsScoped ? "scoped " : "";
-        return (p.IsThis ? by + scoped : scoped + by) + Spell(p.Type, made) + " " + Lexer.Identifier(p.Name);
+        string by = p.IsThis ? "this " + scoped + passed : p.IsParams ? scoped + "params " : scoped + passed;
+        return by + Spell(p.Type, made) + " " + Lexer.Identifier(p.Name);
     }
 
     private static void TypeParams(StringBuilder s, List<TypeParam> ps)

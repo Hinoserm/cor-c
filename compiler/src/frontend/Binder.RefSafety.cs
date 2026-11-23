@@ -211,10 +211,11 @@ public sealed partial class Binder
             case NameExpr name when _r.Resolved.TryGetValue(name, out Sym? sym):
                 return sym switch
                 {
-                    // A ref local is as wide as what it refers to, which this
-                    // check does not follow: taken as the caller's, so that a
-                    // valid alias is never refused.
-                    LocalSym { IsRef: true } => 0,
+                    // A ref local is as wide as what it refers to: the
+                    // caller's where it may be returned by reference
+                    // (RefEscapes: a ref parameter's, a field's, an
+                    // element's), this method's where it aliases a local.
+                    LocalSym { IsRef: true } alias => alias.RefEscapes ? 0 : 1,
                     LocalSym local => _refSafety.TryGetValue(local, out var known) ? known.Declared : 1,
                     ParamSym { ByRef: true } => 0,
                     ParamSym => 1,
@@ -334,7 +335,8 @@ public sealed partial class Binder
     /// <summary>
     /// A value that may not go where it goes, said at what made it so: a
     /// variable (CS8352), a stackalloc (CS8353), a call's result and then its
-    /// argument (CS8347), a reference to a local returned (CS8168).
+    /// argument (CS8347), a reference to a local returned (CS8168), or a ref
+    /// local bound to one (CS8157).
     /// </summary>
     private void EscapeRefused(Expr e, int allowed, bool returning)
     {
@@ -386,7 +388,8 @@ public sealed partial class Binder
             Expr variable = args[culprit] is RefArgExpr { Target: { } written } ? written : args[culprit];
             if (returning && variable is NameExpr local && _r.Resolved.TryGetValue(local, out Sym? sym))
             {
-                if (sym is LocalSym) Error(local, $"CS8168: Cannot return local '{local.Name}' by reference because it is not a ref local");
+                if (sym is LocalSym { IsRef: true }) Error(local, $"CS8157: Cannot return '{local.Name}' by reference because it was initialized to a value that cannot be returned by reference");
+                else if (sym is LocalSym) Error(local, $"CS8168: Cannot return local '{local.Name}' by reference because it is not a ref local");
                 else if (sym is ParamSym) Error(local, $"CS8166: Cannot return a parameter by reference '{local.Name}' because it is not a ref parameter");
             }
             return;
@@ -405,7 +408,6 @@ public sealed partial class Binder
         return owner + "." + name + "(" + string.Join(", ", ps) + ")";
     }
 
-    /// <summary>Where an expression starts, as Roslyn places a call's message: the leftmost of a member chain.</summary>
     /// <summary>
     /// Where an expression begins, as Roslyn places its diagnostics: the
     /// start of `a.b`, `a[i]` and `a.b(c)` is `a`'s.

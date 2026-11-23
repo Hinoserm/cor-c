@@ -402,8 +402,14 @@ public sealed partial class Binder
         if (_thisType?.Decl is TypeDecl host) foreach (TypeParam tp in host.TypeParams) open.Remove(tp.Name);
         List<string> carried = open.OrderBy(n => n, StringComparer.Ordinal).ToList();
         template.CarriedTypeParams = carried;
+        // Each keeps the `allows ref struct` it was declared with.
+        List<TypeParam> declared = (_member as MethodDecl)?.TypeParams ?? new();
         for (int k = carried.Count - 1; k >= 0; k--)
-            template.WritableTypeParams.Insert(0, new TypeParam { Name = carried[k], Line = template.Line, Col = template.Col });
+            template.WritableTypeParams.Insert(0, new TypeParam
+            {
+                Name = carried[k], Line = template.Line, Col = template.Col,
+                AllowsRefStruct = declared.Any(tp => tp.Name == carried[k] && tp.AllowsRefStruct),
+            });
 
         if (template.Body is null) return;
         int at = 0;
