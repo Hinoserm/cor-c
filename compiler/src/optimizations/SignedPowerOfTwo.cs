@@ -2,7 +2,11 @@
 using Corsac.Lang.Ir;
 namespace Corsac.Lang.Opt;
 
-/// <summary>Signed power-of-two division with a bias that preserves truncation toward zero.</summary>
+/// <summary>
+/// Signed power-of-two division with a bias that preserves truncation toward
+/// zero; and a 64-bit runtime division helper whose divisor has become a
+/// constant turned back into the IR division the backend does inline.
+/// </summary>
 public sealed class SignedPowerOfTwo : IPass
 {
     public string Name => "signed-power-of-two";
@@ -21,6 +25,21 @@ public sealed class SignedPowerOfTwo : IPass
                 // division as these compiler-owned arithmetic helpers. They
                 // obey the same signed quotient/remainder contract; unrelated
                 // calls must never be treated as pure arithmetic.
+                // A CONSTANT DIVISOR TO ANY OF THE FOUR, found once propagation
+                // has made it one (a divisor wider than 32 bits, whose
+                // run-time test folded to the call): the IR division again,
+                // which the backend divides by a constant inline -- its
+                // reciprocal, a shift, a compare above 2^63 (Select.
+                // UnsignedByConstant) -- never a call. Zero, and -1 signed,
+                // stay the runtime's: the checks before them throw.
+                if (i.Op == Opcode.Call && i.Dest?.Type == IrType.I64 && i.Operands.Count == 2
+                    && i.Operands[1] is ImmOperand { Value: not 0 } constantDivisor
+                    && RuntimeDivision(i.Callee) is Opcode arithmetic
+                    && !(arithmetic is Opcode.DivS or Opcode.RemS && constantDivisor.Value == -1))
+                {
+                    result ??= block.Instrs.GetRange(0, n);
+                    i = new Instr { Op = arithmetic, Dest = i.Dest, Line = i.Line, Operands = { i.Operands[0], i.Operands[1] } };
+                }
                 Opcode operation = i.Op;
                 if (i.Op == Opcode.Call && i.Dest?.Type == IrType.I64)
                     operation = i.Callee switch
@@ -75,4 +94,14 @@ public sealed class SignedPowerOfTwo : IPass
             if (result is not null) { block.Instrs.Clear(); block.Instrs.AddRange(result); }
         }
     }
+
+    /// <summary>The IR division a runtime helper of lowering's 64-bit division is, by its label; null for any other call.</summary>
+    private static Opcode? RuntimeDivision(string? callee) => callee switch
+    {
+        "m_Runtime_DivU_2_V$I64_V$I64_r$V$I64" => Opcode.DivU,
+        "m_Runtime_RemU_2_V$I64_V$I64_r$V$I64" => Opcode.RemU,
+        "m_Runtime_DivS_2_V$I64_V$I64_r$V$I64" => Opcode.DivS,
+        "m_Runtime_RemS_2_V$I64_V$I64_r$V$I64" => Opcode.RemS,
+        _ => null,
+    };
 }

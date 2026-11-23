@@ -10623,8 +10623,8 @@ public static class Gc
     /// registers included; `cut` the words cleared. Answers the words found
     /// in statics, roots and the heap; -1 when no collection could be made.
     /// For a kernel taking a module's image out whatever still points in.
-    /// The answer is the first round's count, taken before anything was cut
-    /// or moved: what pointed in, not what still does. Strings still listed
+    /// The answer is the words the first round's walk found -- cutting as it
+    /// went, before any string was moved: what pointed in, not what still does. Strings still listed
     /// after the rounds are cleared by the last, as any other reference.
     ///
     /// EACH CALL ITS OWN STATE (CutState): two modules taken out at once
@@ -10677,9 +10677,10 @@ public static class Gc
             object?[] copies = new object?[count];
             for (nuint i = 0; i < count; i++)
             {
-                for (nuint j = 0; j < i; j++)
-                    if (literals[j] == literals[i]) { copies[i] = copies[j]; break; }
-                if (copies[i] != null) continue;
+                bool seen = false;
+                for (nuint j = 0; j < i && !seen; j++)
+                    if (literals[j] == literals[i]) { copies[i] = copies[j]; seen = true; }
+                if (seen) continue;
                 string? text = Sys.ObjectAt(literals[i]) as string;
                 if (text != null) copies[i] = new string(text.ToCharArray());
             }
@@ -10855,8 +10856,13 @@ public static class Gc
         if (state != null && described)
         {
             nuint[]? moving = state.Slots;
-            // A string's header word read only where it is inside the range.
-            bool literal = moving != null && word + (nuint)WordSize.Bytes <= high && Sys.ReadAddress(word) == state.StringVt;
+            // A STRING WHOLLY INSIDE THE RANGE: its header word read only
+            // there, then its length, then its characters' end -- a stray
+            // word that only looked like a string's header is cleared, never
+            // copied from past the range.
+            bool literal = moving != null && word + (nuint)WordSize.Bytes <= high && Sys.ReadAddress(word) == state.StringVt
+                && word + (nuint)ArrayCountAt + (nuint)WordSize.Bytes <= high
+                && word + (nuint)ArrayCountAt + (nuint)WordSize.Bytes + 2 * (Sys.ReadAddress(word + (nuint)ArrayCountAt) & 0x7FFFFFFF) <= high;
             if (literal)
             {
                 // A STRING PAST THE LIST'S END is left for the next round,

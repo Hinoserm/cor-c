@@ -108,7 +108,9 @@ public sealed class X86Cpu
         "pentium4" => 12,
         "pentium-mmx" or "pentium2" or "pentium3" => 16,
         "k6" or "k6-2" or "k6-3" or "k6-2+" or "k6-3+" => 32,
-        _ => 64,
+        "athlon" or "athlon-xp" or "athlon64" or "geode-lx" or "6x86mx" => 64,
+        // A model added without its cache is a decision not made: refused.
+        _ => throw new InvalidOperationException($"no instruction cache size for --cpu={Name}"),
     };
 
     public bool Pentium => Has(X86Feature.Pentium);

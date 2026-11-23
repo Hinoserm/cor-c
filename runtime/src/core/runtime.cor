@@ -5979,11 +5979,13 @@ public static partial class Runtime
 
     // ---- 64-bit division on a 32-bit machine -----------------------------------
     //
-    // The 486 divides 64 by 32 at best. These are the shift-and-subtract
-    // routines every `/` and `%` on a long becomes, so NOTHING in them may
-    // divide a long, or the call would recurse until the stack ran out. Only
-    // shifts, compares, subtraction and bit operations, all of which the
-    // backend does on register pairs.
+    // The 486 divides 64 by 32 at best. These are what a `/` or `%` on a
+    // long calls where the compiler does not expand it inline (a small
+    // instruction cache, a divisor wider than 32 bits: Lowering.
+    // MachineDivide), so NOTHING in them may divide a long, or the call
+    // would recurse until the stack ran out: 32-bit DIVs (DivLU), shifts,
+    // compares, multiplies and subtraction, which the backend does on
+    // register pairs.
 
     /// Leading zero bits of an unsigned value; 64 for zero. BSR on a half
     /// (Sys.BitScanReverse), because DivU calls it twice per division.
@@ -5997,20 +5999,6 @@ public static partial class Runtime
         uint low = (uint)x;
         return low == 0 ? 64 : 63 - Sys.BitScanReverse(low);
     }
-
-    /// Unsigned quotient. The divisor is lined up with the dividend's top set
-    /// bit and walked down one bit at a time, so a small quotient costs a few
-    /// steps and a full 64-bit one costs 64. A zero divisor answers zero: the
-    /// compiler checks for zero before it calls, so this cannot be reached
-    /// from `/`, and the callers inside this file never pass one.
-    // A DIVISOR THAT FITS IN 32 BITS -- every time conversion, every stride
-    // and size, nearly every division there is -- goes through the
-    // processor's 32-bit DIV: the high word once, then what is left with the
-    // low word by Hacker's Delight's divlu (two 32-by-16 steps on 16-bit
-    // halves, the divisor normalized), all in uint, which the backend divides
-    // with one instruction. The walk below took up to 64 steps of 64-bit
-    // shifts, compares and subtractions; the NT shared page's clock, divided
-    // five times a round, was a fifth of a dual Pentium's time in it.
 
     /// Leading zero bits of a 32-bit value; 32 for zero.
     private static int Clz32(uint x)
@@ -6094,6 +6082,11 @@ public static partial class Runtime
         return ((ulong)qhi << 32) | (ulong)qlo;
     }
 
+    /// Unsigned quotient. A divisor of 32 bits by the processor's DIV
+    /// (UDivShort), a wider one by the normalised division (UDivLong). A zero
+    /// divisor answers zero: the compiler checks for zero before it calls,
+    /// so this cannot be reached from `/`, and the callers inside this file
+    /// never pass one.
     private static ulong UDiv(ulong a, ulong b)
     {
         if (b == (ulong)0 || a < b)
@@ -6105,7 +6098,8 @@ public static partial class Runtime
             ulong unused;
             return UDivShort(a, (uint)b, out unused);
         }
-        return UDivLong(a, b);
+        ulong unusedRemainder;
+        return UDivLong(a, b, out unusedRemainder);
     }
 
     /// A DIVISOR OF MORE THAN 32 BITS, so a quotient of at most 32: one
@@ -6113,7 +6107,7 @@ public static partial class Runtime
     /// normalised, and a correction of at most one (Hacker's Delight, figure
     /// 9-5, divDu; MSVC's _aulldiv takes the same shift). It was a loop of up
     /// to 64 shifts, compares and subtractions, a bit of quotient each.
-    private static ulong UDivLong(ulong a, ulong b)
+    private static ulong UDivLong(ulong a, ulong b, out ulong remainder)
     {
         int n = Clz32((uint)(b >> 32));                 // 0..31: the top word is not zero
         uint top = (uint)((b << n) >> 32);              // at least 2^31
@@ -6125,17 +6119,18 @@ public static partial class Runtime
         {
             q = q - 1;
         }
-        if (a - q * b >= b)
+        ulong left = a - q * b;
+        if (left >= b)
         {
             q = q + 1;
+            left = left - b;
         }
+        remainder = left;
         return q;
     }
 
     /// Unsigned remainder: by the 32-bit path, or what the long division
     /// leaves.
-    // PUBLIC: the half every image's compiled code calls, its front inlined
-    // there, a program's or a module's (Inline.CrossesImage).
     public static ulong URem(ulong a, ulong b)
     {
         if (b == (ulong)0)
@@ -6152,7 +6147,9 @@ public static partial class Runtime
             UDivShort(a, (uint)b, out left);
             return left;
         }
-        return a - UDivLong(a, b) * b;
+        ulong rest;
+        UDivLong(a, b, out rest);
+        return rest;
     }
 
     /// The magnitude of a signed value as an unsigned one. Negating

@@ -6110,7 +6110,9 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// The division itself: the machine's. On a 32-bit target a 64-bit one
+    /// The division itself: the machine's. On a 32-bit target with a cache
+    /// that holds it (InlinesLargeExpansions) a 64-bit one is the backend's
+    /// whole (Select.SelectDivide64), with no call. With a small cache it
     /// asks at run time whether the divisor is its low 32 bits extended, and
     /// divides inline where it is (Select.SelectDivide64: DIV once or twice,
     /// as Linux's div_u64_rem and MSVC's _aulldiv do; a constant, once the
@@ -6158,25 +6160,25 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// WHETHER CODE SIZE MAY BE SPENT FOR SPEED: an expansion of some thirty
-    /// instructions at every site, in place of a call, where the processor's
-    /// level-1 instruction cache is 32 KB or more (X86Cpu.InstructionCacheKb:
-    /// the K6, the Athlons, the Geode LX); a 386, 486, Pentium, P6 or Pentium
-    /// 4, with 8 to 16, keeps the call and the cache for the loop it is in.
+    /// WHETHER CODE SIZE MAY BE SPENT FOR SPEED: an expansion of some sixty
+    /// to eighty instructions at every site (a 64-bit division's three
+    /// paths and signs), in place of a call, where the processor's level-1
+    /// instruction cache is 32 KB or more (X86Cpu.InstructionCacheKb: the
+    /// K6, the Athlons, the Geode LX, the 6x86MX); a 386, 486, Pentium, P6 or
+    /// Pentium 4, with 8 to 16, keeps the call and the cache for the loop it
+    /// is in.
     /// </summary>
-    private static bool InlinesLargeExpansions => Target.Current.X86Profile.InstructionCacheKb >= 32;
+    private bool InlinesLargeExpansions => _t.X86Profile.InstructionCacheKb >= 32;
 
     /// <summary>A 64-bit division by the runtime's helper, for a divisor of more than 32 bits.</summary>
     private VReg RuntimeDivide(Node at, Opcode dop, VReg l, VReg r)
     {
+        string helper = dop switch
         {
-            string helper = dop switch
-            {
-                Opcode.DivS => "DivS", Opcode.DivU => "DivU", Opcode.RemS => "RemS", _ => "RemU",
-            };
-            MethodSymbol? h = RequireRuntime(at, helper, 2, "64-bit division");
-            return h is null ? l : _e.Call(CallLabel(h), IrType.I64, R(l), R(r))!;
-        }
+            Opcode.DivS => "DivS", Opcode.DivU => "DivU", Opcode.RemS => "RemS", _ => "RemU",
+        };
+        MethodSymbol? h = RequireRuntime(at, helper, 2, "64-bit division");
+        return h is null ? l : _e.Call(CallLabel(h), IrType.I64, R(l), R(r))!;
     }
 
     /// <summary>

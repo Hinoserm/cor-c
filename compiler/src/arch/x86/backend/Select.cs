@@ -2328,25 +2328,24 @@ internal sealed partial class Selector
 
     /// <summary>
     /// A 64-BIT DIVISION OR REMAINDER INLINE, on a target with no 64-bit
-    /// divide (Lowering.MachineDivide gives the backend only those it can do
-    /// here; every other one is the runtime's DivU/RemU/DivS/RemS):
+    /// divide; every one Lowering.MachineDivide gives the backend:
     ///
-    /// - by a CONSTANT, a multiplication by its magic number: the high 64
-    ///   bits of the dividend times a 64-bit reciprocal, four MULs and the
-    ///   adds between them, and a shift (Granlund and Montgomery, as the
-    ///   32-bit DivideByConstant has it); a power of two a shift and a mask.
-    ///   A signed one divides the magnitudes and gives the signs back.
-    /// - by a value of 32 bits (zero-extended, or sign-extended for a signed
-    ///   division), DIV twice: the high word by the divisor, then the
-    ///   remainder and the low word -- whose quotient always fits, since the
-    ///   remainder is below the divisor; once, when the dividend's high word
-    ///   is known zero. The remainder is EDX either way.
+    /// - by a CONSTANT (UnsignedByConstant): a multiplication by its magic
+    ///   number -- the high 64 bits of the dividend times a 64-bit
+    ///   reciprocal, four MULs or two, and a shift (Granlund and Montgomery,
+    ///   as the 32-bit DivideByConstant has it); a power of two a shift and a
+    ///   mask; above 2^63 a compare; DIV for a 32-bit constant on a 386 or
+    ///   486, and on a Pentium where a remainder is wanted. A signed one
+    ///   divides the magnitudes and gives the signs back.
+    /// - by a value PROVED 32 BITS (zero-extended, or sign-extended for a
+    ///   signed division), DIV of the high word where it is at least the
+    ///   divisor, then of the remainder and the low word (DivideBy32).
+    /// - by ANY OTHER (SelectDivideAny64): its high word tested, DivideBy32
+    ///   or the normalised division.
     ///
-    /// The runtime's way was a call, then UDiv, then UDivShort and DivLU
-    /// with a loop of sixteen-bit steps; a kernel's clock divides by
-    /// 1000000000 and 1000 on every reading. False for anything else.
+    /// Always true: no 64-bit division leaves the backend as a call.
     /// </summary>
-    private bool SelectDivide64(Instr i, bool signed, bool rem)
+    private void SelectDivide64(Instr i, bool signed, bool rem)
     {
         Operand a = i.Operands[0];
         Operand d = i.Operands[1];
@@ -2358,24 +2357,24 @@ internal sealed partial class Selector
                 // Never run: the division-by-zero test before it throws. A
                 // constant zero reaches here only through folding.
                 Mov(Lo(i.Dest!), Imm(0)); Mov(Hi(i.Dest!), Imm(0));
-                return true;
+                return;
             }
             (MReg alo, MReg ahi) = Copied(a);
             if (!signed)
             {
                 (MReg qlo, MReg qhi, MReg rlo, MReg rhi) = UnsignedByConstant(alo, ahi, unchecked((ulong)c), rem);
                 Mov(Lo(i.Dest!), rem ? rlo : qlo); Mov(Hi(i.Dest!), rem ? rhi : qhi);
-                return true;
+                return;
             }
             MReg sign = SignOf(ahi);
             Negate(alo, ahi, sign);                       // the magnitude, 2^63 for MinValue
             ulong magnitude = c < 0 ? unchecked((ulong)(-c)) : (ulong)c;
             (MReg slo, MReg shi, MReg tlo, MReg thi) = UnsignedByConstant(alo, ahi, magnitude, rem);
-            if (rem) { Negate(tlo, thi, sign); Mov(Lo(i.Dest!), tlo); Mov(Hi(i.Dest!), thi); return true; }
+            if (rem) { Negate(tlo, thi, sign); Mov(Lo(i.Dest!), tlo); Mov(Hi(i.Dest!), thi); return; }
             if (c < 0) Emit(MOp.Not, sign);               // the quotient's sign is the dividend's, flipped
             Negate(slo, shi, sign);
             Mov(Lo(i.Dest!), slo); Mov(Hi(i.Dest!), shi);
-            return true;
+            return;
         }
 
         _rangeVisits = 0;
@@ -2383,7 +2382,7 @@ internal sealed partial class Selector
         if (!zeroHigh && !(signed && SignNarrow(d)))
         {
             SelectDivideAny64(i, signed, rem);
-            return true;
+            return;
         }
         MReg divisor = Temp();
         Mov(divisor, PairRM(d).Lo);
@@ -2392,7 +2391,7 @@ internal sealed partial class Selector
             (MOperand ulo, MOperand uhi) = PairRM(a);
             (MReg qlo, MReg qhi, MReg r) = DivideBy32(ulo, uhi, divisor, ZeroHigh(a));
             Mov(Lo(i.Dest!), rem ? r : qlo); Mov(Hi(i.Dest!), rem ? Imm(0) : qhi);
-            return true;
+            return;
         }
         (MReg nlo, MReg nhi) = Copied(a);
         MReg dividendSign = SignOf(nhi);
@@ -2414,11 +2413,11 @@ internal sealed partial class Selector
             Mov(leftHi, Imm(0));
             Negate(left, leftHi, dividendSign);
             Mov(Lo(i.Dest!), left); Mov(Hi(i.Dest!), leftHi);
-            return true;
+            return;
         }
         Negate(plo, phi, quotientSign);
         Mov(Lo(i.Dest!), plo); Mov(Hi(i.Dest!), phi);
-        return true;
+        return;
     }
 
     /// <summary>
@@ -2453,7 +2452,8 @@ internal sealed partial class Selector
         Emit(MOp.Test, bhi, bhi); Jcc(Cond.Ne, wide); Jmp(narrow);
 
         _cur = narrow;
-        (MReg nlo, MReg nhi, MReg left) = DivideBy32(alo, ahi, blo, false);
+        _rangeVisits = 0;
+        (MReg nlo, MReg nhi, MReg left) = DivideBy32(alo, ahi, blo, !signed && ZeroHigh(i.Operands[0]));
         Mov(qlo, nlo); Mov(qhi, nhi); Mov(rlo, left); Mov(rhi, Imm(0));
         Jmp(done);
 
@@ -2559,10 +2559,11 @@ internal sealed partial class Selector
 
     /// <summary>
     /// hi:lo / c and hi:lo % c, unsigned, c not zero. One: itself. A power
-    /// of two: a shift and a mask. Anything else: the high 64 bits of the
-    /// 128-bit product with c's magic number (MagicUnsigned64), shifted; the
-    /// remainder the dividend less the quotient times c. The remainder only
-    /// where it is asked for.
+    /// of two: a shift and a mask. Above 2^63: a compare, the quotient 0 or
+    /// 1. A 32-bit c on a 386 or 486, or on a Pentium with a remainder:
+    /// DivideBy32. Anything else: the high 64 bits of the 128-bit product
+    /// with c's magic number (MagicUnsigned64), shifted; the remainder the
+    /// dividend less the quotient times c, only where it is asked for.
     /// </summary>
     private (MReg Qlo, MReg Qhi, MReg Rlo, MReg Rhi) UnsignedByConstant(MReg lo, MReg hi, ulong c, bool wantRemainder)
     {
@@ -2605,13 +2606,15 @@ internal sealed partial class Selector
             }
             return (qlo, qhi, rlo, rhi);
         }
-        if ((CpuModel.Scalar || CpuModel.P5) && c <= uint.MaxValue)
+        if ((CpuModel.Scalar || CpuModel.P5 && wantRemainder) && c <= uint.MaxValue)
         {
-            // THE 386, THE 486 AND THE PENTIUM DIVIDE: MUL there takes 9 to
-            // 42 clocks by the multiplier's bits, 10 unpaired on a Pentium,
-            // against DIV's 38 to 41 (Intel 486 and Pentium manuals; Agner
-            // Fog), so the magic's four MULs -- seven with a remainder -- cost
-            // more than DIV's one or two.
+            // THE 386 AND THE 486 DIVIDE: MUL there takes 9 to 42 clocks by
+            // the multiplier's bits against DIV's 38 to 40 (Intel 486 manual;
+            // Agner Fog), so the magic's four MULs cost more than DIV's one or
+            // two. The PENTIUM, with MUL at 10 unpaired and DIV at 41, divides
+            // where a remainder is wanted -- the magic's seven multiplies then,
+            // DIV's EDX for nothing -- and multiplies for a quotient alone,
+            // some 45 clocks against DIV's 41 to 82.
             MReg constant = Temp();
             Mov(constant, Imm(unchecked((int)(uint)c)));
             (MReg dlo, MReg dhi, MReg left) = DivideBy32(lo, hi, constant, false);
@@ -2905,27 +2908,9 @@ internal sealed partial class Selector
             return;
         }
 
-        if (i.Dest!.Type == IrType.I64 && SelectDivide64(i, signed, rem)) return;
-
-        // NEVER REACHED BY AN I64 DIVISION, which SelectDivide64 always
-        // takes; kept for the backend's own tests, which build one by hand.
-        string helper = (signed, rem) switch
-        {
-            (true, false) => "__divdi3",
-            (false, false) => "__udivdi3",
-            (true, true) => "__moddi3",
-            _ => "__umoddi3",
-        };
-        (MOperand blo, MOperand bhi) = PairRM(i.Operands[1]);
-        (MOperand alo, MOperand ahi) = PairRM(i.Operands[0]);
-        Emit(MOp.Push, bhi);
-        Emit(MOp.Push, blo);
-        Emit(MOp.Push, ahi);
-        Emit(MOp.Push, alo);
-        CallSymbol(helper);
-        Emit(MOp.Add, Esp, Imm(16));
-        Mov(Lo(i.Dest), Eax);
-        Mov(Hi(i.Dest), Edx);
+        // EVERY 64-BIT DIVISION INLINE (SelectDivide64): no helper is called,
+        // and none is defined.
+        SelectDivide64(i, signed, rem);
     }
 
     private void SelectShift(Instr i)

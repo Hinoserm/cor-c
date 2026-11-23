@@ -23,7 +23,8 @@
 // 4609434218613702656
 //
 // WHAT A 32-BIT TARGET DOES WITHOUT A CALL: a 64-bit division or remainder
-// by a constant (a multiplication by its reciprocal, or DIV on a 386 or 486),
+// by a constant (a multiplication by its reciprocal, or DIV on a 386 or 486
+// and on a Pentium for a remainder),
 // by a value widened from 32 bits (DIV once or twice), signed and unsigned;
 // a checked multiply with no division back; and `%` on doubles by the x87's
 // FPREM. Every quotient and remainder against a division done a bit at a
