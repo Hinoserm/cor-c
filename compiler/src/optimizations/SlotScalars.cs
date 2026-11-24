@@ -63,7 +63,14 @@ public static class SlotScalars
     /// <summary>Whether any slot of the function was made registers.</summary>
     public static bool Apply(Function f)
     {
-        if (f.Async is not null || f.Slots.Count == 0 || IrTypes.Word != IrType.I32) return false;
+        if (f.Async is not null || f.Slots.Count == 0) return false;
+        // IN EITHER WORD: nothing here is the pointer's width. A field is its
+        // offset and width, typed by the access -- 1, 2 or 4 bytes as I32, 8 as
+        // I64 -- as LLVM's SROA and GCC's tree-sra key theirs by offset and
+        // size alone; an access whose width and type disagree (a 4-byte store
+        // of an I64 register) leaves the slot in memory. On x86-64 a gap the
+        // accesses leave is filled in quadwords, one register each, where on
+        // i386 a quadword is a pair anyway.
 
         // Registers that are nothing but a slot's address, or that address
         // and a constant: `r = copy &slot`, `r = add r0 n`, each written once.
@@ -173,6 +180,7 @@ public static class SlotScalars
 
         // EVERY BYTE IN A FIELD: the gaps no access names, in the widest
         // aligned pieces they hold.
+        bool quad = IrTypes.Word == IrType.I64;
         foreach (FrameSlot s in candidates)
         {
             if (!shape.TryGetValue(s, out var fields)) shape[s] = fields = new();
@@ -182,7 +190,7 @@ public static class SlotScalars
             {
                 while (at < start)
                 {
-                    int piece = at % 4 == 0 && at + 4 <= start ? 4 : at % 2 == 0 && at + 2 <= start ? 2 : 1;
+                    int piece = quad && at % 8 == 0 && at + 8 <= start ? 8 : at % 4 == 0 && at + 4 <= start ? 4 : at % 2 == 0 && at + 2 <= start ? 2 : 1;
                     fill.Add((at, piece));
                     at += piece;
                 }
