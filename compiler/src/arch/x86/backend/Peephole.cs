@@ -1837,7 +1837,9 @@ internal static class Peephole
     /// A LOAD THROUGH A REGISTER STAYS, read or not: its address may be a
     /// null reference's, and the fault it takes there is the program's
     /// NullReferenceException (Runtime.NullFault), as the IR's own dead-code
-    /// rule has it (IrInfo.IsPure). A frame's, a spill's or a static's is
+    /// rule has it (IrInfo.IsPure) -- whose one exception, a read of what the
+    /// link made (Instr.Immutable), has gone before here when unused, so none
+    /// is told apart at this level. A frame's, a spill's or a static's is
     /// memory the program owns, and goes with the register it fills.
     private static bool Removable(MInstr i)
         => i.Op is MOp.Mov or MOp.Lea or MOp.Movzx or MOp.Movsx or MOp.Cmov or MOp.Setcc

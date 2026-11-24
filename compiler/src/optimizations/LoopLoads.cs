@@ -183,7 +183,13 @@ public sealed class LoopLoads : IPass
         {
             if (!defs.IsSingle(address)) return true;
             if (defs.Site(address) is not { } site) return false;
-            Instr d = site.Block.Instrs[site.Index];
+            // AS THE BLOCK STANDS NOW: Hoist moves reads out of the block the
+            // definitions were found in, so the place found then may name
+            // another instruction, or none. A definition no longer there was
+            // a read moved -- never a sum.
+            Instr? d = site.Index < site.Block.Instrs.Count && site.Block.Instrs[site.Index].Dest == address
+                ? site.Block.Instrs[site.Index] : site.Block.Instrs.Find(i => i.Dest == address);
+            if (d is null) return false;
             if (d.Op is Opcode.Add or Opcode.Sub) return true;
             if (d.Op != Opcode.Copy || d.Operands is not [RegOperand { Reg: var from }]) return false;
             address = from;

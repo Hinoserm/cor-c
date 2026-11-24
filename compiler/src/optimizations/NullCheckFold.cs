@@ -31,6 +31,7 @@ public sealed class NullCheckFold : IPass
         HashSet<VReg>? used = null;
         Cfg? cfg = null;
         Defs? defs = null;
+        Dictionary<VReg, List<(Block Block, int Index)>>? accessed = null;
         foreach (Block block in function.Blocks)
         {
             for (int k = 0; k < block.Instrs.Count; k++)
@@ -54,7 +55,7 @@ public sealed class NullCheckFold : IPass
                 // through the receiver written once: a type context's chain
                 // read off `this` in a cold arm, after the method's first
                 // line read a field of it.
-                if (!made) made = MadeBefore(function, block, receiver, ref cfg, ref defs);
+                if (!made) made = MadeBefore(function, block, receiver, ref cfg, ref defs, ref accessed);
                 if (made)
                 {
                     block.Instrs.RemoveAt(k);
@@ -81,28 +82,43 @@ public sealed class NullCheckFold : IPass
     /// <summary>
     /// Whether a block strictly dominating `block` reads or writes through
     /// `receiver`, written once (or a parameter), after it is written: it
-    /// faulted there if it was null, and holds the same value here.
+    /// faulted there if it was null, and holds the same value here. The
+    /// accesses are found once a function (Accessed), with the definitions,
+    /// both as the function stood then: a check dropped since only shifts
+    /// later places in its block down, keeping each block's order.
     /// </summary>
-    private static bool MadeBefore(Function function, Block block, VReg receiver, ref Cfg? cfg, ref Defs? defs)
+    private static bool MadeBefore(Function function, Block block, VReg receiver, ref Cfg? cfg, ref Defs? defs, ref Dictionary<VReg, List<(Block Block, int Index)>>? accessed)
     {
         cfg ??= PipelineAnalyses.CfgOf(function);
         if (cfg.Roots.Count != 1) return false;
         defs ??= PipelineAnalyses.DefsOf(function);
-        if (!defs.IsSingle(receiver)) return false;
+        accessed ??= Accessed(function);
+        if (!defs.IsSingle(receiver) || !accessed.TryGetValue(receiver, out var at)) return false;
         (Block Block, int Index)? site = defs.Site(receiver) is { } s ? (s.Block, s.Index) : null;
-        for (Block? up = cfg.Idom(block); up is not null; up = cfg.Idom(up))
+        foreach ((Block where, int index) in at)
         {
-            int from = site is { } d && ReferenceEquals(d.Block, up) ? d.Index + 1 : 0;
-            for (int j = from; j < up.Instrs.Count; j++)
-                if (Accesses(up.Instrs[j], receiver)) return true;
-            if (site is { } w && ReferenceEquals(w.Block, up)) return false;
+            if (ReferenceEquals(where, block) || !cfg.Dominates(where, block)) continue;
+            if (site is { } d && ReferenceEquals(d.Block, where) && index <= d.Index) continue;
+            if (site is { } w && !ReferenceEquals(w.Block, where) && !cfg.Dominates(w.Block, where)) continue;
+            return true;
         }
         return false;
     }
 
+    /// <summary>Every register read or written through within the null page, and where.</summary>
+    private static Dictionary<VReg, List<(Block Block, int Index)>> Accessed(Function function)
+    {
+        Dictionary<VReg, List<(Block Block, int Index)>> accessed = new();
+        foreach (Block b in function.Blocks)
+            for (int k = 0; k < b.Instrs.Count; k++)
+                if (b.Instrs[k] is { Operands: [RegOperand { Reg: var r }, ..] } i && Accesses(i, r))
+                    (accessed.TryGetValue(r, out var list) ? list : accessed[r] = new()).Add((b, k));
+        return accessed;
+    }
+
     /// <summary>Whether an instruction reads or writes through `receiver` within the page a null fault covers.</summary>
     private static bool Accesses(Instr i, VReg receiver)
-        => i.Op is Opcode.Load or Opcode.Store or Opcode.ArrayLength && i.Operands.Count > 0
+        => i.Op is Opcode.Load or Opcode.Store or Opcode.ArrayLength && !i.Immutable && i.Operands.Count > 0
             && i.Operands[0] is RegOperand { Reg: var address } && address == receiver && i.Offset is >= 0 and < Covered;
 
     private static HashSet<VReg> Used(Function function)

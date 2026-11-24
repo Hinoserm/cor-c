@@ -59,9 +59,8 @@ public sealed class LoadReuse : IPass
         // ONE TABLE, SCOPED (WalkDominators): a block starts from its
         // immediate dominator's table as it ended -- less, at a join, what
         // the blocks between may write -- and what it adds is undone when the
-        // walk leaves it. A table
-        // copied for every such block was this pass's whole allocation, and
-        // the collector's.
+        // walk leaves it. A table copied for every such block was this
+        // pass's whole allocation, and the collector's.
         // ONE SCOPE A THREAD, kept: its tables are empty again when a walk
         // ends (every change is undone), and keep their storage for the next
         // function -- made per run, they and their growth were the collector's.
@@ -127,6 +126,8 @@ public sealed class LoadReuse : IPass
         Liveness? live = null;
         Stack<(Block Block, int Mark, bool Entered)> work = scope.Work;
         work.Clear();
+        // A walk that threw left the thread's tables as they were: start clean.
+        scope.Reset();
         work.Push((cfg.Function.Blocks[0], 0, false));
         while (work.Count > 0)
         {
@@ -217,6 +218,14 @@ public sealed class LoadReuse : IPass
             _all.Clear();
         }
 
+        /// <summary>The tables empty, with nothing to undo: a walk's start.</summary>
+        public void Reset()
+        {
+            _memory.Clear();
+            _undo.Clear();
+            _all.Clear();
+        }
+
         /// <summary>Everything, an array's length too: a root starts from nothing.</summary>
         public void ForgetEverything()
         {
@@ -257,13 +266,14 @@ public sealed class LoadReuse : IPass
             while (todo.TryPop(out Block? b))
             {
                 if (ReferenceEquals(b, dominator)) continue;
-                if (cfg.IsRoot(b) || region.Count >= Region) { ForgetEverything(); return; }
+                if (cfg.IsRoot(b) || region.Count >= Region) { region.Clear(); todo.Clear(); ForgetEverything(); return; }
                 if (!region.Add(b)) continue;
                 if (ReferenceEquals(b, join)) { loop = true; continue; }
                 foreach (Block p in cfg.Preds(b)) todo.Push(p);
             }
             foreach (Block b in region)
                 foreach (Instr i in b.Instrs) Kill(i);
+            region.Clear();
             if (loop && _memory.Count > 0)
             {
                 live ??= new Liveness(cfg);

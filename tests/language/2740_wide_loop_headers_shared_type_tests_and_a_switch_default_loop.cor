@@ -1,0 +1,84 @@
+// test: wide_loop_headers_shared_type_tests_and_a_switch_default_loop
+// expect-exit: 0
+// expect-output:
+// 528
+// 10102 10106
+// 212006
+// 35
+//
+// A LOOP READING TWELVE FIELDS a lap, more than LoopLoads holds (its
+// budget, a loop's); shared code's type tests over T, List<T> and T[]
+// asked every lap across a field store, their type context read once
+// (Instr.Immutable, Gvn); a loop whose only way back is a switch's
+// default; an array made again in a loop, its length read before and
+// after (LoadReuse's MadeAgain). Checked against .NET 10.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+sealed class Wide
+{
+    public int[] A = { 1, 2 }, B = { 3, 4 }, C = { 5, 6 }, D = { 7, 8 }, E = { 9, 10 }, F = { 11, 12 };
+    public int G = 13, H = 14, I = 15, J = 16, K = 17, L = 18;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum(int laps)
+    {
+        int s = 0;
+        for (int k = 0; k < laps; k++)
+            s += A[k & 1] + B[k & 1] + C[k & 1] + D[k & 1] + E[k & 1] + F[k & 1] + G + H + I + J + K + L;
+        return s;
+    }
+}
+sealed class Bag<T> where T : class
+{
+    public object? Last;
+    public int Count;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sort(List<object> items)
+    {
+        int found = 0;
+        foreach (object o in items)
+        {
+            if (o is T) found++;
+            Last = o;
+            Count++;
+            if (o is List<T>) found += 100;
+            if (o is T[]) found += 10000;
+        }
+        return found;
+    }
+}
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SwitchLoop(int[] steps)
+    {
+        int at = 0, laps = 0, total = 0;
+        while (true)
+        {
+            laps++;
+            switch (steps[at])
+            {
+                case 0: return total * 1000 + laps;
+                case 1: total += 1; at++; break;
+                case 2: total += 10; at += 2; break;
+                default: total += 100; at++; continue;
+            }
+        }
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int MadeInLoop(int n)
+    {
+        int sum = 0;
+        int[] a = new int[1];
+        for (int k = 1; k <= n; k++) { sum += a.Length; a = new int[k + 1]; sum += a.Length; }
+        return sum;
+    }
+    static void Main()
+    {
+        Console.WriteLine(new Wide().Sum(4));
+        var items = new List<object> { "a", new List<string>(), new string[0], 5, "b", new List<object>() };
+        Console.WriteLine(new Bag<string>().Sort(items) + " " + new Bag<object>().Sort(items));
+        Console.WriteLine(SwitchLoop(new[] { 1, 7, 2, 9, 9, 1, 0 }));
+        Console.WriteLine(MadeInLoop(5));
+    }
+}

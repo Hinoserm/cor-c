@@ -69,7 +69,8 @@ public sealed class CommonTailMerge : IPass
         // marks go with it -- an allocation the link chose for a region
         // shared with one it did not, a number's load with an address's.
         if (a.Number != b.Number || a.Family != b.Family || a.Field != b.Field
-            || a.RegionSite != b.RegionSite || a.DispatchType != b.DispatchType) return false;
+            || a.RegionSite != b.RegionSite || a.DispatchType != b.DispatchType
+            || a.Immutable != b.Immutable || a.Device != b.Device) return false;
         for (int k = 0; k < a.Targets.Count; k++) if (a.Targets[k] != b.Targets[k]) return false;
         for (int k = 0; k < a.Operands.Count; k++)
         {
