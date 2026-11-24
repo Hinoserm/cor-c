@@ -10235,8 +10235,15 @@ public sealed partial class Binder
     /// the expression and not only its type.
     /// </summary>
     private bool Fits(Type had, Type want, Expr? written)
+        // A LAMBDA FITS NO TYPE IT CANNOT CONVERT TO (C# 10.7.1, and 12's
+        // natural type): only a delegate, an expression tree, or object,
+        // Delegate, MulticastDelegate or Expression. A lambda argument is
+        // typed nothing yet (Type.Any), which every parameter took: `new
+        // Lazy<int>(() => 42)` chose Lazy(bool isThreadSafe), the first
+        // declared, and refused the lambda there.
+        => written is LambdaExpr && LambdaNeverConverts(want) ? false
         // AN INTERPOLATED STRING fits a FormattableString or an IFormattable too.
-        => Interpolated(written) && Formattable(want) ? true
+        : Interpolated(written) && Formattable(want) ? true
         // A CONDITIONAL LEFT TO ITS PARAMETER (Argument) fits what each of
         // its arms fits, an arm that is one of them the same way again.
         : written is ConditionalExpr deferred && _deferredArms.TryGetValue(deferred, out (Type Then, Type Else) arms)
@@ -10248,6 +10255,22 @@ public sealed partial class Binder
         || (written is not null && (MethodGroupFits(written, want) || LocalFunctionConverts(written, want)))
         || IntegerConstantFits(written, had, want)
         || TupleLiteralFits(written, want);
+
+    /// <summary>
+    /// Whether no lambda converts to `want`: a type known, neither a delegate
+    /// (it has an Invoke) nor object, Delegate, MulticastDelegate, an
+    /// expression tree, a type parameter or a shared copy's word.
+    /// </summary>
+    private bool LambdaNeverConverts(Type want)
+    {
+        Type plain = want.AsNonNullable();
+        if (plain.IsError || plain.ParamName is not null || plain.CanonParam != -1 || plain.Prim == Prim.Any) return false;
+        if (plain.IsArray || plain.IsPointer) return true;
+        if (plain.Symbol is not TypeSymbol named) return plain.Prim != Prim.Void;
+        if (Invoked(plain) is not null) return false;
+        string name = named.Decl?.Template ?? named.Name;
+        return name is not ("Delegate" or "MulticastDelegate" or "Expression" or "LambdaExpression");
+    }
 
     /// <summary>
     /// Whether a tuple literal converts to a tuple type element by element
@@ -19886,6 +19909,15 @@ public sealed partial class Binder
                     _deferredArms[c2] = (a2, b2);
                     return Type.Any;
                 }
+
+                // A THROW ARM HAS NO TYPE (C# 12.18, 12.40): the conditional is
+                // the other arm's. Typed as anything, the two arms joined as
+                // object, and `x => x == 4 ? throw e : x` gave a lambda of
+                // object -- Select over it a sequence of objects, and the
+                // parallel Select of a ParallelQuery passed over for the
+                // sequential one, whose result types still fitted.
+                if (c2.Then is ThrowExpr && c2.Else is not ThrowExpr && !b2.IsError) return b2;
+                if (c2.Else is ThrowExpr && c2.Then is not ThrowExpr && !a2.IsError) return a2;
 
                 // A BARE `default` TAKES THE OTHER ARM'S TYPE, which is then the
                 // conditional's (C# 12.18: the literal converts to it): `data ==

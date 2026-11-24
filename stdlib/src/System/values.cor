@@ -5,6 +5,7 @@
 // area, which is why they are together here rather than each in a file.
 
 using System.IO;
+using System.Threading;
 
 // ---- Guid -----------------------------------------------------------------
 //
@@ -445,36 +446,114 @@ namespace System
 /// mere tidiness: it is the only way a closure over something large stops
 /// holding it alive for as long as the Lazy lives.
 public class Lazy<T> {
-    /// NULL ONCE IT HAS RUN, which is the whole point -- see above -- so the
-    /// field says so. Only the getter ever reads it, and only while `made` is
-    /// still false.
+    // .NET'S LAZY, ITS THREE MODES (System.Threading.LazyThreadSafetyMode):
+    // ExecutionAndPublication, the default of every constructor but the ones
+    // that say otherwise -- one thread runs the factory, the others wait for
+    // its value; PublicationOnly -- any thread may run it, the first value
+    // made is the one every thread sees; None -- no thread but one may ask.
+    // A FACTORY'S EXCEPTION IS KEPT and thrown again at every ask, where .NET
+    // keeps it: a factory given, in every mode but PublicationOnly; never the
+    // type's own constructor's (Activator.CreateInstance, the constructors
+    // given no factory). A factory that asks for the value it is making is
+    // refused, as .NET refuses it.
     private Func<T>? make;
-    private T value;
-    private bool made;
+    private T value = default(T)!;
+    private volatile bool made;
+    private readonly LazyThreadSafetyMode mode;
+    private readonly bool keepsFailure;
+    private System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure;
+    private bool running;
+    private readonly object? gate;
 
-    public Lazy(Func<T> factory) {
-        if (factory == null) { throw new ArgumentNullException("valueFactory"); }
+    public Lazy() : this(null, LazyThreadSafetyMode.ExecutionAndPublication, false) { }
+
+    public Lazy(bool isThreadSafe) : this(null, isThreadSafe ? LazyThreadSafetyMode.ExecutionAndPublication : LazyThreadSafetyMode.None, false) { }
+
+    public Lazy(LazyThreadSafetyMode mode) : this(null, mode, false) { }
+
+    public Lazy(Func<T> valueFactory) : this(valueFactory ?? throw new ArgumentNullException("valueFactory"), LazyThreadSafetyMode.ExecutionAndPublication, true) { }
+
+    public Lazy(Func<T> valueFactory, bool isThreadSafe)
+        : this(valueFactory ?? throw new ArgumentNullException("valueFactory"), isThreadSafe ? LazyThreadSafetyMode.ExecutionAndPublication : LazyThreadSafetyMode.None, true) { }
+
+    public Lazy(Func<T> valueFactory, LazyThreadSafetyMode mode) : this(valueFactory ?? throw new ArgumentNullException("valueFactory"), mode, true) { }
+
+    /// Made already: the value given.
+    public Lazy(T value) {
+        this.value = value;
+        made = true;
+        mode = LazyThreadSafetyMode.None;
+    }
+
+    private Lazy(Func<T>? factory, LazyThreadSafetyMode mode, bool given) {
+        if (mode is not (LazyThreadSafetyMode.None or LazyThreadSafetyMode.PublicationOnly or LazyThreadSafetyMode.ExecutionAndPublication)) {
+            throw new ArgumentOutOfRangeException("mode", "The mode argument specifies an invalid value.");
+        }
         make = factory;
+        this.mode = mode;
+        keepsFailure = given && mode != LazyThreadSafetyMode.PublicationOnly;
+        // A lock only where threads take turns or publish.
+        if (mode != LazyThreadSafetyMode.None) { gate = new object(); }
     }
 
     public bool IsValueCreated => made;
 
     public T Value {
         get {
-            if (!made) {
-                value = make!.Invoke();
-                made = true;
-                make = null;
-            }
-            return value;
+            if (made) { return value; }
+            return Created();
         }
+    }
+
+    private T Created() {
+        switch (mode) {
+            case LazyThreadSafetyMode.ExecutionAndPublication:
+                lock (gate!) {
+                    if (made) { return value; }
+                    return Run();
+                }
+            case LazyThreadSafetyMode.PublicationOnly: {
+                // Made outside the lock, by as many threads as ask; the first
+                // to finish publishes, and every thread answers with that one.
+                Func<T>? factory = make;
+                if (made) { return value; }
+                T candidate = factory is null ? Activator.CreateInstance<T>() : factory.Invoke();
+                lock (gate!) {
+                    if (!made) { value = candidate; made = true; make = null; }
+                    return value;
+                }
+            }
+            default:
+                return Run();
+        }
+    }
+
+    // The factory run once: its failure kept where .NET keeps it, an ask
+    // from inside it refused.
+    private T Run() {
+        if (failure != null) { failure.Throw(); }
+        if (running) { throw new InvalidOperationException("ValueFactory attempted to access the Value property of this instance."); }
+        running = true;
+        try {
+            T result = make is null ? Activator.CreateInstance<T>() : make.Invoke();
+            value = result;
+            made = true;
+            make = null;
+            return result;
+        }
+        catch (Exception e) when (keepsFailure) {
+            failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e);
+            make = null;
+            throw;
+        }
+        finally { running = false; }
     }
 
     /// "Value is not created." until it is, and then the value's own text --
     /// .NET's ToString deliberately does NOT force the computation.
-    public string ToString() {
+    public override string ToString() {
         if (!made) { return "Value is not created."; }
-        return ("" + value);
+        return value!.ToString()!;
     }
 }
 
@@ -567,6 +646,17 @@ public class Tuple<T1, T2, T3, T4> {
         made.Append(("" + Item4));
         made.Append(')');
         return made.ToString();
+    }
+}
+
+namespace System.Threading
+{
+    /// How a Lazy<T> shares the making of its value among threads (.NET's).
+    public enum LazyThreadSafetyMode
+    {
+        None = 0,
+        PublicationOnly = 1,
+        ExecutionAndPublication = 2,
     }
 }
 

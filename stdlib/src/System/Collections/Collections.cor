@@ -2110,6 +2110,126 @@ public class StringCollection : IEnumerable<string> {
 // taken under it, which is what .NET documents for the bag, the queue and the
 // stack, and within what it promises for the dictionary -- an enumeration
 // that may see changes made while it runs, or not.
+/// .NET's PLINQ (System.Linq.ParallelEnumerable, here beside Enumerable,
+/// whose extensions it must compete with in one set: a ParallelQuery's
+/// Select is this one, its receiver the closer), as far as a query made
+/// parallel, ordered or not, given its degree, projected and gathered
+/// into an array or a list -- what a project build's stale scan asks.
+/// The source is read in order; the projection is shared out among
+/// `degree` tasks, each a run of neighbours, and the results come back in
+/// the source's order whether or not the query was asked to keep it (an
+/// order .NET allows an unordered query too). A projection's exceptions
+/// are thrown together as an System.AggregateException, as .NET's are. Walked
+/// as a sequence, the query is its results.
+public class ParallelQuery<TSource> : System.Collections.Generic.IEnumerable<TSource>
+{
+    internal readonly int Degree;
+    internal readonly bool Ordered;
+
+    internal ParallelQuery(int degree, bool ordered) { Degree = degree; Ordered = ordered; }
+
+    /// The results, in the source's order.
+    internal virtual TSource[] Run() { throw new System.NotSupportedException(); }
+
+    /// The same query with another degree or order.
+    internal virtual ParallelQuery<TSource> With(int degree, bool ordered) { throw new System.NotSupportedException(); }
+
+    public System.Collections.Generic.IEnumerator<TSource> GetEnumerator() { return ((System.Collections.Generic.IEnumerable<TSource>)Run()).GetEnumerator(); }
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() { return GetEnumerator(); }
+}
+
+sealed class SourceQuery<T> : ParallelQuery<T>
+{
+    private readonly System.Collections.Generic.IEnumerable<T> _source;
+    internal SourceQuery(System.Collections.Generic.IEnumerable<T> source, int degree, bool ordered) : base(degree, ordered) { _source = source; }
+    internal override T[] Run() { return Enumerable.ToArray(_source); }
+    internal override ParallelQuery<T> With(int degree, bool ordered) { return new SourceQuery<T>(_source, degree, ordered); }
+}
+
+sealed class SelectQuery<T, R> : ParallelQuery<R>
+{
+    private readonly ParallelQuery<T> _from;
+    private readonly System.Func<T, R> _selector;
+    internal SelectQuery(ParallelQuery<T> from, System.Func<T, R> selector, int degree, bool ordered) : base(degree, ordered) { _from = from; _selector = selector; }
+    internal override ParallelQuery<R> With(int degree, bool ordered) { return new SelectQuery<T, R>(_from.With(degree, ordered), _selector, degree, ordered); }
+
+    internal override R[] Run()
+    {
+        T[] items = _from.Run();
+        R[] results = new R[items.Length];
+        int parts = System.Math.Min(Degree, items.Length);
+        if (parts <= 1)
+        {
+            // One share: run here, its exception the aggregate's one.
+            try { for (int i = 0; i < items.Length; i++) results[i] = _selector(items[i]); }
+            catch (System.Exception e) { throw new System.AggregateException(e); }
+            return results;
+        }
+        System.Threading.Tasks.Task[] tasks = new System.Threading.Tasks.Task[parts];
+        int chunk = items.Length / parts, extra = items.Length % parts, start = 0;
+        System.Func<T, R> selector = _selector;
+        for (int p = 0; p < parts; p++)
+        {
+            int from = start, to = start + chunk + (p < extra ? 1 : 0);
+            start = to;
+            tasks[p] = System.Threading.Tasks.Task.Run(() => { for (int i = from; i < to; i++) results[i] = selector(items[i]); });
+        }
+        // Every share's exception, together (Task.WaitAll's System.AggregateException).
+        System.Threading.Tasks.Task.WaitAll(tasks);
+        return results;
+    }
+}
+
+public static class ParallelEnumerable
+{
+    /// .NET's default degree: the processors, at most 512.
+    private static int DefaultDegree => System.Math.Max(1, System.Math.Min(System.Environment.ProcessorCount, 512));
+
+    public static ParallelQuery<TSource> AsParallel<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+    {
+        if (source == null) throw new System.ArgumentNullException("source");
+        return new SourceQuery<TSource>(source, DefaultDegree, false);
+    }
+
+    public static ParallelQuery<TSource> AsOrdered<TSource>(this ParallelQuery<TSource> source)
+    {
+        if (source == null) throw new System.ArgumentNullException("source");
+        return source.With(source.Degree, true);
+    }
+
+    public static ParallelQuery<TSource> AsUnordered<TSource>(this ParallelQuery<TSource> source)
+    {
+        if (source == null) throw new System.ArgumentNullException("source");
+        return source.With(source.Degree, false);
+    }
+
+    public static ParallelQuery<TSource> WithDegreeOfParallelism<TSource>(this ParallelQuery<TSource> source, int degreeOfParallelism)
+    {
+        if (source == null) throw new System.ArgumentNullException("source");
+        if (degreeOfParallelism < 1 || degreeOfParallelism > 512) throw new System.ArgumentOutOfRangeException("degreeOfParallelism");
+        return source.With(degreeOfParallelism, source.Ordered);
+    }
+
+    public static ParallelQuery<TResult> Select<TSource, TResult>(this ParallelQuery<TSource> source, System.Func<TSource, TResult> selector)
+    {
+        if (source == null) throw new System.ArgumentNullException("source");
+        if (selector == null) throw new System.ArgumentNullException("selector");
+        return new SelectQuery<TSource, TResult>(source, selector, source.Degree, source.Ordered);
+    }
+
+    public static TSource[] ToArray<TSource>(this ParallelQuery<TSource> source)
+    {
+        if (source == null) throw new System.ArgumentNullException("source");
+        return source.Run();
+    }
+
+    public static System.Collections.Generic.List<TSource> ToList<TSource>(this ParallelQuery<TSource> source)
+    {
+        if (source == null) throw new System.ArgumentNullException("source");
+        return new System.Collections.Generic.List<TSource>(source.Run());
+    }
+}
+
 namespace System.Threading.Tasks
 {
     /// .NET's Parallel (System.Threading.Tasks): a loop's iterations shared out
