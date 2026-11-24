@@ -2121,7 +2121,9 @@ public sealed partial class Lowering
     // rules from the descriptor itself, in a unit and at the link alike
     // (Escape.ClassMadeHere): one made in a function holding what it was
     // handed is a box.
-    internal const int TypeFlagFieldsOwnNothing = 0x1000;
+    // Not 0x1000: bits 12 to 19 are a box's kind (Lowering.Box's BoxKindShift),
+    // and an enum unboxed from such an object read its kind as an sbyte's.
+    internal const int TypeFlagFieldsOwnNothing = 0x20000000;
 
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
@@ -3699,6 +3701,9 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
+        // What its fields are, as its own unit's descriptor says it: the
+        // lifetime rules here read it (Escape.FieldsOwnNothing).
+        if (CopiedChain(t)) WriteWord(block, DescFlags * w, TypeFlagFieldsOwnNothing);
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
         for (int i = 0; i < slots; i++)
             if (table[i] is { } m && m.Decl is not null && m.Owner?.Decl?.Elsewhere == true && m.Owner.Decl.Template is null)

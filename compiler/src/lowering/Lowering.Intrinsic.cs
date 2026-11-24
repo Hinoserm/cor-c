@@ -1390,8 +1390,9 @@ public sealed partial class Lowering
 
     /// <summary>
     /// `n` bytes from `from` to `into`: forward a word at a time (MemCopy);
-    /// where `oneBlock` -- both in one object -- and the destination starts
-    /// inside the source, from the end down.
+    /// where `oneBlock` -- maybe one block: both in one object, or either in
+    /// memory no object holds (Span.Move over a pointer's or a variable's) --
+    /// and the destination starts inside the source, from the end down.
     /// </summary>
     private void MoveBytes(VReg into, VReg from, VReg n, VReg? oneBlock, bool numbers)
     {
@@ -1404,7 +1405,8 @@ public sealed partial class Lowering
         // first words over its own tail before reading it.
         // CopyNoOverlap's callers promise there is none (no `oneBlock`).
         //
-        // ONLY A BLOCK MOVED WITHIN ITSELF CAN OVERLAP: two arrays' bytes are
+        // ONLY ONE BLOCK CAN OVERLAP ITSELF (or memory no object holds, which
+        // no initialiser the link runs has): two arrays' bytes are
         // copied forward without taking one's address from the other's,
         // which the link's run of an initialiser cannot do (PreinitMachine:
         // two objects' addresses are no number). A static made from a span's

@@ -1,5 +1,6 @@
 // test: mmx_values_across_a_call_that_never_touches_the_fpu
 // cpu: --cpu=pentium-mmx
+// only-target: x86
 // expect-exit: 0
 // expect-output:
 // mixed 0014001400140014 36 0004000400040004 120

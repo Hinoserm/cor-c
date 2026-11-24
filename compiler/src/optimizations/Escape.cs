@@ -240,6 +240,7 @@ public sealed partial class Escape : IModulePass
         // class lists only some of its methods.
         _typeItems = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data) if (d.ReadOnly && !d.Zero) _typeItems[d.Name] = d;
+        _shadowItems = m.ShadowData;
         _typedFieldsOf = TypedFields;
         _fieldsOf = _paramFields;
         _bodies = _defined;
@@ -2652,6 +2653,9 @@ continue;
     /// </summary>
     [ThreadStatic] private static Dictionary<string, DataItem>? _typeItems;
 
+    /// <summary>This unit's descriptors of other units' classes (Module.ShadowData), for what their flags say (FieldsOwnNothing).</summary>
+    [ThreadStatic] private static Dictionary<string, DataItem>? _shadowItems;
+
     /// <summary>
     /// FUNCTIONS THAT HAND BACK THEIR FIRST ARGUMENT OR A COPY OF ITS WORDS:
     /// an iterator's GetEnumerator, the machine itself the first time and a
@@ -2947,9 +2951,11 @@ continue;
     /// </summary>
     private static bool FieldsOwnNothing(string descriptor)
     {
+        // This run's descriptors, then this unit's own, then its shadows of
+        // other units' classes (Lowering.ShadowDescriptor): the first that has it.
         DataItem? item = null;
-        if (_stampItems is null || !_stampItems.TryGetValue(descriptor, out item))
-            if (_typeItems is null || !_typeItems.TryGetValue(descriptor, out item)) return false;
+        if (_stampItems?.TryGetValue(descriptor, out item) != true && _typeItems?.TryGetValue(descriptor, out item) != true
+            && _shadowItems?.TryGetValue(descriptor, out item) != true) return false;
         int word = IrTypes.Word.Bytes();
         int at = 6 * word;   // Lowering's DescFlags word
         if (item.Bytes.Length < at + word) return false;

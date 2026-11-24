@@ -1,0 +1,42 @@
+// test: loop_unswitched_inside_an_outer_loop
+// expect-exit: 0
+// expect-output:
+// nested 65196 38144 0
+//
+// AN INNER LOOP UNSWITCHED ON A TEST THE OUTER LOOP CHANGES: its copy runs
+// on the even passes and the loop on the odd ones, so what one leaves in a
+// variable the other reads next pass -- carried, last -- and a string made
+// in each is the copy's own (LoopUnswitch.Copy: a register the loop alone
+// writes and reads, and that carries nothing into it, is fresh in the
+// copy; what is read or written outside, or carried in, stays one).
+// Checked against .NET 10.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Nested(int outer, int inner)
+    {
+        long carried = 0, last = 0;
+        int lengths = 0;
+        for (int o = 0; o < outer; o++)
+        {
+            bool even = (o & 1) == 0;
+            for (int i = 0; i < inner; i++)
+            {
+                string made = "v" + (i * o);
+                lengths += made.Length;
+                if (even) carried += i + last; else carried -= o;
+                last = i * 2 + o;
+            }
+        }
+        return carried * 1000 + last * 10 + lengths;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine("nested " + Nested(6, 5) + " " + Nested(7, 3) + " " + Nested(1, 0));
+    }
+}
