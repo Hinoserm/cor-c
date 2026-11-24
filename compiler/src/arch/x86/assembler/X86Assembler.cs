@@ -226,7 +226,7 @@ public sealed partial class X86Assembler : ISymbols
         // which is what a boot stub that switches modes is made of.
         if (_everLongMode)
         {
-            new X86CodeGenerationContract("k8", "sse2", Corsac.Lang.X86.X86Feature.None, false).Attach(obj);
+            (_cpu?.LongMode == true ? _cpu : Corsac.Lang.X86.X86Cpu.ParseLongMode(Array.Empty<string>())).LongModeContract(false).Attach(obj);
             new TargetContract(TargetContract.NoTlsClaim, longMode: true).Attach(obj);
         }
         else

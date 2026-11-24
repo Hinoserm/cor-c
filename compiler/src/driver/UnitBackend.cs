@@ -44,11 +44,10 @@ public sealed class UnitBackend : IUnitBackend
         // have selected a newer CPU or explicitly disabled an extension.
         X86CodeGenerationContract cpu = X86CodeGenerationContract.Read(original)
             ?? throw new InvalidDataException("IR unit has no CPU/FPU contract; rebuild the unit before LTO");
-        if (!longMode)
-        {
-            Target.X86.X86Profile = X86Cpu.Parse(cpu.Arguments());
-            Target.X86.Cpu = Target.X86.X86Profile.Name;
-        }
+        // Either target's processor, as the unit's contract names it.
+        Target own = longMode ? Target.X86_64 : Target.X86;
+        own.X86Profile = longMode ? X86Cpu.ParseLongMode(cpu.Arguments()) : X86Cpu.Parse(cpu.Arguments());
+        own.Cpu = own.X86Profile.Name;
         // The link's own reading, where it handed one in: checked against
         // this object's native content then, and read again it was every
         // unit's whole object written out and hashed a second time.

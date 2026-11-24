@@ -38,7 +38,30 @@ internal static class CpuModel
     /// 25112): the K7's three decoders and sixteen-byte fetch, IMUL r32 three
     /// clocks.
     /// </summary>
-    public static bool K8 => Name == "athlon64";
+    public static bool K8 => Name is "athlon64" or "athlon64-sse3";
+
+    /// <summary>AMD's K10 (Family 10h, Barcelona and Phenom; AMD 40546): the K8's pipeline with 128-bit SSE units.</summary>
+    public static bool K10 => Name == "amdfam10";
+
+    /// <summary>
+    /// Intel's Core line, Core 2 to Skylake: XOR, SUB, PXOR, XORPS and XORPD of
+    /// a register with itself are zero idioms (Agner Fog, microarchitecture
+    /// 8.14 on, "Breaking dependency chains"), and every scalar SSE merge
+    /// waits on the register's last write (GCC's SSE_PARTIAL_REG_DEPENDENCY
+    /// and _FP_CONVERTS_DEPENDENCY, m_CORE_ALL).
+    /// </summary>
+    public static bool IntelCore => Name is "core2" or "nehalem" or "sandybridge" or "haswell" or "skylake" or "skylake-avx512";
+
+    /// <summary>
+    /// The psABI's levels above the baseline, which name instructions and no
+    /// processor: tuned for what has them -- the Core line and the K10 on, whose
+    /// rules here are alike (GCC tunes them generically, PTA_NO_TUNE). The
+    /// baseline, x86-64 itself, is tuned as the K8 that defined it.
+    /// </summary>
+    public static bool LevelAboveBaseline => Name is "x86-64-v2" or "x86-64-v3" or "x86-64-v4";
+
+    /// <summary>x86-64's baseline (x86-64-v1): the K8's long mode without 3DNow!, tuned as the K8.</summary>
+    public static bool Baseline64 => Name == "x86-64";
 
     /// <summary>
     /// AMD's Geode LX (AMD 33234E/H): one instruction a clock, in order, down
@@ -91,12 +114,21 @@ internal static class CpuModel
     ///   dependence on earlier instructions on PPro, P2, P3"; nothing claimed
     ///   for the K7): a zeroing there would only be one more instruction.
     /// </summary>
+    ///
+    /// THE LONG-MODE FAMILIES: Nocona is the Pentium 4's core (PXOR, every
+    /// merge); the Core line and the K10 break every merge, Intel's by PXOR
+    /// (GCC's SSE_LOAD0_BY_PXOR) and the K10, whose SSE units are 128 bits
+    /// wide where the K8's were two halves, the same (GCC's amdfam10 is in
+    /// both lists); the psABI's levels above the baseline as they; the
+    /// baseline itself, x86-64, as the K8 whose set it is.
+    /// </summary>
     public static bool BreaksMerge(int width) =>
-        Name == "pentium4" ? Target.Current.X86Profile.Has(X86Feature.Sse2)
-        : (K8 || Target.Current.WordSize == 8) && width == 4;
+        Name is "pentium4" or "nocona" ? Target.Current.X86Profile.Has(X86Feature.Sse2)
+        : IntelCore || K10 || LevelAboveBaseline ? true
+        : (K8 || Baseline64) && width == 4;
 
-    /// <summary>The zeroing BreaksMerge asks for: PXOR on the Pentium 4, the one it takes; XORPS elsewhere.</summary>
-    public static bool ZeroByPxor => Name == "pentium4";
+    /// <summary>The zeroing BreaksMerge asks for: PXOR where the processor takes it and not XORPS (the Pentium 4 and Nocona), or where GCC zeroes so (the Core line, the K10, the levels); XORPS on the K8 and its baseline, AMD 25112's own.</summary>
+    public static bool ZeroByPxor => !(K8 || Baseline64);
 
     /// <summary>
     /// A function's alignment: 16 on the K6 (AMD 21924, "Aligning
@@ -107,5 +139,5 @@ internal static class CpuModel
     /// beyond the words, and every function padded to 16 would cost a 486
     /// cache.
     /// </summary>
-    public static int FunctionAlign(int asked) => Math.Max(asked, K6 || Athlon ? 16 : 4);
+    public static int FunctionAlign(int asked) => Math.Max(asked, K6 || Athlon || K10 || IntelCore || LevelAboveBaseline || Baseline64 ? 16 : 4);
 }

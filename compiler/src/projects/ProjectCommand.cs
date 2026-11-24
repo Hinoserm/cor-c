@@ -101,11 +101,11 @@ public static class ProjectCommand
             targetName = projectTarget;
         Target target = targetName is null ? Target.X86
             : Target.ByName(targetName) ?? throw new ArgumentException("unknown target '" + targetName + "'");
-        // Every unit is compiled for the target; in long mode the one CPU is
-        // the K8 and the i386 profile options do not apply.
+        // Every unit is compiled for the target and the processor --cpu (or
+        // CorCCpu) names: in long mode one that runs x86-64 code, x86-64's
+        // baseline by default.
         string[] cpuArguments = target == Target.X86_64
-            ? (profileArguments.Count == 0 ? new[] { "--target", "x86-64", "--cpu", "k8" }
-                : throw new ArgumentException("--cpu/--fpu and the --enable-/--disable- extension switches are for the i386 target"))
+            ? ["--target", "x86-64", .. LongModeArguments(global::Corsac.Lang.X86.X86Cpu.ParseLongMode(defaults))]
             : CpuArguments(global::Corsac.Lang.X86.X86Cpu.Parse(defaults));
         // The link validates each object's CPU contract against the i386
         // profile; a long-mode object carries its own (k8/sse2).
@@ -390,6 +390,14 @@ public static class ProjectCommand
     /// which the contract does not carry -- a --disable of a feature the
     /// model lacks keeps its packed blocks' run-time variants out too.
     /// </summary>
+    /// <summary>A long-mode profile's own options, as CpuArguments gives a 32-bit one's (its contract has no --fpu).</summary>
+    private static string[] LongModeArguments(global::Corsac.Lang.X86.X86Cpu profile)
+    {
+        List<string> made = new(profile.LongModeContract().Arguments());
+        foreach (string ban in profile.BanArguments) if (!made.Contains(ban)) made.Add(ban);
+        return made.ToArray();
+    }
+
     private static string[] CpuArguments(global::Corsac.Lang.X86.X86Cpu profile)
     {
         List<string> made = new(profile.Contract.Arguments());

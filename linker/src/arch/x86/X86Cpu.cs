@@ -1,13 +1,14 @@
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// The instruction families a 32-bit profile may use beyond the 386's. A
-/// processor is a set of these, not a point on one line: the K6-2 has 3DNow!
-/// and no CMOV, the Pentium Pro CMOV and no MMX, so which code runs where is
-/// a question of one set holding another (X86CodeGenerationContract.ValidateTarget).
+/// The instruction families a profile may use beyond the 386's. A processor
+/// is a set of these, not a point on one line: the K6-2 has 3DNow! and no
+/// CMOV, the Pentium Pro CMOV and no MMX, so which code runs where is a
+/// question of one set holding another (X86CodeGenerationContract.ValidateTarget).
+/// The long-mode families from LongMode on: x86-64 code runs only where it is.
 /// </summary>
 [Flags]
-public enum X86Feature : ushort
+public enum X86Feature : uint
 {
     /// <summary>The 386's instructions and nothing more.</summary>
     None = 0,
@@ -41,6 +42,46 @@ public enum X86Feature : ushort
     Sse = 1 << 8,
     /// <summary>SSE2: double precision and integers in the XMM registers (Pentium 4, Athlon 64).</summary>
     Sse2 = 1 << 9,
+    /// <summary>
+    /// LONG MODE (AMD64, Intel 64; CPUID 8000_0001h EDX bit 29): the processor
+    /// runs x86-64 code. Every model with it has CMOV, CMPXCHG8B, MMX, SSE and
+    /// SSE2 (the psABI's baseline, x86-64-v1).
+    /// </summary>
+    LongMode = 1 << 10,
+    /// <summary>SSE3 (CPUID 1 ECX 0): the K8 from revision E (Opteron 2xx dual-core, Athlon 64 X2), the Pentium 4 Prescott and Nocona.</summary>
+    Sse3 = 1 << 11,
+    /// <summary>SSSE3 (CPUID 1 ECX 9): Core 2 on.</summary>
+    Ssse3 = 1 << 12,
+    /// <summary>SSE4.1 (CPUID 1 ECX 19): Penryn and Nehalem on, AMD from Bulldozer.</summary>
+    Sse41 = 1 << 13,
+    /// <summary>SSE4.2 (CPUID 1 ECX 20): Nehalem on.</summary>
+    Sse42 = 1 << 14,
+    /// <summary>AMD's SSE4a, EXTRQ/INSERTQ/MOVNTSD/MOVNTSS (CPUID 8000_0001h ECX 6): the K10 on.</summary>
+    Sse4a = 1 << 15,
+    /// <summary>POPCNT (CPUID 1 ECX 23): Nehalem and the K10 on.</summary>
+    Popcnt = 1 << 16,
+    /// <summary>LZCNT (CPUID 8000_0001h ECX 5, AMD's ABM): the K10 and Haswell on.</summary>
+    Lzcnt = 1 << 17,
+    /// <summary>CMPXCHG16B (CPUID 1 ECX 13): the K8 from revision F, Nocona's later steppings, Core 2 on.</summary>
+    Cmpxchg16b = 1 << 18,
+    /// <summary>LAHF and SAHF in 64-bit mode (CPUID 8000_0001h ECX 0), which the first AMD64 and Intel 64 processors lacked.</summary>
+    Lahf64 = 1 << 19,
+    /// <summary>MOVBE (CPUID 1 ECX 22): Atom, Haswell on.</summary>
+    Movbe = 1 << 20,
+    /// <summary>BMI1 (CPUID 7 EBX 3): ANDN, BEXTR, BLSI, BLSMSK, BLSR, TZCNT.</summary>
+    Bmi1 = 1 << 21,
+    /// <summary>BMI2 (CPUID 7 EBX 8): BZHI, MULX, PDEP, PEXT, RORX, SARX, SHLX, SHRX.</summary>
+    Bmi2 = 1 << 22,
+    /// <summary>AVX (CPUID 1 ECX 28, and the operating system's XCR0 bits 1 and 2): the VEX encodings and the YMM registers.</summary>
+    Avx = 1 << 23,
+    /// <summary>AVX2 (CPUID 7 EBX 5).</summary>
+    Avx2 = 1 << 24,
+    /// <summary>FMA3 (CPUID 1 ECX 12).</summary>
+    Fma = 1 << 25,
+    /// <summary>F16C (CPUID 1 ECX 29): half-precision conversions.</summary>
+    F16c = 1 << 26,
+    /// <summary>AVX-512 F, CD, BW, DQ and VL together (CPUID 7 EBX 16, 28, 30, 17, 31; XCR0 bits 5 to 7): x86-64-v4's set.</summary>
+    Avx512 = 1 << 27,
 }
 
 /// <summary>Shared compiler/linker instruction permissions; tuning never grants instructions.</summary>
@@ -50,7 +91,15 @@ public sealed class X86Cpu
     // FCMOV and FCOMI are x87 instructions, and SSE's state is saved with it.
     // --fpu=none takes all of it away.
     private const X86Feature NeedsFpu = X86Feature.Mmx | X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended
-        | X86Feature.MmxExtensions | X86Feature.FloatCmov | X86Feature.Sse | X86Feature.Sse2;
+        | X86Feature.MmxExtensions | X86Feature.FloatCmov | X86Feature.Sse | X86Feature.Sse2
+        | X86Feature.Sse3 | X86Feature.Ssse3 | X86Feature.Sse41 | X86Feature.Sse42 | X86Feature.Sse4a
+        | X86Feature.Avx | X86Feature.Avx2 | X86Feature.Fma | X86Feature.F16c | X86Feature.Avx512;
+
+    // What each SSE generation and the VEX families stand on, from the bottom:
+    // disabling one takes away everything above it (Switches).
+    private const X86Feature AboveSse2 = X86Feature.Sse3 | X86Feature.Ssse3 | X86Feature.Sse41 | X86Feature.Sse42 | X86Feature.Sse4a
+        | X86Feature.Avx | X86Feature.Avx2 | X86Feature.Fma | X86Feature.F16c | X86Feature.Avx512;
+    private const X86Feature AboveAvx = X86Feature.Avx2 | X86Feature.Fma | X86Feature.F16c | X86Feature.Avx512;
 
     /// <summary>
     /// The --enable-NAME and --disable-NAME switches: the feature whose
@@ -69,9 +118,41 @@ public sealed class X86Cpu
         ("3dnow-ext", X86Feature.ThreeDNowExtended, X86Feature.Mmx | X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended, X86Feature.ThreeDNowExtended),
         ("mmx-ext", X86Feature.MmxExtensions, X86Feature.Mmx | X86Feature.MmxExtensions, X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2),
         ("cmov", X86Feature.Cmov, X86Feature.Cmov | X86Feature.FloatCmov, X86Feature.Cmov | X86Feature.FloatCmov),
-        ("sse", X86Feature.Sse, X86Feature.Mmx | X86Feature.MmxExtensions | X86Feature.Sse, X86Feature.Sse | X86Feature.Sse2),
-        ("sse2", X86Feature.Sse2, X86Feature.Mmx | X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2, X86Feature.Sse2),
+        ("sse", X86Feature.Sse, X86Feature.Mmx | X86Feature.MmxExtensions | X86Feature.Sse, X86Feature.Sse | X86Feature.Sse2 | AboveSse2),
+        ("sse2", X86Feature.Sse2, X86Feature.Mmx | X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2, X86Feature.Sse2 | AboveSse2),
+        // THE LONG-MODE GENERATIONS (GCC's -msse3 .. -mavx512f, the same
+        // names): each brings what it stands on, each disable takes away what
+        // stands on it.
+        ("sse3", X86Feature.Sse3, SseUpTo(X86Feature.Sse3), AboveSse2),
+        ("ssse3", X86Feature.Ssse3, SseUpTo(X86Feature.Ssse3), AboveSse2 & ~(X86Feature.Sse3 | X86Feature.Sse4a)),
+        ("sse4.1", X86Feature.Sse41, SseUpTo(X86Feature.Sse41), X86Feature.Sse41 | X86Feature.Sse42 | X86Feature.Avx | AboveAvx),
+        ("sse4.2", X86Feature.Sse42, SseUpTo(X86Feature.Sse42), X86Feature.Sse42 | X86Feature.Avx | AboveAvx),
+        ("sse4a", X86Feature.Sse4a, SseUpTo(X86Feature.Sse3) | X86Feature.Sse4a, X86Feature.Sse4a),
+        ("popcnt", X86Feature.Popcnt, X86Feature.Popcnt, X86Feature.Popcnt),
+        ("lzcnt", X86Feature.Lzcnt, X86Feature.Lzcnt, X86Feature.Lzcnt),
+        ("cx16", X86Feature.Cmpxchg16b, X86Feature.Cmpxchg16b, X86Feature.Cmpxchg16b),
+        ("sahf", X86Feature.Lahf64, X86Feature.Lahf64, X86Feature.Lahf64),
+        ("movbe", X86Feature.Movbe, X86Feature.Movbe, X86Feature.Movbe),
+        ("bmi", X86Feature.Bmi1, X86Feature.Bmi1, X86Feature.Bmi1),
+        ("bmi2", X86Feature.Bmi2, X86Feature.Bmi2, X86Feature.Bmi2),
+        ("avx", X86Feature.Avx, SseUpTo(X86Feature.Sse42) | X86Feature.Avx, X86Feature.Avx | AboveAvx),
+        ("avx2", X86Feature.Avx2, SseUpTo(X86Feature.Sse42) | X86Feature.Avx | X86Feature.Avx2, X86Feature.Avx2 | X86Feature.Avx512),
+        ("fma", X86Feature.Fma, SseUpTo(X86Feature.Sse42) | X86Feature.Avx | X86Feature.Fma, X86Feature.Fma | X86Feature.Avx512),
+        ("f16c", X86Feature.F16c, SseUpTo(X86Feature.Sse42) | X86Feature.Avx | X86Feature.F16c, X86Feature.F16c),
+        ("avx512", X86Feature.Avx512, SseUpTo(X86Feature.Sse42) | X86Feature.Avx | X86Feature.Avx2 | X86Feature.Fma | X86Feature.F16c | X86Feature.Avx512, X86Feature.Avx512),
     ];
+
+    /// <summary>The SSE generations up to and including <paramref name="top"/>, with the MMX they stand on.</summary>
+    private static X86Feature SseUpTo(X86Feature top)
+    {
+        X86Feature all = X86Feature.Mmx | X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2;
+        foreach (X86Feature step in new[] { X86Feature.Sse3, X86Feature.Ssse3, X86Feature.Sse41, X86Feature.Sse42 })
+        {
+            all |= step;
+            if (step == top) break;
+        }
+        return all;
+    }
 
     /// <summary>
     /// The processor code is made for, and optimised for: one name, no
@@ -108,10 +189,19 @@ public sealed class X86Cpu
         "pentium4" => 12,
         "pentium-mmx" or "pentium2" or "pentium3" => 16,
         "k6" or "k6-2" or "k6-3" or "k6-2+" or "k6-3+" => 32,
-        "athlon" or "athlon-xp" or "athlon64" or "geode-lx" or "6x86mx" => 64,
+        "athlon" or "athlon-xp" or "athlon64" or "athlon64-sse3" or "amdfam10" or "geode-lx" or "6x86mx" => 64,
+        // Intel's 64-bit families: Nocona the Pentium 4's trace cache; Core 2
+        // to Skylake 32 KB (Intel 248966). The psABI levels name no processor
+        // and are tuned as the K8 is, their 32 KB the smaller of the two lines.
+        "nocona" => 12,
+        "core2" or "nehalem" or "sandybridge" or "haswell" or "skylake" or "skylake-avx512"
+            or "x86-64" or "x86-64-v2" or "x86-64-v3" or "x86-64-v4" => 32,
         // A model added without its cache is a decision not made: refused.
         _ => throw new InvalidOperationException($"no instruction cache size for --cpu={Name}"),
     };
+
+    /// <summary>Whether the processor runs x86-64 code (X86Feature.LongMode): what --target x86-64 asks of --cpu.</summary>
+    public bool LongMode => Has(X86Feature.LongMode);
 
     public bool Pentium => Has(X86Feature.Pentium);
     public bool Mmx => Has(X86Feature.Mmx);
@@ -120,6 +210,22 @@ public sealed class X86Cpu
     /// <summary>FCMOVcc and FCOMI/FUCOMI(P), where the profile has them (X86Feature.FloatCmov).</summary>
     public bool FloatCmov => Has(X86Feature.FloatCmov);
     public global::Corsac.Lang.Ir.X86CodeGenerationContract Contract => new(Name, Fpu, Features);
+
+    /// <summary>The contract of a unit compiled for this profile in long mode: SSE2 its floating point (X86CodeGenerationContract.LongMode).</summary>
+    public global::Corsac.Lang.Ir.X86CodeGenerationContract LongModeContract(bool automaticPacked = true) => new(Name, "sse2", Features, automaticPacked);
+
+    /// <summary>
+    /// The profile --target x86-64 takes from the options: --cpu (x86-64's
+    /// baseline when none is given), which has to be a model that runs
+    /// x86-64 code; a refusal otherwise, naming why.
+    /// </summary>
+    public static X86Cpu ParseLongMode(IEnumerable<string> arguments)
+    {
+        X86Cpu cpu = Parse(arguments, "x86-64");
+        if (!cpu.LongMode) throw new ArgumentException($"--cpu={cpu.Name} runs no x86-64 code: --target x86-64 takes a long-mode processor (athlon64, athlon64-sse3, amdfam10, nocona, core2 .. skylake-avx512, x86-64, x86-64-v2 .. v4)");
+        if (cpu.Fpu != "x87") throw new ArgumentException("--fpu is for the i386 target: x86-64's floating point is SSE2");
+        return cpu;
+    }
 
     private X86Cpu(string name, string fpu, X86Feature features, X86Feature banned = X86Feature.None, IReadOnlyList<string>? banArguments = null)
     {
@@ -143,7 +249,22 @@ public sealed class X86Cpu
         "k6-2+" => "k6-2+", "k6-3+" or "k6-iii+" => "k6-3+",
         "athlon" or "k7" or "athlon-tbird" => "athlon",
         "athlon-xp" or "athlon-4" or "athlon-mp" => "athlon-xp",
-        "athlon64" => "athlon64",
+        // THE K8 BY REVISION, as GCC names them: the first ones -- the FX-51
+        // and the single-core Opterons of revisions C and D, SledgeHammer and
+        // ClawHammer -- without SSE3; from revision E -- the dual-core
+        // Opteron 2xx (Italy) such as the 280 and 290, Denmark, the Athlon 64
+        // X2 -- with it. Neither has CMPXCHG16B (revision F's) or, as GCC
+        // reads them, LAHF/SAHF in long mode.
+        "athlon64" or "k8" or "opteron" or "athlon-fx" or "athlon64-fx" => "athlon64",
+        "athlon64-sse3" or "k8-sse3" or "opteron-sse3" => "athlon64-sse3",
+        "amdfam10" or "barcelona" or "k10" or "phenom" => "amdfam10",
+        "nocona" => "nocona", "core2" => "core2",
+        "nehalem" or "corei7" or "westmere" => "nehalem",
+        "sandybridge" or "ivybridge" => "sandybridge",
+        "haswell" or "broadwell" => "haswell",
+        "skylake" => "skylake", "skylake-avx512" => "skylake-avx512",
+        "x86-64" or "x86-64-v1" => "x86-64",
+        "x86-64-v2" => "x86-64-v2", "x86-64-v3" => "x86-64-v3", "x86-64-v4" => "x86-64-v4",
         "6x86mx" or "m2" or "mii" or "cyrix-mii" => "6x86mx",
         "geode-lx" or "geodelx" => "geode-lx",
         _ => throw new ArgumentException("Unknown x86 CPU: " + name),
@@ -152,8 +273,9 @@ public sealed class X86Cpu
     /// <summary>
     /// What a model may use, each processor written as the one before it and
     /// what it added; null for a name that is no model's. The 686 is the
-    /// Pentium Pro. The athlon64 is a K8 running 32-bit code with an x87; the
-    /// name k8 is the long-mode target's, whose floating point is SSE2.
+    /// Pentium Pro. A model with LongMode runs x86-64 code too: the same name
+    /// is its profile for either target (--target x86 or x86-64), whose
+    /// floating point is the x87 or SSE2.
     /// </summary>
     private static X86Feature? Defaults(string name) => name switch
     {
@@ -169,7 +291,30 @@ public sealed class X86Cpu
         "k6-2+" or "k6-3+" => Model("k6-2") | X86Feature.ThreeDNowExtended,
         "athlon" => Model("k6-2+") | X86Feature.MmxExtensions | X86Feature.Cmov | X86Feature.FloatCmov,
         "athlon-xp" => Model("athlon") | X86Feature.Sse,
-        "athlon64" => Model("athlon-xp") | X86Feature.Sse2,
+        "athlon64" => Model("athlon-xp") | X86Feature.Sse2 | X86Feature.LongMode,
+        "athlon64-sse3" => Model("athlon64") | X86Feature.Sse3,
+        // THE K10 (GCC's amdfam10, AMD 31116): SSE4a, POPCNT and LZCNT (ABM),
+        // CMPXCHG16B and LAHF/SAHF in long mode.
+        "amdfam10" => Model("athlon64-sse3") | X86Feature.Sse4a | X86Feature.Popcnt | X86Feature.Lzcnt
+            | X86Feature.Cmpxchg16b | X86Feature.Lahf64,
+        // INTEL'S 64-BIT FAMILIES, GCC's sets (i386.h's PTA_ lists): no 3DNow!.
+        "nocona" => Model("pentium4") | X86Feature.LongMode | X86Feature.Sse3 | X86Feature.Cmpxchg16b,
+        "core2" => Model("nocona") | X86Feature.Ssse3 | X86Feature.Lahf64,
+        "nehalem" => Model("core2") | X86Feature.Sse41 | X86Feature.Sse42 | X86Feature.Popcnt,
+        "sandybridge" => Model("nehalem") | X86Feature.Avx,
+        "haswell" => Model("sandybridge") | X86Feature.Avx2 | X86Feature.Fma | X86Feature.F16c
+            | X86Feature.Bmi1 | X86Feature.Bmi2 | X86Feature.Lzcnt | X86Feature.Movbe,
+        "skylake" => Model("haswell"),
+        "skylake-avx512" => Model("skylake") | X86Feature.Avx512,
+        // THE psABI's MICRO-ARCHITECTURE LEVELS (x86-64 psABI, "Micro-architecture
+        // levels"): instructions only. v1 is long mode's own set -- the K8's
+        // without 3DNow! -- and each level adds its list.
+        "x86-64" => Model("686") | X86Feature.Mmx | X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2 | X86Feature.LongMode,
+        "x86-64-v2" => Model("x86-64") | X86Feature.Cmpxchg16b | X86Feature.Lahf64 | X86Feature.Popcnt
+            | X86Feature.Sse3 | X86Feature.Ssse3 | X86Feature.Sse41 | X86Feature.Sse42,
+        "x86-64-v3" => Model("x86-64-v2") | X86Feature.Avx | X86Feature.Avx2 | X86Feature.Bmi1 | X86Feature.Bmi2
+            | X86Feature.F16c | X86Feature.Fma | X86Feature.Lzcnt | X86Feature.Movbe,
+        "x86-64-v4" => Model("x86-64-v3") | X86Feature.Avx512,
         // CYRIX'S 6x86MX (the MII): a Pentium MMX's set with CMOVcc, and no
         // FCMOVcc or FCOMI, which its x87 never had -- whatever CPUID's one
         // CMOV bit says, as a Pentium Pro's would.
@@ -211,6 +356,14 @@ public sealed class X86Cpu
         if ((features & X86Feature.Sse) == 0) features &= ~X86Feature.Sse2;
         if ((features & X86Feature.MmxExtensions) == 0) features &= ~(X86Feature.Sse | X86Feature.Sse2);
         if ((features & X86Feature.Cmov) == 0) features &= ~X86Feature.FloatCmov;
+        // Each SSE generation on the one below it, the VEX families on AVX.
+        if ((features & X86Feature.Sse2) == 0) features &= ~AboveSse2;
+        if ((features & X86Feature.Sse3) == 0) features &= ~(AboveSse2 & ~X86Feature.Sse3);
+        if ((features & X86Feature.Ssse3) == 0) features &= ~(X86Feature.Sse41 | X86Feature.Sse42 | X86Feature.Avx | AboveAvx);
+        if ((features & X86Feature.Sse41) == 0) features &= ~(X86Feature.Sse42 | X86Feature.Avx | AboveAvx);
+        if ((features & X86Feature.Sse42) == 0) features &= ~(X86Feature.Avx | AboveAvx);
+        if ((features & X86Feature.Avx) == 0) features &= ~AboveAvx;
+        if ((features & (X86Feature.Avx2 | X86Feature.Fma | X86Feature.F16c)) != (X86Feature.Avx2 | X86Feature.Fma | X86Feature.F16c)) features &= ~X86Feature.Avx512;
         return features;
     }
 
@@ -229,10 +382,14 @@ public sealed class X86Cpu
             if ((model & s.Feature) == 0 && (features & s.Feature) != 0) yield return "--enable-" + s.Name;
     }
 
-    public static X86Cpu Parse(IEnumerable<string> arguments)
+    /// <summary>
+    /// The profile the options name. <paramref name="defaultCpu"/> is the
+    /// target's when no --cpu is given: the 486 for i386, x86-64 for long mode.
+    /// </summary>
+    public static X86Cpu Parse(IEnumerable<string> arguments, string defaultCpu = "486")
     {
         string[] args = arguments.ToArray();
-        string cpu = "486", fpu = "";
+        string cpu = defaultCpu, fpu = "";
         // Each switch's last word: enabled, disabled, or not said.
         bool?[] said = new bool?[Switches.Length];
         for (int i = 0; i < args.Length; i++)

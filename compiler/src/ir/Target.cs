@@ -100,7 +100,9 @@ public sealed class Target
     public static readonly Target X86_64 = new()
     {
         Name = "x86-64",
-        Cpu = "k8",
+        // x86-64's baseline until --cpu names another (Driver).
+        Cpu = "x86-64",
+        X86Profile = global::Corsac.Lang.X86.X86Cpu.ParseLongMode(Array.Empty<string>()),
         WordSize = 8,
         NativeI64 = true,
         ObjectHeaderBytes = 16,

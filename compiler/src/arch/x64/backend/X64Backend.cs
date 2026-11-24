@@ -103,7 +103,8 @@ public sealed class X64Backend : IBackend
     public ObjectFile Generate(Module module, List<string> errors)
     {
         ObjectFile obj = new();
-        new X86CodeGenerationContract("k8", "sse2", Corsac.Lang.X86.X86Feature.None, false).Attach(obj);
+        // The processor --cpu named, its instructions what this unit may use.
+        Target.X86_64.X86Profile.LongModeContract(false).Attach(obj);
         Section text = new(".text", SectionKind.Code) { Align = Math.Max(16, FunctionAlign) };
         Section rodata = new(".rodata", SectionKind.ReadOnlyData) { Align = 8 };
         Section data = new(".data", SectionKind.Data) { Align = 8 };

@@ -591,12 +591,12 @@ public static class Driver
     /// out. Both of X86Cpu.Parse's spellings are read, `--cpu NAME` and
     /// `--cpu=NAME`, so neither slips a 32-bit profile past.
     /// </summary>
-    private static string? LongModeCpuRefusal(string[] args)
+    /// <summary>The long-mode profile the options name (X86Cpu.ParseLongMode), or the refusal.</summary>
+    private static X86Cpu? LongModeCpu(string[] args, out string? refusal)
     {
-        IEnumerable<string> cpuNames = Values(args, "--cpu");
-        string? other = cpuNames.FirstOrDefault(name => name is not ("k8" or "x86-64"));
-        return other is null ? null
-            : $"--cpu {other}: the x86-64 target's processor is k8 (the first AMD64)";
+        refusal = null;
+        try { return X86Cpu.ParseLongMode(args); }
+        catch (ArgumentException failure) { refusal = failure.Message; return null; }
     }
 
     /// <summary>
@@ -639,16 +639,15 @@ public static class Driver
         // source still overrides: x86-16 for a boot sector, x86-32 for the
         // kernel's own assembly, which has no real mode left to speak of.
         int bits = named == Target.X86 ? 32 : named == Target.X86_64 ? 64 : 16;
-        // A long-mode assembly runs on a K8 or later, whatever mode each of
-        // its parts is in, and the assembler holds it to no profile; --cpu
-        // may name the K8, as for compile, and nothing else.
+        // A long-mode assembly runs on the long-mode processor --cpu names
+        // (x86-64's baseline by default), whatever mode each of its parts is
+        // in; its object says which (X86Assembler's contract). The assembler
+        // holds its instructions to no profile.
         X86Cpu? cpu = null;
         if (bits == 64)
         {
-            if (LongModeCpuRefusal(args) is { } refusal)
-            {
-                return Fail(refusal);
-            }
+            cpu = LongModeCpu(args, out string? refusal);
+            if (cpu is null) return Fail(refusal!);
         }
         else
         {
@@ -886,17 +885,18 @@ public static class Driver
         }
         Target.Current = target;
 
-        // LONG MODE IS ONE PROCESSOR BASELINE: the K8, the first AMD64. Every
-        // x86-64 processor since runs what it runs, and the 32-bit profiles'
-        // choices -- an FPU or none, MMX, 3DNow! -- do not apply.
+        // LONG MODE BY --cpu TOO: a model that runs x86-64 code -- the K8 by
+        // revision, the K10, Intel's families, the psABI's levels -- whose
+        // instructions and tuning the x86-64 backend asks as i386's does
+        // (X86Cpu, CpuModel); x86-64's baseline (the K8's set without 3DNow!)
+        // when none is named. Its floating point is SSE2: no --fpu.
         bool longMode = target == Target.X86_64;
         if (longMode)
         {
-            if (LongModeCpuRefusal(args) is { } refusal)
-            {
-                return Fail(refusal);
-            }
-            target.Cpu = "k8";
+            X86Cpu? profile = LongModeCpu(args, out string? refusal);
+            if (profile is null) return Fail(refusal!);
+            target.Cpu = profile.Name;
+            target.X86Profile = profile;
         }
         else
         {
