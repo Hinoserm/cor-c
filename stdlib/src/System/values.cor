@@ -535,7 +535,7 @@ public class Lazy<T> {
         if (running) { throw new InvalidOperationException("ValueFactory attempted to access the Value property of this instance."); }
         running = true;
         try {
-            T result = make is null ? Activator.CreateInstance<T>() : make.Invoke();
+            T result = make is null ? LazyFactory<T>.Make() : make.Invoke();
             value = result;
             made = true;
             make = null;
@@ -555,6 +555,15 @@ public class Lazy<T> {
         if (!made) { return "Value is not created."; }
         return value!.ToString()!;
     }
+}
+
+/// WHAT Lazy<T>() MAKES WITH NO FACTORY, as .NET's does: Activator's T.
+/// Apart from Lazy, so that Lazy keeps one copy for every reference T --
+/// a class that makes one of its type parameters is copied per argument
+/// (TypeParam.Made) -- and only this is: shared code calls each
+/// instantiation's own (Monomorphiser.CanonStaticCall).
+static class LazyFactory<T> {
+    internal static T Make() { return Activator.CreateInstance<T>(); }
 }
 
 // ---- Tuple ----------------------------------------------------------------

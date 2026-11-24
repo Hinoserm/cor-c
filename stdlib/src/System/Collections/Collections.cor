@@ -2119,7 +2119,7 @@ public class StringCollection : IEnumerable<string> {
 /// `degree` tasks, each a run of neighbours, and the results come back in
 /// the source's order whether or not the query was asked to keep it (an
 /// order .NET allows an unordered query too). A projection's exceptions
-/// are thrown together as an System.AggregateException, as .NET's are. Walked
+/// are thrown together as a System.AggregateException, as .NET's are. Walked
 /// as a sequence, the query is its results.
 public class ParallelQuery<TSource> : System.Collections.Generic.IEnumerable<TSource>
 {
@@ -2142,7 +2142,13 @@ sealed class SourceQuery<T> : ParallelQuery<T>
 {
     private readonly System.Collections.Generic.IEnumerable<T> _source;
     internal SourceQuery(System.Collections.Generic.IEnumerable<T> source, int degree, bool ordered) : base(degree, ordered) { _source = source; }
-    internal override T[] Run() { return Enumerable.ToArray(_source); }
+    // The source's own exceptions surface as the query's do, in an
+    // AggregateException, as .NET's PLINQ throws them.
+    internal override T[] Run()
+    {
+        try { return Enumerable.ToArray(_source); }
+        catch (System.Exception e) { throw new System.AggregateException(e); }
+    }
     internal override ParallelQuery<T> With(int degree, bool ordered) { return new SourceQuery<T>(_source, degree, ordered); }
 }
 

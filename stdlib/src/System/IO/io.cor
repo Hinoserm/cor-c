@@ -3118,12 +3118,14 @@ public abstract class FileSystemInfo
         }
     }
 
+    // A PATH THAT IS NOT THERE answers 1601-01-01 UTC for each of its
+    // times (FILETIME zero), as .NET's FileSystemInfo does.
     public DateTime LastWriteTimeUtc
     {
         get
         {
             byte[]? d = Data();
-            return d == null ? DateTime.FromUnixTimeSeconds(0) : DateTime.FromUnixTime(Stat.Mtime(d), Stat.MtimeNsec(d));
+            return d == null ? DateTime.FromFileTimeUtc(0) : DateTime.FromUnixTime(Stat.Mtime(d), Stat.MtimeNsec(d));
         }
         set
         {
@@ -3143,7 +3145,7 @@ public abstract class FileSystemInfo
         get
         {
             byte[]? d = Data();
-            return d == null ? DateTime.FromUnixTimeSeconds(0) : DateTime.FromUnixTime(Stat.Atime(d), Stat.AtimeNsec(d));
+            return d == null ? DateTime.FromFileTimeUtc(0) : DateTime.FromUnixTime(Stat.Atime(d), Stat.AtimeNsec(d));
         }
         set
         {
@@ -3164,7 +3166,7 @@ public abstract class FileSystemInfo
         get
         {
             byte[]? d = Data();
-            return d == null ? DateTime.FromUnixTimeSeconds(0) : DateTime.FromUnixTime(Stat.Ctime(d), Stat.CtimeNsec(d));
+            return d == null ? DateTime.FromFileTimeUtc(0) : DateTime.FromUnixTime(Stat.Ctime(d), Stat.CtimeNsec(d));
         }
     }
 

@@ -27078,6 +27078,18 @@ public sealed partial class Binder
             {
                 if (args[i].IsError || i < c.Args.Count && (IsFunctionSource(c.Args[i]) || Typeless(c.Args[i]) || Deferred(c.Args[i]))) continue;
                 Type a = Close(Wants(one, i), oneBound), b = Close(Wants(other, i), otherBound);
+                // AN ARGUMENT THAT IS EXACTLY ONE OF THE TWO converts to it
+                // better (C# 12.6.4.5), made or not: an extension's receiver
+                // typed by a `var` or by the call before it is still spelt
+                // over its template (ParallelQuery<int>), and passed over as
+                // unmade, `q.Select(x => x + 1)` on a ParallelQuery tied and
+                // took Enumerable's Select, the IEnumerable one.
+                if (!Open(a) && !Open(b) && Same(args[i], a) != Same(args[i], b))
+                {
+                    if (Same(args[i], a)) oneBetter = true;
+                    else otherBetter = true;
+                    continue;
+                }
                 if (Unmade(a) || Unmade(b) || Open(a) || Open(b)) continue;
                 int said = BetterConversion(args[i], a, b);
                 if (said > 0) oneBetter = true;

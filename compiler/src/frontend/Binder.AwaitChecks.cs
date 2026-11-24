@@ -539,8 +539,12 @@ public sealed partial class Binder
         // release's (Monitor.Exit, a `lock`'s finally): it throws only where
         // the lock was not held, so never with it counted -- recorded, the
         // finally's way out of an exception took the lock to the outer
-        // handlers, and round a loop the count grew without end.
-        if (s is not (TryStmt or Block) && !(s is ExprStmt { Expr: CallExpr released } && LockEffectOf(released) == LockEffect.Give))
+        // handlers, and round a loop the count grew without end. Only a lock
+        // type's own release: a method of the program that gives a lock back
+        // (its summary, MarkedLockEffect) may throw before it does, with the
+        // lock still held.
+        if (s is not (TryStmt or Block) && !(s is ExprStmt { Expr: CallExpr released } && LockEffectOf(released) == LockEffect.Give
+                && _r.Calls.TryGetValue(released, out MethodSymbol? releasing) && IsLockType(releasing.Owner)))
         {
             for (int open = 0; open < w.Tries.Count; open++)
             {

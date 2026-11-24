@@ -1,0 +1,81 @@
+// test: lazy_modes_plinq_and_lambda_overloads
+// expect-exit: 0
+// expect-output:
+// 42 True Value is not created. 7
+// made Cond
+// cached 1 1
+// publication 2 9
+// none 1 1
+// recursive InvalidOperationException
+// 1,4,9,16,25,36,49,64,81,100 10
+// aggregate ArgumentException
+// source aggregate InvalidOperationException
+// 4 -1
+//
+// .NET'S Lazy<T>, LazyThreadSafetyMode AND AsParallel, AND TWO BINDER RULES
+// THEY NEEDED. Lazy: the default mode keeps a factory's exception and throws
+// it again at every ask; PublicationOnly keeps none and runs the factory
+// again; None keeps it as the default does; with no factory, a T made by
+// its parameterless constructor (each instantiation's own, though Lazy's
+// code is one copy for every reference T); a factory asking for its own
+// value is refused in .NET's words. PLINQ: Select over AsParallel keeps the
+// source's order, a projection's exception and the source's own come out
+// in an AggregateException. Binder: a lambda argument fits no parameter it
+// cannot convert to -- `new Lazy<int>(() => 42)` is Lazy(Func<int>), never
+// Lazy(bool) -- and a conditional with a throw arm is the other arm's type.
+// Checked against .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+
+sealed class Cond { public override string ToString() => "Cond"; }
+
+static class P {
+    static IEnumerable<int> Broken() { yield return 1; throw new InvalidOperationException("source"); }
+
+    static void Main() {
+        Lazy<int> answer = new(() => 42);
+        Lazy<int> later = new(() => 7, true);
+        Console.WriteLine(answer.Value + " " + answer.IsValueCreated + " " + later.ToString() + " " + later.Value);
+
+        Lazy<Cond> made = new();
+        Console.WriteLine("made " + made.Value.GetType().Name);
+
+        int runs = 0;
+        Lazy<int> failing = new(() => { runs++; throw new ArgumentException("bad"); });
+        int seen = 0;
+        for (int i = 0; i < 2; i++) { try { _ = failing.Value; } catch (ArgumentException) { seen++; } }
+        Console.WriteLine("cached " + runs + " " + seen / 2);
+
+        int tries = 0;
+        Lazy<int> second = new(() => { tries++; if (tries == 1) throw new ArgumentException("first"); return 9; }, LazyThreadSafetyMode.PublicationOnly);
+        try { _ = second.Value; } catch (ArgumentException) { }
+        int published = second.Value;
+        Console.WriteLine("publication " + tries + " " + published);
+
+        int noneRuns = 0;
+        Lazy<int> none = new(() => { noneRuns++; throw new ArgumentException("none"); }, LazyThreadSafetyMode.None);
+        for (int i = 0; i < 2; i++) { try { _ = none.Value; } catch (ArgumentException) { } }
+        Console.WriteLine("none " + noneRuns + " " + (none.IsValueCreated ? 0 : 1));
+
+        Lazy<int>? self = null;
+        self = new Lazy<int>(() => self!.Value + 1, LazyThreadSafetyMode.None);
+        try { _ = self.Value; } catch (InvalidOperationException e) { Console.WriteLine("recursive " + e.GetType().Name); }
+
+        int[] squares = Enumerable.Range(1, 10).AsParallel().AsOrdered().WithDegreeOfParallelism(3).Select(x => x * x).ToArray();
+        Console.WriteLine(string.Join(",", squares) + " " + squares.Length);
+
+        try { Enumerable.Range(1, 8).AsParallel().Select(x => x == 5 ? throw new ArgumentException("five") : x).ToList(); }
+        catch (AggregateException e) { Console.WriteLine("aggregate " + e.InnerExceptions[0].GetType().Name); }
+
+        try { Broken().AsParallel().Select(x => x).ToArray(); }
+        catch (AggregateException e) { Console.WriteLine("source aggregate " + e.InnerExceptions[0].GetType().Name); }
+
+        Func<int, int> pick = x => x == 3 ? throw new ArgumentException("three") : x;
+        int caught = 0;
+        try { pick(3); } catch (ArgumentException) { caught = -1; }
+        Console.WriteLine(pick(4) + " " + caught);
+    }
+}

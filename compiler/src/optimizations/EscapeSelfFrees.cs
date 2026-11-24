@@ -215,7 +215,10 @@ public sealed partial class Escape
                     case FreeWalk.BeforeFree:
                         if (ReferenceEquals(i, store)) return Step.To(FreeWalk.AfterStore);
                         if (ReferenceEquals(i, free)) return Step.To(FreeWalk.Clearing);
-                        return throws || Quiet(i, field, defs, Peer) ? Step.Go : Step.Fail;
+                        // As before the store above: a way that cannot reach
+                        // the free but by the read again is no matter.
+                        if (throws || Quiet(i, field, defs, Peer)) return Step.Go;
+                        return reachesFree.Contains(BlockOf(i)) ? Step.Fail : Step.Stop;
                     case FreeWalk.Clearing:
                         if (ReferenceEquals(i, store)) return Step.To(FreeWalk.AfterFree);
                         if (ReferenceEquals(i, free) || throws || i.Op is Opcode.Ret or Opcode.Unwind or Opcode.Unreachable or Opcode.Trap
@@ -366,7 +369,6 @@ public sealed partial class Escape
             if (b.IsLandingPad && !ReferenceEquals(b, f.Entry)) yield return b;
     }
 
-    /// <summary>The block and position of an instruction.</summary>
     /// <summary>The blocks from which `target` can be reached, itself among them (predecessors walked back), not walking back past `barrier`.</summary>
     private static HashSet<Block> ReachingBlocks(Function f, Block target, Block barrier)
     {
@@ -383,6 +385,7 @@ public sealed partial class Escape
         return seen;
     }
 
+    /// <summary>The block and position of an instruction.</summary>
     private static (Block, int) Where(Function f, Instr i)
     {
         foreach (Block b in f.Blocks)
