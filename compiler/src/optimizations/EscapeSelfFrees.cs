@@ -157,6 +157,19 @@ public sealed partial class Escape
             if (!Walk(f, root, 0, FreeWalk.BeforeFree, (i, state, throws) => ReferenceEquals(i, load) ? Step.Stop : ReferenceEquals(i, free) ? Step.Fail : Step.Go))
                 return null;
         (Block at, int index) = Where(f, load);
+        // THE WAYS THAT REACH THE FREE WITHOUT READING AGAIN: the blocks from
+        // which its block can be reached by a way that does not pass the
+        // read's. A way from the read that frees nothing before the next read
+        // -- List's Capacity setter grown in place, returning, inlined into a
+        // caller that runs on into a loop of List.Add calls and round to the
+        // next lap's read -- is no matter for this pair: the walk stops at the
+        // read. Asked only of the setter's own body, it ended at the return
+        // (de702832 made the setter one a caller takes in, and 1904's List
+        // lost its owned array).
+        HashSet<Block> reachesFree = ReachingBlocks(f, Where(f, free).Item1, at);
+        Dictionary<Instr, Block> blocks = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) blocks[i] = b;
+        Block BlockOf(Instr i) => blocks[i];
         foreach (Instr store in stores)
         {
             // REPLACED, THEN FREED: on every way from the read to the free the
@@ -178,7 +191,8 @@ public sealed partial class Escape
                         if (ReferenceEquals(i, store)) return Step.To(FreeWalk.AfterStore);
                         if (Into(i) is not null) { met.Add(i); return Step.To(FreeWalk.AfterStore); }
                         if (ReferenceEquals(i, free)) return Step.Fail;
-                        return throws || Quiet(i, field, defs, null) ? Step.Go : Step.Fail;
+                        if (throws || Quiet(i, field, defs, null)) return Step.Go;
+                        return reachesFree.Contains(BlockOf(i)) ? Step.Fail : Step.Stop;
                     case FreeWalk.AfterStore:
                         return ReferenceEquals(i, free) ? Step.To(FreeWalk.AfterFree) : Step.Go;
                     default:
@@ -353,6 +367,22 @@ public sealed partial class Escape
     }
 
     /// <summary>The block and position of an instruction.</summary>
+    /// <summary>The blocks from which `target` can be reached, itself among them (predecessors walked back), not walking back past `barrier`.</summary>
+    private static HashSet<Block> ReachingBlocks(Function f, Block target, Block barrier)
+    {
+        Dictionary<Block, List<Block>> preds = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+            foreach (Block s in b.Successors)
+                (preds.TryGetValue(s, out List<Block>? list) ? list : preds[s] = new()).Add(b);
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance) { target };
+        Stack<Block> work = new();
+        work.Push(target);
+        while (work.TryPop(out Block? b))
+            if (!ReferenceEquals(b, barrier) && preds.TryGetValue(b, out List<Block>? from))
+                foreach (Block p in from) if (seen.Add(p)) work.Push(p);
+        return seen;
+    }
+
     private static (Block, int) Where(Function f, Instr i)
     {
         foreach (Block b in f.Blocks)
