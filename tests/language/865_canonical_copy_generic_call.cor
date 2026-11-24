@@ -2,9 +2,12 @@
 // expect-exit: 0
 // expect-output:
 // 2 1 1
+//
+// A ref struct: a field of ReadOnlySpan<T> is one only a ref struct may hold
+// (C#'s CS8345), which .NET refuses too.
 using System;
 
-struct Finder<T> where T : IEquatable<T>
+ref struct Finder<T> where T : IEquatable<T>
 {
     readonly ReadOnlySpan<T> _items;
     readonly T _want;
