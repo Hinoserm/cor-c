@@ -10877,13 +10877,11 @@ public unsafe readonly ref struct Span<T> {
             else { Sys.MemoryMove(dst, src, bytes, oneBlock); }
             return;
         }
-        // References: downward where the two may be one block and the
-        // destination starts inside the source. Two objects' addresses are
-        // never compared -- they never overlap, and the link's run of an
-        // initialiser cannot order them (a string table copied in a static's
-        // initialiser kept its type from being made at the link, 2460).
-        bool sameBlock = from == null || into == null || (object?)from == (object?)into;
-        if (sameBlock && dst > src && dst < src + bytes) {
+        // References: downward where the destination starts inside the
+        // source. Two objects' addresses ordered are any order a layout could
+        // give, and they never overlap; the link's run of an initialiser orders
+        // them so too (PreinitMachine.Compare, 2460).
+        if (dst > src && dst < src + bytes) {
             for (int i = n - 1; i >= 0; i--) { Span<T>.At(dst + (nuint)i * (nuint)sizeof(T)) = Span<T>.At(src + (nuint)i * (nuint)sizeof(T)); }
             return;
         }

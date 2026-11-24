@@ -51,6 +51,14 @@ public sealed class PreinitWorld
     /// <summary>Bytes, and the words of them that hold an address (their bytes zero).</summary>
     public sealed class Region
     {
+        /// <summary>
+        /// Its place among every region made, for ordering two different
+        /// regions' addresses (PreinitMachine.Compare): any order is one a
+        /// real layout could have.
+        /// </summary>
+        public long Serial { get; } = System.Threading.Interlocked.Increment(ref _serials);
+        private static long _serials;
+
         public required RegionKind Kind { get; init; }
         /// <summary>The symbol a unit's data or the link's storage is defined by.</summary>
         public string? Symbol { get; init; }

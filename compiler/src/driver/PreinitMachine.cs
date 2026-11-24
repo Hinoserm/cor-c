@@ -501,6 +501,16 @@ public sealed class PreinitMachine : Preinit.IMachine
             case (Ptr x, Ptr y) when ReferenceEquals(x.Region, y.Region) && unsigned:
                 order = x.Offset.CompareTo(y.Offset);
                 break;
+            // TWO DIFFERENT REGIONS' ADDRESSES, ordered: where two objects lie
+            // is the layout's, and C# promises no order between them, so any
+            // one is one a real run could see -- a region's whole span before
+            // or after the other's, by when each was made. Span.Move asks it
+            // to tell an overlap, which two objects never have: either answer
+            // moves the same bytes (2460, an initialiser copying one array of
+            // references into another).
+            case (Ptr x, Ptr y) when unsigned:
+                order = x.Region.Serial.CompareTo(y.Region.Serial);
+                break;
             // A real address is past every small number, unsigned.
             case (Ptr, Num { Bits: >= 0 and < 4096 }) when unsigned: order = 1; break;
             case (Num { Bits: >= 0 and < 4096 }, Ptr) when unsigned: order = -1; break;
