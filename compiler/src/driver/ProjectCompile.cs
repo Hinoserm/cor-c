@@ -887,7 +887,9 @@ public static class ProjectCompile
             foreach (Corsac.Lang.Ir.Symbol symbol in obj.Symbols)
             {
                 bool copy = symbol.Name.EndsWith(Corsac.Lang.Elf.Linker.InsideSuffix, StringComparison.Ordinal);
-                if (symbol.IsDefined) { if (copy) copies.Add(symbol.Name); }
+                // And a function that never touches the FPU's state (X86.FpuFree's marker, local).
+                bool fpuFree = symbol.Name.EndsWith(FpuFreeSuffix, StringComparison.Ordinal);
+                if (symbol.IsDefined) { if (copy || fpuFree) copies.Add(symbol.Name); }
                 else calls.Add(copy ? symbol.Name[..^Corsac.Lang.Elf.Linker.InsideSuffix.Length] : symbol.Name);
             }
             read.Add(new UnitCalls(unit, copies, calls));
@@ -909,9 +911,14 @@ public static class ProjectCompile
         }
     }
 
-    /// <summary>A unit's answers under `facts`: which of the methods it calls in other units have a copy.</summary>
+    /// <summary>The FpuFree marker's suffix (Corsac.Lang.X86.FpuFree.Suffix).</summary>
+    private const string FpuFreeSuffix = "$fpufree";
+
+    /// <summary>A unit's answers under `facts`: which of the methods it calls in other units have a copy, and which never touch the FPU's state.</summary>
     private static string Answers(UnitCalls read, HashSet<string> facts)
-        => string.Join('\n', read.Calls.Where(name => facts.Contains(name + Corsac.Lang.Elf.Linker.InsideSuffix)).Order(StringComparer.Ordinal));
+        => string.Join('\n', read.Calls.Where(name => facts.Contains(name + Corsac.Lang.Elf.Linker.InsideSuffix))
+            .Concat(read.Calls.Where(name => facts.Contains(name + FpuFreeSuffix)).Select(name => name + FpuFreeSuffix))
+            .Order(StringComparer.Ordinal));
 
     private static string AnswersOf(Unit unit)
         => File.Exists(unit.Receipt + ".inside") ? File.ReadAllText(unit.Receipt + ".inside") : "";

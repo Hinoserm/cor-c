@@ -1,0 +1,47 @@
+// test: mmx_values_across_a_call_that_never_touches_the_fpu
+// cpu: --cpu=pentium-mmx
+// expect-exit: 0
+// expect-output:
+// mixed 0014001400140014 36 0004000400040004 120
+//
+// A CALL TO A FUNCTION THAT NEVER TOUCHES THE FPU'S STATE (X86.FpuFree) is made
+// with the MMX registers as they are: no EMMS before it, and the packed value
+// held across it is the one it was. Step is integer arithmetic and a call
+// to another such function (Twice); Total walks an array, whose bounds
+// check's throw is a call to the runtime, which is not such a function --
+// its callers EMMS as before. Each answer is the one the arithmetic gives.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Twice(int x) => x + x;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Step(int a, int b) => Twice(a) + b * 3;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Total(int[] values) { int t = 0; for (int i = 0; i < values.Length; i++) t += values[i]; return t; }
+
+    static int Main()
+    {
+        int[] values = { 10, 20, 30, 60 };
+        int steps = 0, totals = 0;
+        ulong mixed, other;
+        {
+            Packed64 v = Packed.FromBits(0x0004000400040004UL);
+            Packed64 w = v;
+            for (int i = 0; i < 4; i++)
+            {
+                v = Packed.Add16(v, Packed.FromBits(0x0003000300030003UL));
+                steps += Step(i, 2);
+            }
+            totals = Total(values);
+            mixed = Packed.Add16(v, w).Bits;
+            other = w.Bits;
+        }
+        Console.WriteLine("mixed " + mixed.ToString("X16") + " " + steps + " " + other.ToString("X16") + " " + totals);
+        return 0;
+    }
+}

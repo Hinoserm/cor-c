@@ -730,7 +730,9 @@ internal sealed partial class Selector
         if (i.Op is Opcode.CallIndirect or Opcode.Syscall or Opcode.Ret or Opcode.Unwind or Opcode.Trap) return true;
         // An asm block finds the x87 stack empty, whatever it runs: its rules
         // are checked from there (InlineAsm.Analyze).
-        if (i.Op == Opcode.Call) return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception"
+        // A call to a function that never touches the FPU's state (FpuFree)
+        // finds the MMX registers as the caller left them, and leaves them.
+        if (i.Op == Opcode.Call) return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception" && !FpuFree.Known(c)
             || c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal);
         if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
         foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
@@ -751,7 +753,7 @@ internal sealed partial class Selector
         // finally -- the compiler's own around a body -- kept the x87's
         // save, even a variant without the packed registers.
         if (i.Op == Opcode.Call)
-            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception"
+            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception" && !FpuFree.Known(c)
                 || AsmUsesFloatState(i);
         if (i.Op is Opcode.Ret or Opcode.Unwind or Opcode.Trap) return false;
         if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;

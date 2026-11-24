@@ -395,6 +395,9 @@ public sealed class X86Backend : IBackend
         List<string>?[] diagnostics = new List<string>?[window];
         int batchStart = 0, batchEnd = 0;
         PeakBatchBytes = 0; PeakBatchFunctions = 0;
+        // THE FUNCTIONS THAT NEVER TOUCH THE FPU'S STATE (FpuFree): a call to
+        // one keeps the MMX registers and needs no x87 save in a packed block.
+        _fpuFree = FpuFree.Compute(module, SafepointPolls);
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
             Function f = module.Functions[functionIndex];
@@ -554,6 +557,11 @@ public sealed class X86Backend : IBackend
                 Name = bodyName, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported && !stackBody,
             });
             defined.Add(bodyName);
+            // Its FpuFree marker, local: what the project build hands the
+            // other units of this image (ProjectCompile's facts), never a
+            // name two objects could both define.
+            if (f.Exported && _fpuFree?.Contains(f.Name) == true)
+                obj.Symbols.Add(new Symbol { Name = FpuFree.Marker(f.Name), Section = text, Offset = start, Size = 0, Global = false });
             // THE WAY IN TO A BODY THAT KEEPS ITS ARGUMENTS ON THE STACK
             // (RegisterArgs.StackEntry), after the body, with a frame and a
             // frame-table entry of its own so a walk of the frames goes
@@ -990,6 +998,7 @@ public sealed class X86Backend : IBackend
 
     public string Assembly(Module module)
     {
+        _fpuFree = FpuFree.Compute(module, SafepointPolls);
         StringBuilder sb = new();
         List<string> errors = new();
         sb.Append("; module ").Append(module.Name).Append('\n');
@@ -1079,8 +1088,12 @@ public sealed class X86Backend : IBackend
     }
 
     /// <summary>Select and allocate one function; null, with errors reported, if it cannot be compiled.</summary>
+    /// <summary>This module's functions that never touch the FPU's state (FpuFree.Compute), for its selection.</summary>
+    private HashSet<string>? _fpuFree;
+
     private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
+        FpuFree.Use(_fpuFree);
         int before = errors.Count;
         if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
         // The frees before a trap, one copy for every trap that has them (SharedTrapFrees).

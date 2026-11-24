@@ -1188,6 +1188,12 @@ public static class Driver
                 insideElsewhere.UnionWith(File.ReadAllLines(facts).Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
         }
         Corsac.Lang.Lower.Lowering.InsideElsewhere = insideElsewhere;
+        // THE OTHER UNITS' FUNCTIONS THAT NEVER TOUCH THE FPU'S STATE, from the
+        // same facts (X86.FpuFree): a call to one keeps the MMX registers.
+        Corsac.Lang.X86.FpuFree.Elsewhere = Value(args, "--inside-facts") is string fpuFacts && File.Exists(fpuFacts)
+            ? new(File.ReadAllLines(fpuFacts).Where(n => n.EndsWith(Corsac.Lang.X86.FpuFree.Suffix, StringComparison.Ordinal))
+                .Select(n => n[..^Corsac.Lang.X86.FpuFree.Suffix.Length]), StringComparer.Ordinal)
+            : new(StringComparer.Ordinal);
         Binder.KeepsStateElsewhere = insideElsewhere.Count == 0 ? null
             : m => Corsac.Lang.Lower.Lowering.InsideCandidate(m) && insideElsewhere.Contains(Corsac.Lang.Lower.Lowering.Label(m) + Linker.InsideSuffix);
         Corsac.Lang.Lower.Lowering.PackedReport = args.Contains("--packed-report");
