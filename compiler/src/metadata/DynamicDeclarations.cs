@@ -632,15 +632,28 @@ public static class DynamicDeclarations
             each.Append("    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]\n");
             each.Append("    static int ").Append(method).Append('(').Append(keyword).Append(' ').Append(own).Append(", string name, System.Dynamic.LateCall call, out object? result)\n    {\n");
             each.Append("        result = null;\n            switch (name)\n            {\n");
+            // AND ONE METHOD A MEMBER'S NAME, each a call from the switch and
+            // kept one (NoInlining): a primitive's every member in one body
+            // was a function of 28,000 instructions that escape analysis made
+            // 790,000 -- the frees of what each case owns put on each of its
+            // ways out, every case's in one function -- and that one function
+            // took longer to compile than the rest of the program. A member's
+            // overloads are one method, as small as the member.
+            StringBuilder members = new();
+            int number = 0;
             foreach ((string name, List<MethodDecl> overloads) in methods)
             {
-                each.Append("            case \"").Append(name).Append("\":\n            {\n");
+                string member = method + "_" + number++;
+                each.Append("            case \"").Append(name).Append("\": return ").Append(member).Append('(').Append(own).Append(", call, out result);\n");
+                members.Append("    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]\n");
+                members.Append("    static int ").Append(member).Append('(').Append(keyword).Append(' ').Append(own).Append(", System.Dynamic.LateCall call, out object? result)\n    {\n");
+                members.Append("        result = null;\n");
                 List<MethodDecl> ordered = overloads.OrderByDescending(o => o.Params.Sum(prm => Weight(scope, statics, prm.Type))).ToList();
                 foreach (bool exact in new[] { true, false })
-                    foreach (MethodDecl md in ordered) CallCases(scope, statics, each, md, exact, callee: Qualified(statics) + "." + name, self: own);
-                each.Append("                return 2;\n            }\n");
+                    foreach (MethodDecl md in ordered) CallCases(scope, statics, members, md, exact, callee: Qualified(statics) + "." + name, self: own);
+                members.Append("        return 2;\n    }\n");
             }
-            each.Append("            }\n        return 1;\n    }\n");
+            each.Append("            }\n        return 1;\n    }\n").Append(members);
         }
         s.Append("        return 1;\n    }\n").Append(each).Append("}\n");
         return any ? s.ToString() : null;
