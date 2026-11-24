@@ -14,12 +14,12 @@ namespace Corsac.Lang.X86;
 /// (`lea esp, [ebp - k]`), which sit where the collector and the unwinder
 /// read them, at EBP minus the frame minus their pushes.
 ///
-/// Only where nothing moves ESP between the prologue and the epilogue but a
-/// call with nothing on the stack -- no push, no pop, no `sub esp` for
-/// arguments, no operand already off ESP -- so ESP is where the prologue left
-/// it at every slot's access: a leaf of packed rounds, like Generate4, whose
-/// only calls are its bounds checks' throws; a function that passes stack
-/// arguments keeps its slots on EBP and MOVUPS.
+/// ESP MOVES BY KNOWN AMOUNTS BETWEEN THE PROLOGUE AND THE EPILOGUE -- a
+/// call's arguments pushed and taken off -- and each slot is addressed off ESP
+/// with what it has moved by there (Depths), as LLVM's frame-index elimination
+/// adds a push sequence's SP adjustment: so a function that passes stack
+/// arguments keeps its slots aligned too. Not where ESP moves by anything
+/// else (Depths says what).
 ///
 /// IN A FUNCTION WITH A HANDLER TOO: every way into a landing pad lands with
 /// the aligned ESP. A throw reaches one by the handler chain alone
@@ -48,23 +48,16 @@ internal static class AlignedSlots
             mem = x;
             return true;
         }
+        // WHERE ESP IS, as bytes below where the prologue left it, before
+        // each instruction (Depths): what a slot's offset off ESP adds there.
+        Dictionary<MInstr, int>? depth = Depths(m);
+        if (depth is null) return;
         SortedSet<int> slots = new();
         foreach (MBlock b in m.Blocks)
-        {
             foreach (MInstr i in b.Instrs)
-            {
-                if (i.Op is MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.Ret || i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return;
-                for (int k = 0; k < i.Operands.Count; k++)
-                {
-                    MOperand o = i.Operands[k];
-                    if (o is MReg { IsPhys: true, Phys: Gpr.Esp } && (Roles.Of(i.Op, k) & Roles.Role.Def) != 0) return;
-                    if (o is MMem { } x && (x.Base is { IsPhys: true, Phys: Gpr.Esp } || x.Index is { IsPhys: true, Phys: Gpr.Esp })) return;
-                }
                 if (i.Op == MOp.MovF && i.Width == 16 && i.Operands.Count == 2)
                     foreach (MOperand o in i.Operands)
                         if (Spill(o, out MMem mem)) slots.Add(mem.Disp);
-            }
-        }
         if (slots.Count == 0) return;
         // Every spill operand inside a slot names its start: the whole slot moves.
         foreach (MBlock b in m.Blocks)
@@ -84,11 +77,74 @@ internal static class AlignedSlots
             foreach (MInstr i in b.Instrs)
                 for (int k = 0; k < i.Operands.Count; k++)
                     if (Spill(i.Operands[k], out MMem mem) && at.TryGetValue(mem.Disp, out int to))
-                        i.Operands[k] = new MMem(MReg.Of(Gpr.Esp), to) { IsSpill = true, Aligned = true };
+                    {
+                        // Only an instruction Depths reached names a slot: one it did not is never run.
+                        if (!depth.TryGetValue(i, out int below)) throw new InvalidOperationException($"{m.Source.Name}: an aligned slot named where ESP is not known");
+                        i.Operands[k] = new MMem(MReg.Of(Gpr.Esp), to + below) { IsSpill = true, Aligned = true };
+                    }
         m.AlignedArea = 16 * at.Count;
         m.Frameless = false;
         m.Frame.Release(slots);
         foreach (MBlock b in m.Blocks) FoldReloads(b.Instrs);
+    }
+
+    /// <summary>
+    /// HOW FAR BELOW THE PROLOGUE'S ESP EACH INSTRUCTION RUNS, in bytes, or
+    /// null where that is not one number: what LLVM's frame-index elimination
+    /// calls the SP adjustment of a push sequence. A call's arguments pushed
+    /// (PUSH, `sub esp, n`) and taken off after it (`add esp, n`, POP) move it
+    /// by known amounts, so an aligned slot ESP-based at the prologue is still
+    /// ESP-based at every instruction, its displacement that much more. Each
+    /// block's in-depth is the same along every edge into it, the entry's 0
+    /// and a landing pad's 0 (the handler record's ESP is the aligned one,
+    /// read where the try opened). Null for anything else that moves ESP --
+    /// `and esp`, a move into it, a call into C (which may take its own
+    /// arguments off, stdcall), a return mid-body, an asm block that needs the
+    /// frame -- and for two edges that disagree.
+    /// </summary>
+    private static Dictionary<MInstr, int>? Depths(MFunction m)
+    {
+        Dictionary<MInstr, int> depth = new(ReferenceEqualityComparer.Instance);
+        Dictionary<MBlock, int> into = new(ReferenceEqualityComparer.Instance);
+        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+        for (int k = 0; k < m.Blocks.Count; k++) index[m.Blocks[k]] = k;
+        Stack<MBlock> work = new();
+        void Enter(MBlock b, int d, ref bool bad)
+        {
+            if (into.TryGetValue(b, out int had)) { if (had != d) bad = true; return; }
+            into[b] = d;
+            work.Push(b);
+        }
+        bool bad = false;
+        if (m.Blocks.Count > 0) Enter(m.Blocks[0], 0, ref bad);
+        foreach (MBlock b in m.Blocks)
+            if (b.Source?.IsLandingPad == true) Enter(b, 0, ref bad);
+        List<MBlock> next = new();
+        while (work.Count > 0 && !bad)
+        {
+            MBlock b = work.Pop();
+            int d = into[b];
+            foreach (MInstr i in b.Instrs)
+            {
+                depth[i] = d;
+                switch (i.Op)
+                {
+                    case MOp.Push or MOp.Pushfd: d += 4; continue;
+                    case MOp.Pop or MOp.Popfd: d -= 4; continue;
+                    case MOp.Ret: return null;
+                    case MOp.InlineAsm when i.Asm!.NeedsFrame: return null;
+                    case MOp.Call or MOp.CallInd when i.Native: return null;
+                    case MOp.Sub or MOp.Add when i.Operands is [MReg { IsPhys: true, Phys: Gpr.Esp }, MImm { Symbol: null } n]:
+                        d += i.Op == MOp.Sub ? (int)n.Value : -(int)n.Value;
+                        continue;
+                }
+                for (int k = 0; k < i.Operands.Count; k++)
+                    if (i.Operands[k] is MReg { IsPhys: true, Phys: Gpr.Esp } && (Roles.Of(i.Op, k) & Roles.Role.Def) != 0) return null;
+            }
+            m.SuccessorsInto(index[b], next);
+            foreach (MBlock s in next) Enter(s, d, ref bad);
+        }
+        return bad ? null : depth;
     }
 
     /// <summary>Whether a slot starts in the fifteen bytes below an offset: the offset inside it.</summary>

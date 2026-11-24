@@ -1,0 +1,126 @@
+// test: packed128_spills_aligned_where_arguments_are_pushed
+// only-target: x86
+// cpu: --cpu=athlon64 --disable-3dnow
+// requires-host: sse2
+// expect-exit: 0
+// expect-output:
+// rows 1 True 4
+// aligned True
+// caught 3 after True
+//
+// PACKED128 SPILLS SIXTEEN-BYTE ALIGNED IN A FUNCTION THAT PUSHES CALL
+// ARGUMENTS (AlignedSlots.Depths): 2512's twelve values live across a loop
+// that also calls a method of seven arguments each lap, four of them pushed;
+// each slot is addressed off ESP with what the pushes moved it by, as LLVM's
+// frame-index elimination adds a push sequence's SP adjustment. The answers
+// are the scalar ones and ESP is sixteen-aligned in the function however
+// deep it is called; the call's own arguments arrive intact (the lap count).
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe int Mix(uint[] s, uint[] o, int at)
+    {
+        if ((Packed.Features() & 0x20) == 0) return 0;
+        nuint f = Sys.ArrayData(s), t = Sys.ArrayData(o);
+        Packed128 v0 = Packed.Load128(f), v1 = Packed.Load128(f + 16), v2 = Packed.Load128(f + 32), v3 = Packed.Load128(f + 48);
+        Packed128 v4 = Packed.Load128(f + 64), v5 = Packed.Load128(f + 80), v6 = Packed.Load128(f + 96), v7 = Packed.Load128(f + 112);
+        Packed128 v8 = Packed.Load128(f + 128), v9 = Packed.Load128(f + 144), v10 = Packed.Load128(f + 160), v11 = Packed.Load128(f + 176);
+        for (int r = 0; r < 4; r++)
+        {
+            v0 = Packed.Add32(v0, v1); v1 = Packed.Xor(v1, v2); v2 = Packed.Add32(v2, v3); v3 = Packed.Xor(v3, v4);
+            v4 = Packed.Add32(v4, v5); v5 = Packed.Xor(v5, v6); v6 = Packed.Add32(v6, v7); v7 = Packed.Xor(v7, v8);
+            v8 = Packed.Add32(v8, v9); v9 = Packed.Xor(v9, v10); v10 = Packed.Add32(v10, v11); v11 = Packed.Xor(v11, v0);
+            v0 = Packed.Or(Packed.ShiftLeft32(v0, 7), Packed.ShiftRightU32(v0, 25));
+            v6 = Packed.Or(Packed.ShiftLeft32(v6, 9), Packed.ShiftRightU32(v6, 23));
+            v3 = Packed.Shuffle32(v3, 0x39); v9 = Packed.Shuffle32(v9, 0x93);
+            s_laps += Seven(r, (int)s[r], (int)s[r + 1], (int)s[r + 2], (int)s[r + 3], (int)(s[r] ^ s[r + 1] ^ s[r + 2] ^ s[r + 3]), r + 6);
+        }
+        Packed.Store(t, v0); Packed.Store(t + 16, v1); Packed.Store(t + 32, v2); Packed.Store(t + 48, v3);
+        Packed.Store(t + 64, v4); Packed.Store(t + 80, v5); Packed.Store(t + 96, v6); Packed.Store(t + 112, v7);
+        Packed.Store(t + 128, v8); Packed.Store(t + 144, v9); Packed.Store(t + 160, v10); Packed.Store(t + 176, v11);
+        o[at] ^= 0;
+        return (Sys.Stack() & 15) == 0 ? 1 : 2;
+    }
+
+    static int s_laps;
+
+    // Seven arguments: three in registers (RegisterArgs), four pushed.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Seven(int a, int b, int c, int d, int e, int f, int g) => (b ^ c ^ d ^ e) == f && g == a + 6 ? 1 : 1000;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Deep3(int n, uint[] s, uint[] o) => n == 0 ? Mix(s, o, 0) : Deep3(n - 1, s, o);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Deep4(int n, uint[] s, uint[] o, int pad) => n == 0 ? Mix(s, o, pad - pad) : Deep4(n - 1, s, o, pad + 1);
+
+    static uint Rotl(uint x, int n) => (x << n) | (x >> (32 - n));
+
+    // Lane j of a 32-bit shuffle by k is lane (k >> 2j) & 3 of its source.
+    static void Shuffle(uint[] v, int k)
+    {
+        uint a = v[k & 3], b = v[(k >> 2) & 3], c = v[(k >> 4) & 3], d = v[(k >> 6) & 3];
+        v[0] = a; v[1] = b; v[2] = c; v[3] = d;
+    }
+
+    static void Scalar(uint[] s, uint[] o)
+    {
+        uint[][] v = new uint[12][];
+        for (int i = 0; i < 12; i++) { v[i] = new uint[4]; for (int j = 0; j < 4; j++) v[i][j] = s[4 * i + j]; }
+        for (int r = 0; r < 4; r++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                v[0][j] += v[1][j]; v[1][j] ^= v[2][j]; v[2][j] += v[3][j]; v[3][j] ^= v[4][j];
+                v[4][j] += v[5][j]; v[5][j] ^= v[6][j]; v[6][j] += v[7][j]; v[7][j] ^= v[8][j];
+                v[8][j] += v[9][j]; v[9][j] ^= v[10][j]; v[10][j] += v[11][j]; v[11][j] ^= v[0][j];
+                v[0][j] = Rotl(v[0][j], 7); v[6][j] = Rotl(v[6][j], 9);
+            }
+            Shuffle(v[3], 0x39); Shuffle(v[9], 0x93);
+        }
+        for (int i = 0; i < 12; i++) for (int j = 0; j < 4; j++) o[4 * i + j] = v[i][j];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Between(uint[] s, uint[] o, int k)
+    {
+        int a = k * 7, b = k * 11, c = k * 13;
+        for (int i = 0; i < k; i++) { a += i; b ^= i; c -= i; }
+        Mix(s, o, 48 + k);
+        return a + b + c;
+    }
+
+    static int Main()
+    {
+        uint[] s = new uint[48], o = new uint[48], r = new uint[48];
+        for (int i = 0; i < 48; i++) s[i] = (uint)i * 0x9E3779B9u + 0x1234567u;
+        s_laps = 0;
+        int ran = Mix(s, o, 0);
+        int laps = s_laps;
+        Scalar(s, r);
+        bool same = true;
+        for (int i = 0; i < 48; i++) same &= o[i] == r[i];
+        Console.WriteLine("rows " + ran + " " + same + " " + laps);
+        int bad = 0;
+        for (int d = 0; d < 4; d++)
+        {
+            if (Deep3(d, s, o) != 1) bad++;
+            if (Deep4(d, s, o, d) != 1) bad++;
+        }
+        Console.WriteLine("aligned " + (bad == 0));
+        int caught = 0;
+        bool after = true;
+        for (int k = 1; k <= 3; k++)
+        {
+            int x = k * 1000, y = k * 3;
+            try { Between(s, o, k); }
+            catch (IndexOutOfRangeException) { caught++; }
+            after &= x == k * 1000 && y == k * 3;
+        }
+        Console.WriteLine("caught " + caught + " after " + after);
+        return 0;
+    }
+}
