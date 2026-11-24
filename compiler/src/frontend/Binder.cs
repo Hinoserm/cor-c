@@ -20007,46 +20007,56 @@ public sealed partial class Binder
                 {
                     foreach ((Type had, Expr arm) in new[] { (a2, c2.Then), (b2, c2.Else) })
                     {
-                        // AND A TUPLE ARM OF ANOTHER SHAPE IS REBUILT AS THE
-                        // WHOLE'S, element by element: `c ? (1, 2) : (3L, 4L)`
-                        // is two longs either way.
-                        if (!had.IsError && !whole.IsError && TupleRebuilt(had, whole))
+                        // CHECKED AGAIN AS IT WAS FIRST: knowing what the
+                        // condition proved for this arm. `l is { } t ? t :
+                        // span` wraps `t` in the span, and the wrapping, checked
+                        // with nothing proved, found t unassigned (CS0165) --
+                        // every `array ?? span`, which is rewritten so.
+                        List<Sym> proved = Assume(c2.Cond, ReferenceEquals(arm, c2.Then));
+                        try
                         {
-                            CheckAssignable(had, whole, arm, "arm");
+                            // AND A TUPLE ARM OF ANOTHER SHAPE IS REBUILT AS THE
+                            // WHOLE'S, element by element: `c ? (1, 2) : (3L, 4L)`
+                            // is two longs either way.
+                            if (!had.IsError && !whole.IsError && TupleRebuilt(had, whole))
+                            {
+                                CheckAssignable(had, whole, arm, "arm");
+                            }
+                            // AND AN ARM THAT REACHES THE WHOLE ONLY BY A
+                            // USER-DEFINED CONVERSION is converted by its operator,
+                            // as an assignment converts it: `n == 0 ? 1 : big` is a
+                            // BigInteger, and its 1 must become one rather than be
+                            // read as one. The operator may be on either side:
+                            // `c ? meters : 1.5` is a double by Meters' operator to
+                            // double, and the struct must not be read as one either.
+                            else if (!had.IsError && !whole.IsError && (whole.Symbol is not null || had.Symbol is not null)
+                                     && !StandardConvertible(had, whole) && !Variant(had, whole))
+                            {
+                                CheckAssignable(had, whole, arm, "arm");
+                            }
+                            // AND A STRING ARM OF A SEQUENCE-TYPED WHOLE gives up
+                            // its characters as an assignment has it give them:
+                            // `c ? "abc" : list` as an IEnumerable<char> was the
+                            // string handed over as the sequence it is not here.
+                            else if (had.Prim == Prim.String && !had.IsArray && !whole.IsArray
+                                     && ArrayFace(Type.ArrayOf(Type.Char), whole) is not null)
+                            {
+                                CheckAssignable(had, whole, arm, "arm");
+                            }
+                            // AND AN ARRAY ARM OF A SPAN-TYPED WHOLE is wrapped in
+                            // the span, as an assignment wraps it (CheckAssignable),
+                            // and a string arm of a ReadOnlySpan<char> too (SpanArm):
+                            // StandardConvertible counts the conversion, for overload
+                            // resolution, so the test above passes it by, and `at ==
+                            // 0 ? bytes : span.Slice(at)` read the array's own words
+                            // as the span's pointer and length -- the CORSAC kernel's
+                            // link walk walked them.
+                            else if (SpanArm(had, whole))
+                            {
+                                CheckAssignable(had, whole, arm, "arm");
+                            }
                         }
-                        // AND AN ARM THAT REACHES THE WHOLE ONLY BY A
-                        // USER-DEFINED CONVERSION is converted by its operator,
-                        // as an assignment converts it: `n == 0 ? 1 : big` is a
-                        // BigInteger, and its 1 must become one rather than be
-                        // read as one. The operator may be on either side:
-                        // `c ? meters : 1.5` is a double by Meters' operator to
-                        // double, and the struct must not be read as one either.
-                        else if (!had.IsError && !whole.IsError && (whole.Symbol is not null || had.Symbol is not null)
-                                 && !StandardConvertible(had, whole) && !Variant(had, whole))
-                        {
-                            CheckAssignable(had, whole, arm, "arm");
-                        }
-                        // AND A STRING ARM OF A SEQUENCE-TYPED WHOLE gives up
-                        // its characters as an assignment has it give them:
-                        // `c ? "abc" : list` as an IEnumerable<char> was the
-                        // string handed over as the sequence it is not here.
-                        else if (had.Prim == Prim.String && !had.IsArray && !whole.IsArray
-                                 && ArrayFace(Type.ArrayOf(Type.Char), whole) is not null)
-                        {
-                            CheckAssignable(had, whole, arm, "arm");
-                        }
-                        // AND AN ARRAY ARM OF A SPAN-TYPED WHOLE is wrapped in
-                        // the span, as an assignment wraps it (CheckAssignable),
-                        // and a string arm of a ReadOnlySpan<char> too (SpanArm):
-                        // StandardConvertible counts the conversion, for overload
-                        // resolution, so the test above passes it by, and `at ==
-                        // 0 ? bytes : span.Slice(at)` read the array's own words
-                        // as the span's pointer and length -- the CORSAC kernel's
-                        // link walk walked them.
-                        else if (SpanArm(had, whole))
-                        {
-                            CheckAssignable(had, whole, arm, "arm");
-                        }
+                        finally { Forget(proved); }
                     }
                     return whole;
                 }
