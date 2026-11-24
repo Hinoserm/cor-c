@@ -39,37 +39,40 @@ internal static class FpuFree
     public static HashSet<string> Elsewhere { get; set; } = new(StringComparer.Ordinal);
 
     /// <summary>The free functions this module's selection asks about: its own and Elsewhere's (X86Backend.Generate sets it, Select reads it).</summary>
-    [ThreadStatic] private static HashSet<string>? _known;
-
-    public static bool Known(string callee) => _known?.Contains(callee) == true || Elsewhere.Contains(callee);
-
-    /// <summary>The module's free functions, for the selection of its functions on this thread (X86Backend.Compile: workers select on threads of their own).</summary>
-    public static void Use(HashSet<string>? free) => _known = free;
+    [ThreadStatic] private static HashSet<string>? _known, _defined;
 
     /// <summary>
-    /// This module's free functions. A
-    /// function with a loop is none where the back edges poll (polls: the
-    /// collector's Runtime.Poll, which is no free function).
+    /// Whether a call's callee is free: this module's own by this module's
+    /// verdict alone -- never by a fact another object, or this unit's last
+    /// build, said of a name it defines now -- and another's by the facts.
     /// </summary>
-    public static HashSet<string> Compute(Module module, bool polls)
+    public static bool Known(string callee) => _known?.Contains(callee) == true || _defined?.Contains(callee) != true && Elsewhere.Contains(callee);
+
+    /// <summary>The module's free functions and the names it defines, for the selection of its functions on this thread (X86Backend.Compile: workers select on threads of their own).</summary>
+    public static void Use(HashSet<string>? free, HashSet<string>? defined) { _known = free; _defined = defined; }
+
+    /// <summary>
+    /// This module's free functions, and the names it defines (`defined`).
+    /// A function with any cycle in its flow graph is none where the back
+    /// edges poll (`polls`): the collector's Runtime.Poll, which BackEdgePolls
+    /// puts on the loops after this, is no free function.
+    /// </summary>
+    public static HashSet<string> Compute(Module module, bool polls, out HashSet<string> defined)
     {
+        defined = new(module.Functions.Select(f => f.Name), StringComparer.Ordinal);
+        HashSet<string> here = defined;
         Dictionary<string, List<string>> calls = new(StringComparer.Ordinal);
         foreach (Function f in module.Functions)
         {
             if (f.Async is not null || f.Blocks.Count == 0) continue;
             List<string>? callees = new();
-            Dictionary<Block, int> order = new(ReferenceEqualityComparer.Instance);
-            for (int k = 0; k < f.Blocks.Count; k++) order[f.Blocks[k]] = k;
-            for (int k = 0; k < f.Blocks.Count && callees is not null; k++)
-                foreach (Instr i in f.Blocks[k].Instrs)
-                {
+            foreach (Block b in f.Blocks)
+            {
+                foreach (Instr i in b.Instrs)
                     if (Touches(i, callees)) { callees = null; break; }
-                    // A loop's back edge, where they poll.
-                    if (polls)
-                        foreach (Block t in i.Targets)
-                            if (order.TryGetValue(t, out int at) && at <= k) { callees = null; break; }
-                    if (callees is null) break;
-                }
+                if (callees is null) break;
+            }
+            if (callees is not null && polls && HasCycle(f)) callees = null;
             if (callees is not null) calls[f.Name] = callees;
         }
         HashSet<string> free = new(calls.Keys, StringComparer.Ordinal);
@@ -77,13 +80,45 @@ internal static class FpuFree
         {
             changed = false;
             foreach ((string name, List<string> callees) in calls)
-                if (free.Contains(name) && callees.Any(c => !free.Contains(c) && !Elsewhere.Contains(c)))
+                if (free.Contains(name) && callees.Any(c => !free.Contains(c) && (here.Contains(c) || !Elsewhere.Contains(c))))
                 {
                     free.Remove(name);
                     changed = true;
                 }
         }
         return free;
+    }
+
+    /// <summary>
+    /// Whether the flow graph has a cycle: a retreating edge of a depth-first
+    /// walk from the entry and every landing pad -- every loop BackEdgePolls
+    /// may poll (it polls natural loops' back edges and every other retreating
+    /// edge), whatever the blocks' order.
+    /// </summary>
+    private static bool HasCycle(Function f)
+    {
+        Dictionary<Block, int> state = new(ReferenceEqualityComparer.Instance);   // 1 on the path, 2 done
+        Stack<(Block Block, int Next)> path = new();
+        foreach (Block root in f.Blocks.Where(b => ReferenceEquals(b, f.Entry) || b.IsLandingPad))
+        {
+            if (state.ContainsKey(root)) continue;
+            state[root] = 1;
+            path.Push((root, 0));
+            while (path.Count > 0)
+            {
+                (Block at, int next) = path.Pop();
+                List<Block> succs = at.Successors.ToList();
+                if (next < succs.Count)
+                {
+                    path.Push((at, next + 1));
+                    Block s = succs[next];
+                    if (!state.TryGetValue(s, out int seen)) { state[s] = 1; path.Push((s, 0)); }
+                    else if (seen == 1) return true;
+                }
+                else state[at] = 2;
+            }
+        }
+        return false;
     }
 
     /// <summary>Whether an IR instruction touches the FPU's state itself; a direct call's callee added to `callees` for the fixed point.</summary>

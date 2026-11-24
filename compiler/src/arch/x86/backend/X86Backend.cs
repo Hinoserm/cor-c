@@ -397,7 +397,7 @@ public sealed class X86Backend : IBackend
         PeakBatchBytes = 0; PeakBatchFunctions = 0;
         // THE FUNCTIONS THAT NEVER TOUCH THE FPU'S STATE (FpuFree): a call to
         // one keeps the MMX registers and needs no x87 save in a packed block.
-        _fpuFree = FpuFree.Compute(module, SafepointPolls);
+        _fpuFree = FpuFree.Compute(module, SafepointPolls, out _fpuDefined);
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
             Function f = module.Functions[functionIndex];
@@ -998,7 +998,7 @@ public sealed class X86Backend : IBackend
 
     public string Assembly(Module module)
     {
-        _fpuFree = FpuFree.Compute(module, SafepointPolls);
+        _fpuFree = FpuFree.Compute(module, SafepointPolls, out _fpuDefined);
         StringBuilder sb = new();
         List<string> errors = new();
         sb.Append("; module ").Append(module.Name).Append('\n');
@@ -1087,13 +1087,13 @@ public sealed class X86Backend : IBackend
         m.SavedRegs.RemoveAll(g => g is Gpr.Ebx or Gpr.Esi or Gpr.Edi && (named & (1 << (int)g)) == 0);
     }
 
-    /// <summary>Select and allocate one function; null, with errors reported, if it cannot be compiled.</summary>
-    /// <summary>This module's functions that never touch the FPU's state (FpuFree.Compute), for its selection.</summary>
-    private HashSet<string>? _fpuFree;
+    /// <summary>This module's functions that never touch the FPU's state, and the names it defines (FpuFree.Compute), for its selection.</summary>
+    private HashSet<string>? _fpuFree, _fpuDefined;
 
+    /// <summary>Select and allocate one function; null, with errors reported, if it cannot be compiled.</summary>
     private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
-        FpuFree.Use(_fpuFree);
+        FpuFree.Use(_fpuFree, _fpuDefined);
         int before = errors.Count;
         if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
         // The frees before a trap, one copy for every trap that has them (SharedTrapFrees).

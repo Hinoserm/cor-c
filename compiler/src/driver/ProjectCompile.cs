@@ -868,7 +868,7 @@ public static class ProjectCompile
            && Driver.Value(common.ToArray(), "--target") is null or "x86" or "i386";
 
     /// <summary>What one unit's object says of the copies: those it defines, and the methods it calls in other units (a copy's name taken back to its method's).</summary>
-    private readonly record struct UnitCalls(Unit Unit, List<string> Copies, HashSet<string> Calls);
+    private readonly record struct UnitCalls(Unit Unit, List<string> Copies, HashSet<string> Calls, HashSet<string> Defines);
 
     /// <summary>Each unit's object read for its symbols, one after another (the reader's switches are the process's).</summary>
     private static List<UnitCalls> ReadUnits(IEnumerable<Unit> units)
@@ -883,16 +883,16 @@ public static class ProjectCompile
             try { obj = Corsac.Lang.Elf.ElfReader.ReadObjectMetadata(unit.Object); }
             catch (Exception e) when (e is IOException or Corsac.Lang.Elf.ElfFormatException or InvalidDataException or ArgumentOutOfRangeException) { continue; }
             List<string> copies = new();
-            HashSet<string> calls = new(StringComparer.Ordinal);
+            HashSet<string> calls = new(StringComparer.Ordinal), defines = new(StringComparer.Ordinal);
             foreach (Corsac.Lang.Ir.Symbol symbol in obj.Symbols)
             {
                 bool copy = symbol.Name.EndsWith(Corsac.Lang.Elf.Linker.InsideSuffix, StringComparison.Ordinal);
                 // And a function that never touches the FPU's state (X86.FpuFree's marker, local).
                 bool fpuFree = symbol.Name.EndsWith(FpuFreeSuffix, StringComparison.Ordinal);
-                if (symbol.IsDefined) { if (copy || fpuFree) copies.Add(symbol.Name); }
+                if (symbol.IsDefined) { if (copy || fpuFree) copies.Add(symbol.Name); else defines.Add(symbol.Name); }
                 else calls.Add(copy ? symbol.Name[..^Corsac.Lang.Elf.Linker.InsideSuffix.Length] : symbol.Name);
             }
-            read.Add(new UnitCalls(unit, copies, calls));
+            read.Add(new UnitCalls(unit, copies, calls, defines));
         }
         return read;
     }
@@ -913,6 +913,20 @@ public static class ProjectCompile
 
     /// <summary>The FpuFree marker's suffix (Corsac.Lang.X86.FpuFree.Suffix).</summary>
     private const string FpuFreeSuffix = "$fpufree";
+
+    /// <summary>
+    /// The facts as the objects say them, a function free of the FPU's state
+    /// only where EVERY unit that defines it marks it: a generic copy is made
+    /// by every unit that uses it, the link keeps one, and a caller cannot
+    /// know which -- one unit's free copy is no promise for another's.
+    /// </summary>
+    private static HashSet<string> FactsOf(List<UnitCalls> read)
+    {
+        HashSet<string> facts = new(read.SelectMany(one => one.Copies), StringComparer.Ordinal);
+        facts.RemoveWhere(fact => fact.EndsWith(FpuFreeSuffix, StringComparison.Ordinal)
+            && read.Any(one => one.Defines.Contains(fact[..^FpuFreeSuffix.Length]) && !one.Copies.Contains(fact)));
+        return facts;
+    }
 
     /// <summary>A unit's answers under `facts`: which of the methods it calls in other units have a copy, and which never touch the FPU's state.</summary>
     private static string Answers(UnitCalls read, HashSet<string> facts)
@@ -945,7 +959,7 @@ public static class ProjectCompile
                 try { File.WriteAllText(one.Unit.Receipt + ".inside", Answers(one, facts)); }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             // The facts as the objects now are, and who would answer otherwise.
-            facts = new(read.SelectMany(one => one.Copies), StringComparer.Ordinal);
+            facts = FactsOf(read);
             List<Unit> moved = read.Where(one => Answers(one, facts) != AnswersOf(one.Unit)).Select(one => one.Unit).ToList();
             // SETTLED, the facts left as the objects now are: the file kept the
             // ones read before this build, a method a unit compiled now no
@@ -957,8 +971,22 @@ public static class ProjectCompile
             }
             if (round == 4)
             {
-                // The facts as they are, as when settled.
+                // NO FPU FACT TAKEN ACROSS UNITS where the rounds did not
+                // settle: a stale `$inside` answer is a dearer call, a stale
+                // free one an EMMS or a save missing. Every unit that took one
+                // compiled again without any, so no unit relies on another's.
+                facts.RemoveWhere(fact => fact.EndsWith(FpuFreeSuffix, StringComparison.Ordinal));
                 if (!FactsWritten(factsFile, facts)) return 1;
+                List<Unit> trusting = units.Where(unit => AnswersOf(unit).Contains(FpuFreeSuffix, StringComparison.Ordinal)).ToList();
+                if (trusting.Count > 0)
+                {
+                    force("its calls into other units' FPU-free functions did not settle");
+                    try { int failed = compile(trusting); if (failed != 0) return failed; }
+                    finally { force(null); }
+                    foreach (Unit unit in trusting)
+                        try { File.WriteAllText(unit.Receipt + ".inside", ""); }
+                        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+                }
                 Console.Error.WriteLine("corc: the units' calls into each other's packed methods still move after four rounds ("
                     + string.Join(", ", moved.Take(6).Select(unit => Path.GetFileName(unit.Source))) + "); the build is right, and those units' calls are as the round before left them");
                 return 0;

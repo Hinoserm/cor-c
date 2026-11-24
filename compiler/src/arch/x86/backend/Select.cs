@@ -920,6 +920,13 @@ internal sealed partial class Selector
         Dictionary<Block, bool> at = new(ReferenceEqualityComparer.Instance) { [f.Entry] = false };
         Stack<Block> work = new();
         work.Push(f.Entry);
+        // A LANDING PAD MAY BE REACHED WITH THE LANES STILL IN THE REGISTERS:
+        // a throw or a fault in a callee that never touches the FPU's state
+        // (FpuFree), called with them there and no EMMS before it, lands here
+        // as they were -- so a pad starts as one that may hold them, and its
+        // float code empties them first (an EMMS on a cold path).
+        foreach (Block b in f.Blocks)
+            if (b.IsLandingPad) { at[b] = true; work.Push(b); }
         while (work.Count > 0)
         {
             Block b = work.Pop();

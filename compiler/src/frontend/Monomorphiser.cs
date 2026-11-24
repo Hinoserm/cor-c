@@ -119,6 +119,9 @@ public sealed class Monomorphiser
     private void AddPath(string path)
     {
         if (!_paths.Add(path)) return;
+        // A path made after a nearer-name answer was kept may be the nearer
+        // name now (NearerThanAlias): the answers are asked again.
+        _nearerThanAlias.Clear();
         int dot = path.LastIndexOf('.');
         if (dot > 0) _pathParts.Add((path[..dot], path[(dot + 1)..]));
     }
@@ -2355,6 +2358,9 @@ public sealed class Monomorphiser
         };
     }
 
+    /// <summary>NearerThanAlias's answers, by the scope, namespace, directives, name and alias level asked from.</summary>
+    private readonly Dictionary<(string, string, object?, string, string), string?> _nearerThanAlias = new();
+
     /// <summary>
     /// A type argument's `dynamic` as the specialisation is named and made:
     /// `object`, which is what it is at run time -- Keeper&lt;dynamic&gt; and
@@ -2363,9 +2369,6 @@ public sealed class Monomorphiser
     /// constructed argument's own arguments. Not where the program has a type
     /// of its own called `dynamic`.
     /// </summary>
-    /// <summary>NearerThanAlias's answers, by the scope, namespace, directives, name and alias level asked from.</summary>
-    private readonly Dictionary<(string, string, object?, string, string), string?> _nearerThanAlias = new();
-
     private TypeRef DynamicAsObject(TypeRef a)
     {
         bool bare = a.Name == "dynamic" && a.Args.Count == 0 && a.PointerDepth == 0 && !_paths.Contains("dynamic");
