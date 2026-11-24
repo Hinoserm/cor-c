@@ -1,0 +1,59 @@
+// test: using_alias_scoping_as_roslyn
+// expect-exit: 0
+// expect-output:
+// nested G / nested G.List
+// alias Other.Box
+// alias Other.Box / alias Other.Box.List
+// alias Other.Box / alias Other.Box.List
+// 1
+//
+// USING ALIASES AS C# SCOPES THEM, each line what .NET 10 prints: a type
+// nested in an enclosing type beats a file's alias of its name (ECMA-334
+// 7.7.1, the types around a name before any namespace); an alias written
+// in an outer namespace block is seen in a block nested in it; a block's
+// own alias beats a type of its name in an OUTER namespace (Q.G against
+// Q.R's alias G), since each namespace's members and then its directives
+// are read before the next one out.
+using System;
+using G = Other.Box;
+using Map = System.Collections.Generic.Dictionary<string, int>;
+
+namespace Other { public class Box { public static string Who => "alias Other.Box"; public class List { public static string Who => "alias Other.Box.List"; } } }
+
+namespace A
+{
+    using H = Other.Box;
+    namespace B
+    {
+        public static class Inner { public static string Who() => H.Who; }  // outer block's alias seen in a nested block
+    }
+}
+
+namespace Q { public class G { public static string Who => "Q.G"; public class List { public static string Who => "Q.G.List"; } } }
+namespace Q.R
+{
+    using G = Other.Box;
+    public static class C { public static string Who() => G.Who + " / " + G.List.Who; }   // the block's alias before an outer namespace's G
+}
+
+namespace P
+{
+    class Outer
+    {
+        class G { public static string Who => "nested G"; public class List { public static string Who => "nested G.List"; } }
+        public static string Name() => G.Who + " / " + G.List.Who;   // nested type beats the file alias
+    }
+
+    class Program
+    {
+        static void Main()
+        {
+            Console.WriteLine(Outer.Name());
+            Console.WriteLine(A.B.Inner.Who());
+            Console.WriteLine(Q.R.C.Who());
+            Console.WriteLine(G.Who + " / " + G.List.Who);           // file alias here
+            Map m = new() { ["x"] = 1 };
+            Console.WriteLine(m["x"]);
+        }
+    }
+}

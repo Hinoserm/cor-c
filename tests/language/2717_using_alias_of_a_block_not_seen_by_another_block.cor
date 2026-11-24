@@ -1,0 +1,18 @@
+// test: using_alias_of_a_block_not_seen_by_another_block
+// expect-compile-error: CS0246: The type or namespace name 'M' could not be found (are you missing a using directive or an assembly reference?)
+//
+// AN ALIAS IS ITS NAMESPACE BLOCK'S (ECMA-334 14.6.2: it "affects only the
+// compilation unit or namespace body in which it occurs"): a second block of
+// the same namespace sees neither the first's alias of a namespace or type (G)
+// nor of a constructed type (M), which the parser reads where it is used.
+namespace Other { public class Box { } }
+namespace A
+{
+    using G = Other.Box;
+    using M = System.Collections.Generic.List<int>;
+}
+namespace A
+{
+    class C { G g = null!; M m = null!; }     // CS0246 twice: the first block's aliases are not this block's
+}
+class Program { static void Main() { } }

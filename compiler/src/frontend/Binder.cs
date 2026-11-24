@@ -673,8 +673,34 @@ public sealed partial class Binder
         FindMadeType("Action", out _);
     }
 
+    /// <summary>
+    /// CS0576, AN ALIAS AND A MEMBER OF ITS OWN NAMESPACE ONE NAME: a type
+    /// found among a namespace's members where a using alias of that block
+    /// names the same simple name. C# finds the member there and calls the
+    /// name ambiguous rather than letting either win (ECMA-334 7.7.1, the
+    /// namespace step: "if ... D contains a using alias directive with the
+    /// name I, then the namespace-or-type-name is ambiguous"), and Roslyn
+    /// reports it where the name is used. Kept until the use that asked
+    /// (ResolveWritten) reports it; FindType is asked from many places with
+    /// no node to report at, and a name asked only to look is no use.
+    /// </summary>
+    private void AliasConflict(FileScope? file, string at, string name)
+    {
+        if (file is null || name.IndexOf('.') >= 0) return;
+        foreach ((string In, string Alias, string _) alias in file.Aliases)
+            if (alias.In == at && alias.Alias == name)
+            {
+                _aliasConflict = $"CS0576: Namespace '{(at.Length == 0 ? "<global namespace>" : at)}' contains a definition conflicting with alias '{name}'";
+                return;
+            }
+    }
+
+    /// <summary>What AliasConflict found on the last FindType: reported by the use that asked, then cleared.</summary>
+    private string? _aliasConflict;
+
     private bool FindType(string name, out TypeSymbol? sym)
     {
+        _aliasConflict = null;
         // The checker's own name for one of the library's types (LibraryType).
         if (name.StartsWith(LibrarySpelling + ".", StringComparison.Ordinal)) return LibraryGlobal(name, out sym);
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
@@ -718,6 +744,7 @@ public sealed partial class Binder
                 if (TypeCandidateIn(at, name, out sym, use: false) && !HiddenFromProgram(sym))
                 {
                     Use(sym!);
+                    AliasConflict(file, at, name);
                     return true;
                 }
 
@@ -760,6 +787,10 @@ public sealed partial class Binder
             && (sym is null || LibraryGlobalVisible(sym)))
         {
             if (sym is not null) Use(sym);
+            // The global namespace's own type -- the program's: the class
+            // library's types sit at the top of no namespace here where .NET
+            // has them inside System, and conflict with no alias.
+            if (sym?.Decl is { } declared && IsProgramSource(declared)) AliasConflict(file, "", name);
             return true;
         }
         sym = null;
@@ -5508,10 +5539,13 @@ public sealed partial class Binder
             try { return FindBase(b, out based); }
             finally { _made--; }
         }
+        _aliasConflict = null;
         if (b.Args.Count > 0
                 ? FindType(Arity(b.Name, b.Args.Count), out based) || FindType(b.Name, out based)
                 : FindWritten(b, out based))
         {
+            // Its namespace's own type where an alias of the block names it too (AliasConflict).
+            if (_aliasConflict is { } conflict) { _aliasConflict = null; Error(b, conflict); }
             return true;
         }
         // A QUALIFIED BASE NAMES ITS LAST PART, as a qualified type does
@@ -7097,7 +7131,15 @@ public sealed partial class Binder
 
     private Type Resolve(TypeRef r, TypeSymbol? context)
     {
+        _aliasConflict = null;
         Type resolved = ResolveWritten(r, context);
+        // The name found among its namespace's members where an alias of the
+        // block names it too (AliasConflict): said where it was written.
+        if (_aliasConflict is { } conflict)
+        {
+            _aliasConflict = null;
+            if (r.Written) Error(r, conflict);
+        }
         // Not for a generic copy's own names, whose owner is the copy (its
         // signatures are resolved before binding enters it, InGenericCopy).
         if (r.Written && context?.Decl is not ({ Specialised: true } or { InGenericCode: true } or { Canon: not null })) RefLikeUses(r, resolved);

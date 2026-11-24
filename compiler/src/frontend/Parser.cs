@@ -1113,11 +1113,16 @@ public sealed class Parser
             // second block of the same namespace in the file does not see an
             // alias the first wrote, as C# has it. A file-scoped namespace's
             // are the file's.
+            // AND ITS TYPE ALIASES (`using M = List<int>;`), which are read
+            // where they are used: a copy for the block, the enclosing ones
+            // back after it.
             FileScope enclosing = _fileScope;
+            Dictionary<string, string> enclosingTypeAliases = _typeAliases;
             if (block)
             {
                 Expect(Tok.LBrace, "'{' or ';' after namespace");
                 _fileScope = enclosing.Inside();
+                _typeAliases = new(_typeAliases, StringComparer.Ordinal);
             }
 
             // A namespace's own using directives scope what follows them --
@@ -1130,6 +1135,7 @@ public sealed class Parser
             {
                 Expect(Tok.RBrace, "'}' to close the namespace");
                 _fileScope = enclosing;
+                _typeAliases = enclosingTypeAliases;
                 ParseUsings(unit);
             }
             _namespace = within;

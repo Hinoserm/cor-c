@@ -1,0 +1,15 @@
+// test: using_alias_conflicting_with_namespace_member
+// expect-compile-error: CS0576: Namespace 'N3' contains a definition conflicting with alias 'B'
+//
+// AN ALIAS AND A TYPE OF ITS OWN NAMESPACE OF ONE NAME are ambiguous where the
+// name is used (ECMA-334 7.7.1), as Roslyn reports it: at the base and at the
+// field alike.
+namespace Other { public class Box { } }
+namespace N3 { class B { } }
+namespace N3
+{
+    using B = Other.Box;
+    class W : B { }
+    class Z { B b = null!; }
+}
+class Program { static void Main() { } }
