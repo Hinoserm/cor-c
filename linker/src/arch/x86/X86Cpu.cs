@@ -223,7 +223,7 @@ public sealed class X86Cpu
     {
         X86Cpu cpu = Parse(arguments, "x86-64");
         if (!cpu.LongMode) throw new ArgumentException(X86Cpu.Model(cpu.Name).HasFlag(X86Feature.LongMode)
-            ? $"--cpu={cpu.Name} without what x86-64 code stands on (CMOV, MMX, SSE, SSE2): a --disable- switch took it away"
+            ? $"--cpu={cpu.Name} without what x86-64 code stands on (CMOV, MMX, SSE, SSE2): a --disable- switch or --fpu=none took it away"
             : $"--cpu={cpu.Name} runs no x86-64 code: --target x86-64 takes a long-mode processor (athlon64, athlon64-sse3, amdfam10, nocona, core2 .. skylake-avx512, x86-64, x86-64-v2 .. v4)");
         if (cpu.Fpu != "x87") throw new ArgumentException("--fpu is for the i386 target: x86-64's floating point is SSE2");
         return cpu;

@@ -7301,7 +7301,9 @@ public sealed partial class Binder
     /// (ECMA-334, namespace and type names). So a type nested in one around
     /// the use, a member of a namespace inside the alias's or an import there,
     /// is what the name means; a member of the alias's own namespace makes it
-    /// ambiguous (CS0576). True with the type found.
+    /// ambiguous (CS0576). True with the type found. The monomorphiser's
+    /// NearerThanAlias asks the same order of a generic's argument; the two
+    /// must say the same.
     /// </summary>
     private bool AliasYields(TypeRef r, out TypeSymbol? winner)
     {

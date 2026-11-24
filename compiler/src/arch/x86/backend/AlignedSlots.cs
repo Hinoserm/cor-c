@@ -26,7 +26,7 @@ namespace Corsac.Lang.X86;
 /// (SelectUnwind), which sets ESP from the record, and the record's ESP is
 /// read inline where the try opens (Lowering.PushHandler, an iterator's or
 /// async body's on each resume), after the prologue aligned it and at depth 0
-/// -- Depths refuses a function that reads ESP anywhere else. A fault that becomes an exception (the
+/// -- Depths refuses a function with handlers that reads ESP anywhere else. A fault that becomes an exception (the
 /// CORSAC kernel's UserAccessFault) is thrown and goes by the chain the same
 /// way; a fault the kernel answers itself (Arch.Recover, a page mapped)
 /// resumes the instruction with its own ESP.
@@ -101,8 +101,12 @@ internal static class AlignedSlots
     /// ESP-based at every instruction, its displacement that much more. Each
     /// block's in-depth is the same along every edge into it, the entry's 0
     /// and a landing pad's 0 (the handler record's ESP is the aligned one,
-    /// read where the try opened). Null for anything else that moves ESP --
-    /// `and esp`, a move into it, a call into C (which may take its own
+    /// read where the try opened); each jump's target at the depth at the jump.
+    /// An inlined throw's `mov esp, [record]` on its way to a handler's
+    /// indirect jump ends its path there (the handler is a landing pad, at 0).
+    /// Null for anything else that moves ESP -- `and esp`, any other move into
+    /// it, a negative depth, ESP read as a value at a nonzero depth in a
+    /// function with handlers, a call into C (which may take its own
     /// arguments off, stdcall), a return mid-body, an asm block that needs the
     /// frame -- and for two edges that disagree.
     /// </summary>

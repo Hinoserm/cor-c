@@ -2312,14 +2312,6 @@ public sealed class Monomorphiser
     }
 
     /// <summary>
-    /// A type argument's `dynamic` as the specialisation is named and made:
-    /// `object`, which is what it is at run time -- Keeper&lt;dynamic&gt; and
-    /// Keeper&lt;object&gt; are one class with one set of statics, in C# and
-    /// here -- and so too in an array's elements, a tuple's items and a
-    /// constructed argument's own arguments. Not where the program has a type
-    /// of its own called `dynamic`.
-    /// </summary>
-    /// <summary>
     /// AN ARGUMENT READ THROUGH AN ALIAS (TypeRef.AliasName) where C#'s order
     /// finds the name nearer -- a type of it around the use, or in a namespace
     /// inside the alias's, or imported there -- is that type, as the binder
@@ -2327,20 +2319,34 @@ public sealed class Monomorphiser
     /// is a list of it, not of the alias's Dictionary. Outward from where it
     /// was written, the types around it and then each namespace, to the
     /// alias's own level, where a member of the name is the binder's CS0576.
+    /// The binder's AliasYields asks the same order of a bare use; the two
+    /// must say the same.
     /// </summary>
     private TypeRef NearerThanAlias(TypeRef a)
     {
         if (a.AliasName is not string name) return a;
         string level = a.AliasLevel ?? "";
-        for (string at = _scope.Length > 0 ? _scope : _inNamespace; ; )
+        string start = _scope.Length > 0 ? _scope : _inNamespace;
+        // Only from inside the alias's own block's namespace: anywhere else
+        // this file's directives are not the alias's, and the binder settles it.
+        if (level.Length > 0 && start != level && !start.StartsWith(level + ".", StringComparison.Ordinal)) return a;
+        // ONCE A NAME A SCOPE: asked for every marked reference of every copy
+        // of every template, the walk and its directives' scans are the same.
+        (string, string, object?, string, string) key = (start, _inNamespace, _usings, name, level);
+        if (!_nearerThanAlias.TryGetValue(key, out string? nearer))
         {
-            if (at == level) return a;
-            if (HasPath(at, name)) return Plain(at + "." + name);
-            if (Named(at, name) is string imported) return Plain(imported);
-            if (at.Length == 0) return a;
-            int cut = at.LastIndexOf('.');
-            at = cut < 0 ? "" : at[..cut];
+            nearer = null;
+            for (string at = start; at != level; )
+            {
+                if (HasPath(at, name)) { nearer = at + "." + name; break; }
+                if (Named(at, name) is string imported) { nearer = imported; break; }
+                if (at.Length == 0) break;
+                int cut = at.LastIndexOf('.');
+                at = cut < 0 ? "" : at[..cut];
+            }
+            _nearerThanAlias[key] = nearer;
         }
+        return nearer is null ? a : Plain(nearer);
         TypeRef Plain(string full) => new()
         {
             Name = full, ArrayRank = a.ArrayRank, Nullable = a.Nullable, ElementNullable = a.ElementNullable,
@@ -2348,6 +2354,17 @@ public sealed class Monomorphiser
             Line = a.Line, Col = a.Col,
         };
     }
+
+    /// <summary>
+    /// A type argument's `dynamic` as the specialisation is named and made:
+    /// `object`, which is what it is at run time -- Keeper&lt;dynamic&gt; and
+    /// Keeper&lt;object&gt; are one class with one set of statics, in C# and
+    /// here -- and so too in an array's elements, a tuple's items and a
+    /// constructed argument's own arguments. Not where the program has a type
+    /// of its own called `dynamic`.
+    /// </summary>
+    /// <summary>NearerThanAlias's answers, by the scope, namespace, directives, name and alias level asked from.</summary>
+    private readonly Dictionary<(string, string, object?, string, string), string?> _nearerThanAlias = new();
 
     private TypeRef DynamicAsObject(TypeRef a)
     {
@@ -2751,7 +2768,7 @@ public sealed class Monomorphiser
                 PointerDepth = r.PointerDepth,
                 TupleNames = r.TupleNames is null ? null : new List<string>(r.TupleNames),
                 Written = r.Written, Qualifier = r.Qualifier,
-                Line = r.Line, Col = r.Col,
+                Line = r.Line, Col = r.Col, AliasName = r.AliasName, AliasLevel = r.AliasLevel,
             };
 
             SubInto(tuple.Arguments, r.Args, map);

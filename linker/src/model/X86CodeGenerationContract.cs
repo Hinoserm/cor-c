@@ -84,7 +84,9 @@ public sealed record X86CodeGenerationContract(string Cpu, string Fpu, X86Featur
     /// THE FAMILIES A UNIT'S CODE NEEDS of a target: all of its set, but for
     /// 32-bit code on a 32-bit target the long-mode-only ones -- LongMode,
     /// CMPXCHG16B, LAHF/SAHF in long mode -- which no 32-bit code uses: a
-    /// unit compiled for --cpu=x86-64 runs on a Pentium 4 target.
+    /// unit compiled for --cpu=x86-64 runs on a Pentium 4 target. Where either
+    /// is long mode the whole set is asked: a 32-bit unit beside a long-mode
+    /// target is refused by its contract's mode in any case.
     /// </summary>
     private static X86Feature Required(X86CodeGenerationContract unit, X86CodeGenerationContract target)
         => unit.LongMode || target.LongMode ? unit.Features
