@@ -1357,7 +1357,7 @@ public sealed partial class Lowering
                 // as it copies any struct it did not just make.
                 if (held.Volatile)
                 {
-                    _e.Emit(Opcode.Fence, null);
+                    _e.Emit(Opcode.CompilerFence, null);
                 }
                 VReg basis = RegOf(held.Address);
                 return held.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, held.Offset);
@@ -1369,9 +1369,19 @@ public sealed partial class Lowering
                 if (m.Field is FieldSymbol read && TagsField(read)) _e.Block.Instrs[^1].Field = FieldKey(read);
                 if (m.Field is FieldSymbol readFamily && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(readFamily, m.Offset);
                 if (NeverAddress(m.Type)) _e.Block.Instrs[^1].Number = true;
+                // A VOLATILE READ IS AN ACQUIRE, and a volatile write a release
+                // (ECMA-335 I.12.6.7), which x86's ordering gives every load
+                // and store: no later access passes a load, no store passes
+                // an earlier one, and the streaming stores end in an sfence
+                // (StreamEnd). What is left is the optimiser's to keep -- a
+                // compiler fence, as .NET's JIT emits nothing on x86 and x64.
+                // `lock or [esp]` after each read and before each write was a
+                // locked bus cycle for an ordering the processor already
+                // keeps; and it never ordered a write before a later read (no
+                // volatile access does, in C#: Interlocked or MemoryBarrier).
                 if (m.Volatile)
                 {
-                    _e.Emit(Opcode.Fence, null);
+                    _e.Emit(Opcode.CompilerFence, null);
                 }
                 // A readonly static table's value: its length known (BoundsCheck).
                 if (m.Field is FieldSymbol { Static: true } table && TableLength(table) is int tableLength) _knownLengths[v] = tableLength;
@@ -1435,7 +1445,7 @@ public sealed partial class Lowering
                 // collector first, the card marked after.
                 if (held.Volatile)
                 {
-                    _e.Emit(Opcode.Fence, null);
+                    _e.Emit(Opcode.CompilerFence, null);
                 }
                 VReg basis = RegOf(held.Address);
                 VReg into = held.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, held.Offset);
@@ -1477,9 +1487,11 @@ public sealed partial class Lowering
                 break;
             }
             case MemPlace m:
+                // A release: x86 keeps every store after the accesses before
+                // it (LoadPlace's acquire).
                 if (m.Volatile)
                 {
-                    _e.Emit(Opcode.Fence, null);
+                    _e.Emit(Opcode.CompilerFence, null);
                 }
                 if (m.CovariantArray is VReg array)
                 {
