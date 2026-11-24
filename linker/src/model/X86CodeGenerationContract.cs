@@ -49,17 +49,12 @@ public sealed record X86CodeGenerationContract(string Cpu, string Fpu, X86Featur
         if (sections.Length != 1 || sections[0].Bytes.Count > 128 || sections[0].Relocs.Count != 0)
             throw new ElfFormatException("invalid x86 code-generation contract section");
         string[] fields = Encoding.ASCII.GetString(sections[0].Bytes.ToArray()).Split('\n');
-        // CCPU2 writes the set in eight digits, its 64-bit families included;
-        // CCPU1's four were the 32-bit families alone, and its long-mode unit
-        // the bare first K8 ("k8", nothing named): read as x86-64's baseline.
-        int digits = fields.Length == 5 && fields[0] == "CCPU2" ? 8 : 4;
-        if (fields.Length != 5 || fields[0] is not ("CCPU1" or "CCPU2") || fields[3].Length != digits || !fields[3].All(Uri.IsHexDigit)
+        // CCPU2: the set in eight digits, its long-mode families included.
+        if (fields.Length != 5 || fields[0] != "CCPU2" || fields[3].Length != 8 || !fields[3].All(Uri.IsHexDigit)
             || fields[4] is not ("0" or "1"))
-            throw new ElfFormatException("unsupported x86 code-generation contract");
-        X86Feature features = (X86Feature)uint.Parse(fields[3], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
-        var contract = fields[0] == "CCPU1" && fields[1] == "k8" && fields[2] == "sse2"
-            ? new X86CodeGenerationContract("x86-64", "sse2", X86Cpu.Model("x86-64"), fields[4] == "1")
-            : new X86CodeGenerationContract(fields[1], fields[2], features, fields[4] == "1");
+            throw new ElfFormatException("unsupported x86 code-generation contract (an object of an older compiler: compile it again)");
+        var contract = new X86CodeGenerationContract(fields[1], fields[2],
+            (X86Feature)uint.Parse(fields[3], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture), fields[4] == "1");
         contract.Validate(); return contract;
     }
 
@@ -79,11 +74,21 @@ public sealed record X86CodeGenerationContract(string Cpu, string Fpu, X86Featur
             // processors are no line -- the K6-2 has 3DNow! and no CMOV, the
             // Pentium Pro CMOV and no MMX. Code for an x87 needs one, and a
             // long-mode unit a long-mode target.
-            if ((required.Features & ~target.Features) != 0 || (required.Fpu != "none" && target.Fpu == "none")
+            if ((Required(required, target) & ~target.Features) != 0 || (required.Fpu != "none" && target.Fpu == "none")
                 || (required.LongMode && !target.LongMode))
                 throw new ElfFormatException(input.Name + ": instruction requirements exceed selected CPU/FPU target " + target.Cpu);
         }
     }
+
+    /// <summary>
+    /// THE FAMILIES A UNIT'S CODE NEEDS of a target: all of its set, but for
+    /// 32-bit code on a 32-bit target the long-mode-only ones -- LongMode,
+    /// CMPXCHG16B, LAHF/SAHF in long mode -- which no 32-bit code uses: a
+    /// unit compiled for --cpu=x86-64 runs on a Pentium 4 target.
+    /// </summary>
+    private static X86Feature Required(X86CodeGenerationContract unit, X86CodeGenerationContract target)
+        => unit.LongMode || target.LongMode ? unit.Features
+            : unit.Features & ~(X86Feature.LongMode | X86Feature.Cmpxchg16b | X86Feature.Lahf64);
 
     /// <summary>Two units whose instruction permissions differ, or null when every unit's are one.</summary>
     public static (string First, string FirstCpu, string Second, string SecondCpu)? Disagreeing(IEnumerable<(string Name, ObjectFile Object)> inputs)
@@ -93,7 +98,7 @@ public sealed record X86CodeGenerationContract(string Cpu, string Fpu, X86Featur
         {
             if (Read(input.Object) is not { } contract) continue;
             if (first is not { } had) { first = (input.Name, contract); continue; }
-            if (contract.Features != had.Contract.Features || contract.Fpu != had.Contract.Fpu || contract.LongMode != had.Contract.LongMode)
+            if (Required(contract, had.Contract) != Required(had.Contract, contract) || contract.Fpu != had.Contract.Fpu || contract.LongMode != had.Contract.LongMode)
                 return (had.Name, had.Contract.Cpu, input.Name, contract.Cpu);
         }
         return null;

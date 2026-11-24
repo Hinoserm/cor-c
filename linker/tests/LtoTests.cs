@@ -167,6 +167,53 @@ public static class LtoTests
         X86CodeGenerationContract.ValidateTarget(new[] { ("pentium-pro", pentiumProNoCmov) }, k6);
         X86CodeGenerationContract.ValidateTarget(new[] { ("k6-2", k62) }, X86Cpu.Parse(["--cpu=athlon"]).Contract);
         Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("k6-2", k62) }, X86Cpu.Parse(["--cpu=pentium4"]).Contract));
+        // THE LONG-MODE PROFILES (X86Cpu, docs/X86-64-BACKEND.md): every model
+        // round-trips through its contract on the target it can run, the K8 by
+        // revision, the switches cascade, and a long-mode target refuses what
+        // runs no x86-64 code or lacks what it stands on.
+        int fn = 100;
+        foreach (string model in new[] { "athlon64", "athlon64-sse3", "amdfam10", "nocona", "core2", "nehalem", "sandybridge",
+                                         "haswell", "skylake", "skylake-avx512", "x86-64", "x86-64-v2", "x86-64-v3", "x86-64-v4" })
+        {
+            X86Cpu wide = X86Cpu.ParseLongMode(["--cpu=" + model]);
+            ObjectFile unit = Function(fn++);
+            wide.LongModeContract().Attach(unit);
+            X86CodeGenerationContract read = X86CodeGenerationContract.Read(ElfReader.ReadObject(ElfWriter.WriteObject(unit)))!;
+            Require(read == wide.LongModeContract() && read.LongMode, model + ": long-mode contract did not survive serialization");
+            Require(X86Cpu.ParseLongMode(read.Arguments()).Features == wide.Features, model + ": long-mode arguments do not read back");
+            Require(X86Cpu.Parse(X86Cpu.Parse(["--cpu=" + model]).Contract.Arguments()).Features == X86Cpu.Model(model), model + ": i386 arguments do not read back");
+            X86CodeGenerationContract.ValidateTarget(new[] { (model, unit) }, wide.LongModeContract());
+        }
+        Require(!X86Cpu.Model("athlon64").HasFlag(X86Feature.Sse3) && X86Cpu.Model("athlon64-sse3").HasFlag(X86Feature.Sse3)
+                && X86Cpu.Parse(["--cpu=opteron"]).Name == "athlon64" && X86Cpu.Parse(["--cpu=k8-sse3"]).Name == "athlon64-sse3",
+            "the K8's revisions: the FX-51's without SSE3, the Opteron 2xx's with it");
+        X86Feature noSse3 = X86Cpu.Parse(["--cpu=core2", "--disable-sse3"]).Features;
+        Require((noSse3 & (X86Feature.Sse3 | X86Feature.Ssse3)) == 0 && (noSse3 & X86Feature.Sse2) != 0, "--disable-sse3 leaves SSSE3");
+        X86Feature avx2 = X86Cpu.ParseLongMode(["--enable-avx2"]).Features;
+        Require((avx2 & (X86Feature.Avx | X86Feature.Sse42 | X86Feature.Sse41 | X86Feature.Ssse3 | X86Feature.Sse3)) == (X86Feature.Avx | X86Feature.Sse42 | X86Feature.Sse41 | X86Feature.Ssse3 | X86Feature.Sse3),
+            "--enable-avx2 brings what AVX2 stands on");
+        void Refused(string[] options)
+        {
+            try { X86Cpu.ParseLongMode(options); } catch (ArgumentException) { return; }
+            throw new Exception("a long-mode profile of " + string.Join(" ", options) + " was accepted");
+        }
+        Refused(["--cpu=486"]);
+        Refused(["--cpu=pentium4"]);
+        Refused(["--fpu=none"]);
+        Refused(["--disable-sse2"]);
+        Refused(["--cpu=core2", "--disable-mmx"]);
+        // A long-mode unit wants a long-mode target with what it uses; a 32-bit
+        // unit of a long-mode model runs on a 32-bit target with its set less
+        // the long-mode-only families.
+        ObjectFile sse3Unit = Function(fn++), baseUnit = Function(fn++), i386Unit = Function(fn++);
+        X86Cpu.ParseLongMode(["--cpu=athlon64-sse3"]).LongModeContract().Attach(sse3Unit);
+        X86Cpu.ParseLongMode([]).LongModeContract().Attach(baseUnit);
+        X86Cpu.Parse(["--cpu=x86-64"]).Contract.Attach(i386Unit);
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("sse3", sse3Unit) }, X86Cpu.ParseLongMode([]).LongModeContract()));
+        X86CodeGenerationContract.ValidateTarget(new[] { ("base", baseUnit) }, X86Cpu.ParseLongMode(["--cpu=athlon64-sse3"]).LongModeContract());
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("base", baseUnit) }, X86Cpu.Parse(["--cpu=athlon64"]).Contract));
+        X86CodeGenerationContract.ValidateTarget(new[] { ("i386 of x86-64", i386Unit) }, X86Cpu.Parse(["--cpu=pentium4"]).Contract);
+        Require(X86CodeGenerationContract.Disagreeing(new[] { ("sse3", sse3Unit), ("base", baseUnit) }) is not null, "long-mode units of two models agree");
         cpuB.Section(X86CodeGenerationContract.SectionName).Bytes[4] = (byte)'9';
         Reject(() => TargetContract.Validate(new[] { ("invalid-cpu", cpuB) }));
         Console.WriteLine("  LTO metadata, scope, rejection, static/flat/physical-link checks passed");

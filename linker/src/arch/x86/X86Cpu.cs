@@ -222,7 +222,9 @@ public sealed class X86Cpu
     public static X86Cpu ParseLongMode(IEnumerable<string> arguments)
     {
         X86Cpu cpu = Parse(arguments, "x86-64");
-        if (!cpu.LongMode) throw new ArgumentException($"--cpu={cpu.Name} runs no x86-64 code: --target x86-64 takes a long-mode processor (athlon64, athlon64-sse3, amdfam10, nocona, core2 .. skylake-avx512, x86-64, x86-64-v2 .. v4)");
+        if (!cpu.LongMode) throw new ArgumentException(X86Cpu.Model(cpu.Name).HasFlag(X86Feature.LongMode)
+            ? $"--cpu={cpu.Name} without what x86-64 code stands on (CMOV, MMX, SSE, SSE2): a --disable- switch took it away"
+            : $"--cpu={cpu.Name} runs no x86-64 code: --target x86-64 takes a long-mode processor (athlon64, athlon64-sse3, amdfam10, nocona, core2 .. skylake-avx512, x86-64, x86-64-v2 .. v4)");
         if (cpu.Fpu != "x87") throw new ArgumentException("--fpu is for the i386 target: x86-64's floating point is SSE2");
         return cpu;
     }
@@ -254,7 +256,9 @@ public sealed class X86Cpu
         // ClawHammer -- without SSE3; from revision E -- the dual-core
         // Opteron 2xx (Italy) such as the 280 and 290, Denmark, the Athlon 64
         // X2 -- with it. Neither has CMPXCHG16B (revision F's) or, as GCC
-        // reads them, LAHF/SAHF in long mode.
+        // reads them, LAHF/SAHF in long mode (the silicon has them from
+        // revision D, but CPUID says so only where the BIOS set the bit AMD's
+        // erratum 110 describes, AMD 25759: GCC leaves them out, and so do we).
         "athlon64" or "k8" or "opteron" or "athlon-fx" or "athlon64-fx" => "athlon64",
         "athlon64-sse3" or "k8-sse3" or "opteron-sse3" => "athlon64-sse3",
         "amdfam10" or "barcelona" or "k10" or "phenom" => "amdfam10",
@@ -333,7 +337,7 @@ public sealed class X86Cpu
     /// <summary>The features the model <paramref name="name"/> (Normalize's answer, not an alias) may use.</summary>
     public static X86Feature Model(string name) => Defaults(name) ?? throw new ArgumentException("Unknown x86 CPU: " + name);
 
-    /// <summary>Whether <paramref name="name"/> is a 32-bit model's own name.</summary>
+    /// <summary>Whether <paramref name="name"/> is a model's own name (Normalize's answer), either target's.</summary>
     public static bool IsModel(string name) => Defaults(name) is not null;
 
     /// <summary>Whether <paramref name="option"/> is one of the --enable-NAME/--disable-NAME switches.</summary>
@@ -345,7 +349,9 @@ public sealed class X86Cpu
     /// extensions (its integer half), the 3DNow!
     /// extensions need 3DNow!, SSE2 needs SSE, FCMOV/FCOMI need CMOV, and
     /// without an FPU nothing of the x87's is left (NeedsFpu). A lone 387
-    /// keeps the x87 but never had FCMOV or FCOMI.
+    /// keeps the x87 but never had FCMOV or FCOMI. Long mode needs x86-64's
+    /// baseline (CMOV, MMX, SSE, SSE2); each SSE generation the one below it,
+    /// SSE4a SSE3, AVX SSE4.2, the VEX families AVX, AVX-512 AVX2, FMA, F16C.
     /// </summary>
     public static X86Feature Settled(X86Feature features, string fpu)
     {
@@ -356,6 +362,11 @@ public sealed class X86Cpu
         if ((features & X86Feature.Sse) == 0) features &= ~X86Feature.Sse2;
         if ((features & X86Feature.MmxExtensions) == 0) features &= ~(X86Feature.Sse | X86Feature.Sse2);
         if ((features & X86Feature.Cmov) == 0) features &= ~X86Feature.FloatCmov;
+        // LONG MODE STANDS ON THE BASELINE x86-64 code is compiled for -- the
+        // Pentium's set, CMOV, MMX, SSE and SSE2 (the psABI's x86-64-v1) --
+        // and a profile without one of them is no long-mode one.
+        const X86Feature longModeNeeds = X86Feature.I486 | X86Feature.Pentium | X86Feature.Cmov | X86Feature.Mmx | X86Feature.Sse | X86Feature.Sse2;
+        if ((features & longModeNeeds) != longModeNeeds) features &= ~X86Feature.LongMode;
         // Each SSE generation on the one below it, the VEX families on AVX.
         if ((features & X86Feature.Sse2) == 0) features &= ~AboveSse2;
         if ((features & X86Feature.Sse3) == 0) features &= ~(AboveSse2 & ~X86Feature.Sse3);

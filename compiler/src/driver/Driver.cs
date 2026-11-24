@@ -585,13 +585,7 @@ public static class Driver
         return values;
     }
 
-    /// <summary>
-    /// What is wrong with --cpu for the x86-64 target, or null: its one
-    /// processor is the K8, which --cpu may name (as k8 or x86-64) or leave
-    /// out. Both of X86Cpu.Parse's spellings are read, `--cpu NAME` and
-    /// `--cpu=NAME`, so neither slips a 32-bit profile past.
-    /// </summary>
-    /// <summary>The long-mode profile the options name (X86Cpu.ParseLongMode), or the refusal.</summary>
+    /// <summary>The long-mode profile the options name (X86Cpu.ParseLongMode: a model that runs x86-64 code, the baseline when none is named), or the refusal.</summary>
     private static X86Cpu? LongModeCpu(string[] args, out string? refusal)
     {
         refusal = null;

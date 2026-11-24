@@ -108,7 +108,7 @@ public static class ProjectCommand
             ? ["--target", "x86-64", .. LongModeArguments(global::Corsac.Lang.X86.X86Cpu.ParseLongMode(defaults))]
             : CpuArguments(global::Corsac.Lang.X86.X86Cpu.Parse(defaults));
         // The link validates each object's CPU contract against the i386
-        // profile; a long-mode object carries its own (k8/sse2).
+        // profile; a long-mode object carries its own (its model, sse2).
         List<string> linkArguments = new(target == Target.X86_64 ? Array.Empty<string>() : cpuArguments);
         if (project.OutputType is not ("Exe" or "WinExe")) throw new InvalidDataException("Standalone native library packaging is not yet implemented");
         // AN EXECUTABLE LINKED AGAINST NO SHARED LIBRARY IS THE WHOLE PROGRAM
@@ -384,12 +384,6 @@ public static class ProjectCommand
         return child.ExitCode;
     }
 
-    /// <summary>
-    /// The i386 profile's arguments for every unit and the link: the
-    /// contract's (what its code may use) and the bans (X86Cpu.BanArguments),
-    /// which the contract does not carry -- a --disable of a feature the
-    /// model lacks keeps its packed blocks' run-time variants out too.
-    /// </summary>
     /// <summary>A long-mode profile's own options, as CpuArguments gives a 32-bit one's (its contract has no --fpu).</summary>
     private static string[] LongModeArguments(global::Corsac.Lang.X86.X86Cpu profile)
     {
@@ -398,6 +392,12 @@ public static class ProjectCommand
         return made.ToArray();
     }
 
+    /// <summary>
+    /// The i386 profile's arguments for every unit and the link: the
+    /// contract's (what its code may use) and the bans (X86Cpu.BanArguments),
+    /// which the contract does not carry -- a --disable of a feature the
+    /// model lacks keeps its packed blocks' run-time variants out too.
+    /// </summary>
     private static string[] CpuArguments(global::Corsac.Lang.X86.X86Cpu profile)
     {
         List<string> made = new(profile.Contract.Arguments());

@@ -231,7 +231,11 @@ public static class ObjectLinkCommand
         IrArchivePool archivePool = new();
         foreach ((string _, ObjectFile obj) in inputs) obj.ArchivePool = archivePool;
         TargetContract.Validate(inputs);
-        X86CodeGenerationContract? selected = cpuArguments.Count == 0 ? null : Lang.X86.X86Cpu.Parse(cpuArguments).Contract;
+        // A LONG-MODE IMAGE'S PROCESSOR IS A LONG-MODE ONE (X86Cpu.ParseLongMode),
+        // its contract SSE2's: --cpu names it as for compile.
+        bool longModeImage = inputs.Any(input => TargetContract.IsLongMode(input.Item2));
+        X86CodeGenerationContract? selected = cpuArguments.Count == 0 ? null
+            : longModeImage ? Lang.X86.X86Cpu.ParseLongMode(cpuArguments).LongModeContract() : Lang.X86.X86Cpu.Parse(cpuArguments).Contract;
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // NO PROCESSOR NAMED, NONE CHOSEN FOR IT: units made for different
         // ones -- a runtime compiled for the 486 in a 386's kernel -- linked

@@ -8,12 +8,22 @@ here, in the linker, and in the word size the runtime is written against.
 
 ## The processor
 
-The baseline is the K8: SSE2 for floating point, CMOV, the 64-bit
-`CMPXCHG`/`XADD`/`XCHG`, `MFENCE`. Nothing from SSE3 on, no `CMPXCHG16B`, no
-`POPCNT`/`LZCNT`, and no `LAHF`/`SAHF`, which the earliest K8 steppings did
-not execute in 64-bit mode. `--cpu k8` is accepted and is the only choice;
-the i386 profile flags (`--fpu`, MMX, 3DNow!) do not apply. Objects carry the
-code-generation contract `k8`/`sse2`.
+`--cpu` names the processor, as for i386 (X86Cpu): a model that runs x86-64
+code, its instructions what the code may use and its tuning what CpuModel
+asks. The default is `x86-64`, the psABI's baseline: the K8's set without
+3DNow! -- SSE2 for floating point, CMOV, the 64-bit `CMPXCHG`/`XADD`/`XCHG`,
+`MFENCE`, nothing from SSE3 on, no `CMPXCHG16B`, no `POPCNT`/`LZCNT`, and no
+`LAHF`/`SAHF` in 64-bit mode. The models: the K8 by revision -- `athlon64`
+(`k8`, `opteron`, `athlon-fx`: revisions C and D, the FX-51, no SSE3) and
+`athlon64-sse3` (`k8-sse3`, `opteron-sse3`: revision E on, the dual-core
+Opteron 280 and 290, SSE3) -- `amdfam10`; `nocona`, `core2`, `nehalem`,
+`sandybridge`, `haswell`, `skylake`, `skylake-avx512`; and the levels
+`x86-64-v2`, `-v3`, `-v4`. The `--enable-`/`--disable-` switches of the
+long-mode families (`sse3` .. `avx512`, `popcnt`, `lzcnt`, `cx16`, `sahf`,
+`movbe`, `bmi`, `bmi2`) apply; `--fpu` does not, and a switch that takes away
+what long mode stands on (CMOV, MMX, SSE, SSE2) is refused. Objects carry the
+contract `CCPU2` with the model, `sse2` and the set; a link of long-mode units
+compiled for different models names its own with `--cpu`.
 
 ## Layout
 
@@ -185,8 +195,9 @@ The assembler writes 64-bit code (`.bits 64`, `corc asm --target x86-64`):
 REX prefixes, r8-r15 in every width, RIP-relative `[rip + x]`, CR8, `movabs`,
 `dq`, and long mode's own instructions. An object with 64-bit code in it is
 a long-mode object; a boot stub that switches modes is one file. Its 32-bit
-part runs on the same K8 or later, so no instruction in it is refused for
-the processor (`--cpu` names `k8` or nothing, as for `compile`), and its
+part runs on the same long-mode processor, so no instruction in it is
+refused for the processor (`--cpu` names one, or the baseline, as for
+`compile`, and the object's contract says which), and its
 fields are relocated with their whole 64-bit addend, so `label - KERNEL`
 reaches a higher-half label's loaded address before paging is on.
 `tests/freestanding/15_long_mode_switch` is such a stub: CPUID, PAE,

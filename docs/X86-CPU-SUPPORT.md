@@ -32,8 +32,11 @@ CMOV and no MMX. Each model is its predecessor plus what it added:
 
 The MMX extensions are AMD's name for the integer half of SSE (PAVGB, PMINUB,
 PMAXSW, PSHUFW, PMOVMSKB, MOVNTQ, PREFETCHh, SFENCE), which the Athlon has
-without SSE itself. `athlon64` is a K8 running 32-bit code with an x87; the
-name `k8` belongs to the long-mode target, whose floating point is SSE2.
+without SSE itself. `athlon64` is the K8 of revisions C and D (no SSE3) and
+`athlon64-sse3` from revision E (the Opteron 2xx dual-cores); both, and every
+other long-mode model (`amdfam10`, Intel's `nocona` .. `skylake-avx512`, the
+psABI's `x86-64` .. `x86-64-v4`), name a processor for either target -- with
+an x87 for 32-bit code, SSE2 for x86-64 (docs/X86-64-BACKEND.md).
 
 The parser also accepts `i386`, `i486`, `586`, `i586`, `pentium_mmx`, `i686`,
 `pentium-ii`, `pentium-iii`, `k6-iii`, `k6-iii+`, `k7`, `athlon-tbird`,
@@ -162,8 +165,8 @@ line selections override them. The standard .NET toolchain ignores these
 native-only properties. Runtime/source units use the same selection, which
 also participates in incremental cache identities.
 
-`.corsac.cpu` records the `CCPU1` code-generation contract: the CPU and FPU
-names, the feature set as four hex digits, and whether automatic packed
+`.corsac.cpu` records the `CCPU2` code-generation contract: the CPU and FPU
+names (`sse2` for a long-mode unit), the feature set as eight hex digits, and whether automatic packed
 operations are allowed by the execution environment. A contract is valid only
 when its features are what `--cpu`, `--fpu` and the switches give: the
 dependencies hold, and an extension no switch grants stays with its model.

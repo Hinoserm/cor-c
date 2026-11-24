@@ -106,29 +106,30 @@ internal static class CpuModel
     ///   portion with the current state of the other part" (AMD 25112, 4.7);
     ///   and 25112's own table of scalar conversions (Appendix E, Table 22)
     ///   puts XORPS before CVTSD2SS and CVTSI2SS and nothing before CVTSS2SD
-    ///   or CVTSI2SD. Only the 32-bit ones get XORPS there,
-    ///   in either mode; x86-64 code is for the K8 and later, as its backend
-    ///   says (X64 Machine), whatever --cpu names, unless it names the P4.
+    ///   or CVTSI2SD -- for SQRTSS the same rule by Agner's two halves alone.
+    ///   Only the 32-bit ones get XORPS there, in either mode.
+    /// - Nocona is the Pentium 4's core: PXOR before every one, with SSE2.
+    /// - The Core line takes XOR, SUB, PXOR, XORPS and XORPD of a register
+    ///   with itself as independent of it (Agner, 8.14, Core 2 and Nehalem;
+    ///   the later families the same), and every scalar merge waits there:
+    ///   XORPS before every one -- SSE1's, the floating-point domain the
+    ///   conversion reads, never a bypass (Agner 8.x on the domains). The
+    ///   K10, whose SSE units are 128 bits wide where the K8's were two
+    ///   halves, likewise (GCC's SSE_PARTIAL_REG_DEPENDENCY lists AMDFAM10
+    ///   with CORE_ALL -- from memory, no copy here); and the psABI's levels
+    ///   above the baseline, tuned as they. The baseline, x86-64, is the K8's
+    ///   set and tuned as the K8.
     /// - The P6 family, the Pentium III among them, and the K7 take no such
     ///   idiom for an XMM register (Agner 6.8: XOR "doesn't break its
     ///   dependence on earlier instructions on PPro, P2, P3"; nothing claimed
     ///   for the K7): a zeroing there would only be one more instruction.
     /// </summary>
-    ///
-    /// THE LONG-MODE FAMILIES: Nocona is the Pentium 4's core (PXOR, every
-    /// merge); the Core line and the K10 break every merge, Intel's by PXOR
-    /// (GCC's SSE_LOAD0_BY_PXOR) and the K10, whose SSE units are 128 bits
-    /// wide where the K8's were two halves, the same (GCC's amdfam10 is in
-    /// both lists); the psABI's levels above the baseline as they; the
-    /// baseline itself, x86-64, as the K8 whose set it is.
-    /// </summary>
     public static bool BreaksMerge(int width) =>
-        Name is "pentium4" or "nocona" ? Target.Current.X86Profile.Has(X86Feature.Sse2)
-        : IntelCore || K10 || LevelAboveBaseline ? true
-        : (K8 || Baseline64) && width == 4;
+        ZeroByPxor ? Target.Current.X86Profile.Has(X86Feature.Sse2)
+        : IntelCore || K10 || LevelAboveBaseline || (K8 || Baseline64) && width == 4;
 
-    /// <summary>The zeroing BreaksMerge asks for: PXOR where the processor takes it and not XORPS (the Pentium 4 and Nocona), or where GCC zeroes so (the Core line, the K10, the levels); XORPS on the K8 and its baseline, AMD 25112's own.</summary>
-    public static bool ZeroByPxor => !(K8 || Baseline64);
+    /// <summary>The zeroing BreaksMerge asks for: PXOR only where XORPS is no zero idiom (the Pentium 4 and Nocona, which need SSE2 for it); XORPS, SSE1's, everywhere else.</summary>
+    public static bool ZeroByPxor => Name is "pentium4" or "nocona";
 
     /// <summary>
     /// A function's alignment: 16 on the K6 (AMD 21924, "Aligning
@@ -137,7 +138,10 @@ internal static class CpuModel
     /// aligned sixteen-byte window a clock (AMD 22007, 25112: branch targets
     /// and functions at 16); Intel's 486 and Pentium rules ask for none
     /// beyond the words, and every function padded to 16 would cost a 486
-    /// cache.
+    /// cache. The long-mode families fetch sixteen-byte aligned windows too --
+    /// the K10 as the K8, the Core line its 16-byte fetch block (Agner Fog,
+    /// microarchitecture, the fetch sections of each) -- and the psABI's levels
+    /// are tuned as they.
     /// </summary>
     public static int FunctionAlign(int asked) => Math.Max(asked, K6 || Athlon || K10 || IntelCore || LevelAboveBaseline || Baseline64 ? 16 : 4);
 }
