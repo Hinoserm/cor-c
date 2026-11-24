@@ -25,24 +25,29 @@ namespace Corsac.Lang.Metadata;
 public static class DeclarationStamp
 {
     /// <summary>
-    /// The last index hashed, by where it is, when it was written and how
-    /// long it is: a project's units are compiled in one process against one
-    /// index, and every module unit checks it is the kernel's.
+    /// EVERY INDEX HASHED, by where it is, when it was written and how long
+    /// it is, each made once however many threads ask for it at once (one
+    /// Lazy per key, as Go's singleflight and .NET's own ConcurrentDictionary
+    /// + Lazy idiom do it). One entry would not do: a module stacked on a
+    /// module on the kernel (nt on gui on the kernel) asks for two stamps in
+    /// turn for every unit, and a single remembered one is always the other.
+    /// A rewritten index is a new key; the old entry is a few dozen bytes.
     /// </summary>
-    static (string Path, DateTime Written, long Length, byte[] Stamp)? _last;
-    static readonly object Gate = new();
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, DateTime Written, long Length), Lazy<byte[]>> Made = new();
 
     public static byte[] Of(string indexPath)
     {
         string full = Path.GetFullPath(indexPath);
         FileInfo file = new(full);
-        lock (Gate)
+        Lazy<byte[]> made = Made.GetOrAdd((full, file.LastWriteTimeUtc, file.Length),
+            key => new Lazy<byte[]>(() => Hash(key.Path), LazyThreadSafetyMode.ExecutionAndPublication));
+        try { return made.Value; }
+        catch
         {
-            if (_last is { } last && last.Path == full && last.Written == file.LastWriteTimeUtc && last.Length == file.Length) return last.Stamp;
+            // A failed hash is not remembered: the next asker tries again.
+            Made.TryRemove(new KeyValuePair<(string, DateTime, long), Lazy<byte[]>>((full, file.LastWriteTimeUtc, file.Length), made));
+            throw;
         }
-        byte[] stamp = Hash(full);
-        lock (Gate) _last = (full, file.LastWriteTimeUtc, file.Length, stamp);
-        return stamp;
     }
 
     static byte[] Hash(string indexPath)

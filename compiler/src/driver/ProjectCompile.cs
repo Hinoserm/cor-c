@@ -633,25 +633,30 @@ public static class ProjectCompile
         // share a heap however little memory there is. Never from a hosted
         // `dotnet corc.dll`, whose path is the host's.
         bool mayUseProcesses = pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers;
-        // THE INDEX OPENED ONCE FIRST, so a module index's stamp of its
-        // kernel's (DeclarationStamp, a pass over the whole kernel index) is
-        // made here and found by every unit asked below, not made by `threads`
-        // of them at once -- whichever unit happens to reach the index first.
-        // A receipt that cannot be read (its bytes not what a receipt is) makes
-        // its unit stale: whoever compiles it writes it again. threads > 1
-        // here (mayUseProcesses), so the scan's parallelism is never 0.
+        // A receipt whose bytes are not what a receipt is makes its unit
+        // stale: whoever compiles it writes it again. Only what such bytes can
+        // throw counts (a bad number, a bad length, data the reader refuses);
+        // anything else is a fault of the compiler and surfaces. An IOException
+        // (EndOfStreamException among them) is answered inside Stale already.
         bool StaleOrUnreadable(Unit unit)
         {
             try { return Stale(unit) is not null; }
-            catch (Exception failure) when (failure is FormatException or ArgumentException or OverflowException
-                                            or InvalidDataException or EndOfStreamException) { return true; }
+            catch (Exception failure) when (failure is FormatException or OverflowException or InvalidDataException) { return true; }
         }
+        // threads > 1 here (mayUseProcesses), so the scan's parallelism is
+        // never 0. The kernel stamp a module index needs is made once however
+        // many units ask at once (DeclarationStamp.Of). A fault inside the
+        // scan surfaces as itself, not wrapped in PLINQ's AggregateException,
+        // so the driver reports it as it reports any other.
         bool[] staleAt = Array.Empty<bool>();
         if (mayUseProcesses)
         {
-            try { using DeclarationCatalog warm = new(sessionIndex); }
-            catch (Exception failure) when (failure is IOException or InvalidDataException or UnauthorizedAccessException) { }
-            staleAt = rest.AsParallel().AsOrdered().WithDegreeOfParallelism(threads).Select(StaleOrUnreadable).ToArray();
+            try { staleAt = rest.AsParallel().AsOrdered().WithDegreeOfParallelism(threads).Select(StaleOrUnreadable).ToArray(); }
+            catch (AggregateException failure) when (failure.InnerExceptions.Count > 0)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure.InnerExceptions[0]).Throw();
+                throw;
+            }
         }
         int staleCount = staleAt.Count(stale => stale);
         int processes = mayUseProcesses ? Math.Min(Math.Min(threads, staleCount), Corsac.Projects.ProjectCommand.WorkerSpaces()) : 0;

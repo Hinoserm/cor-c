@@ -173,9 +173,16 @@ public static class UnitDependencies
     {
         if (!File.Exists(path)) return "no receipt";
         const string unreadable = "receipt unreadable";
+        // The index's own faults are the index's, not the receipt's: a log
+        // that says "receipt unreadable" for a damaged or out-of-date index
+        // sends its reader to the wrong file.
+        DeclarationCatalog catalog;
+        try { catalog = new(index); }
+        catch (IOException failure) { return "declaration index unreadable (" + failure.Message + ")"; }
+        catch (InvalidDataException failure) { return "declaration index unreadable (" + failure.Message + ")"; }
+        using DeclarationCatalog owned = catalog;
         try
         {
-            using DeclarationCatalog catalog = new(index);
             using FileStream stream = File.OpenRead(path);
             using BinaryReader reader = new(stream, Encoding.UTF8);
             if (reader.ReadUInt32() != 0x50454443u || reader.ReadInt32() != 0) return unreadable;
