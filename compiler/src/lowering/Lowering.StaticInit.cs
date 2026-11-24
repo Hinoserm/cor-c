@@ -484,16 +484,17 @@ public sealed partial class Lowering
 
     /// <summary>
     /// Whether a static named through `named` from shared code is found in a
-    /// statics table: each instantiation's own -- declared in a generic type,
-    /// copied per argument or sharing its code (StaticWordFor hands the
-    /// latter its context) -- named through a type copied per argument. One
-    /// of a non-generic type, a base's, is the same for every argument; and
-    /// one named through a class or struct sharing its code is called as
-    /// that code's own, its context handed as any call of it hands it
-    /// (`Span<T>.Move` from Array.Copy's shared copy) -- one with a canonical
-    /// copy (Decl.Canon), not the copy over object of a type copied per
-    /// argument, which SharedContext's shape test also answers for. Either is the one this
-    /// code names (PendHiddenArguments, PendStaticAccessor, OtherStaticAddress).
+    /// statics table. Only one that is each instantiation's own -- declared
+    /// in a generic type, copied per argument or sharing its code (whose
+    /// word StaticWordFor hands its context) -- named through a type copied
+    /// per argument. Not one of a non-generic type, a base's: it is the same
+    /// for every argument. Nor one named through a type with a canonical
+    /// copy (Decl.Canon): it is called as that code's own, handed its
+    /// context as any call of it is (`Span<T>.Move` from Array.Copy's shared
+    /// copy). SharedContext is not the test for that: its shape test holds
+    /// for the copy over object of a type copied per argument too. Either
+    /// way the static is the one this code names (PendHiddenArguments,
+    /// PendStaticAccessor, OtherStaticAddress).
     /// </summary>
     private bool ThroughTable(Expr named, TypeSymbol owner)
         => owner.Decl?.Template is not null && !(_b.TypeOf(named).Symbol is { Decl.Canon: not null });

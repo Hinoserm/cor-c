@@ -1,0 +1,89 @@
+// test: loop_reads_kept_in_the_loop_where_a_ref_a_copy_or_another_way_round_writes_them
+// expect-exit: 0
+// expect-output:
+// 511
+// 33
+// 51
+// 1008
+// 51
+// stopped True
+//
+// WHAT LoopLoads MUST LEAVE IN THE LOOP: a struct's field inside an object,
+// written through a ref in a call or in place (its offset the struct's, an
+// address inside the object); a field of an object the loop's frame holds;
+// a field written on one of two ways round the loop (a continue); an array
+// element block-copied into (Array.Copy); a volatile field another thread
+// sets, spun on. Checked against .NET 10.
+using System;
+using System.Threading;
+using System.Runtime.CompilerServices;
+struct Inner { public int X; public int[] Arr; }
+sealed class Holder
+{
+    public Inner In;
+    public int[] Arr;
+    public volatile bool Stop;
+    public int Spins;
+    public Holder(int[] a) { Arr = a; In.Arr = a; }
+}
+sealed class Node { public int[] Items; public Node(int[] i) { Items = i; } }
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Bump(ref Inner s, int[] next) { s.Arr = next; s.X++; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int StructFieldThroughRef(Holder h, int[] next)
+    {
+        int sum = 0;
+        for (int k = 0; k < 3; k++) { sum += h.In.Arr[k]; if (k == 0) Bump(ref h.In, next); }
+        return sum * 10 + h.In.X;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int StructFieldInPlace(Holder h, int[] next)
+    {
+        int sum = 0;
+        for (int k = 0; k < 3; k++) { sum += h.In.Arr[k]; if (k == 1) h.In.Arr = next; }
+        return sum;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int LocalObject(int[] a, int[] b)
+    {
+        var n = new Node(a);
+        int sum = 0;
+        for (int k = 0; k < 3; k++) { sum += n.Items[k]; n.Items = b; }
+        return sum;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int TwoLatches(Holder h, int[] next)
+    {
+        int sum = 0;
+        for (int k = 0; k < 4; k++)
+        {
+            if ((k & 1) == 0) { sum += h.Arr[k]; continue; }
+            sum += 100 * h.Arr[k];
+            if (k == 1) h.Arr = next;
+        }
+        return sum;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CopiedInto(int[][] cells, int[][] from)
+    {
+        int sum = 0;
+        for (int k = 0; k < 3; k++) { sum += cells[0][k]; if (k == 0) Array.Copy(from, cells, 1); }
+        return sum;
+    }
+    static void Main()
+    {
+        Console.WriteLine(StructFieldThroughRef(new Holder(new[] { 1, 2, 3 }), new[] { 10, 20, 30 }));
+        Console.WriteLine(StructFieldInPlace(new Holder(new[] { 1, 2, 3 }), new[] { 10, 20, 30 }));
+        Console.WriteLine(LocalObject(new[] { 1, 2, 3 }, new[] { 10, 20, 30 }));
+        Console.WriteLine(TwoLatches(new Holder(new[] { 1, 2, 3, 4 }), new[] { 5, 6, 7, 8 }));
+        Console.WriteLine(CopiedInto(new[] { new[] { 1, 2, 3 } }, new[] { new[] { 10, 20, 30 } }));
+        var h = new Holder(new[] { 1 });
+        var t = new Thread(() => { Thread.Sleep(20); h.Stop = true; });
+        t.Start();
+        while (!h.Stop) h.Spins++;
+        t.Join();
+        Console.WriteLine("stopped " + (h.Spins > 0));
+    }
+}

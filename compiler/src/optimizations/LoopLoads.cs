@@ -54,14 +54,34 @@ public sealed class LoopLoads : IPass
     /// <summary>Values a loop holds in registers for its reads: few on 32-bit x86, where a register held round the loop is one its body lacks.</summary>
     private static int Budget => Target.Current.WordSize == 8 ? 8 : 4;
 
+    /// <summary>
+    /// THE READS EACH LOOP'S WAY IN HOLDS ALREADY, by the block they were
+    /// moved to, over every round of this pass and every run of it the
+    /// pipeline makes: the budget is a loop's, not a round's (a header of
+    /// twelve reads was moved four at a time, three rounds).
+    /// </summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Block, System.Runtime.CompilerServices.StrongBox<int>> Held = new();
+
+    private static System.Runtime.CompilerServices.StrongBox<int> HeldBy(Block way) => Held.GetValue(way, _ => new(0));
+
     public void Run(Function function)
     {
         if (function.Async is not null || function.Blocks.Count < 2) return;
+        // NO LOOP, NO TABLES: a block jumping back to one before it in
+        // the function's order is the cheap sign of one (a loop the order
+        // does not show is found by the Cfg the next time round).
+        bool back = false;
+        for (int k = 0; k < function.Blocks.Count; k++) function.Blocks[k].Order = k;
         foreach (Block b in function.Blocks)
         {
             if (b.IsLandingPad || b.RegionLoop) return;
-            foreach (Instr i in b.Instrs) if (i.Op is Opcode.Phi or Opcode.LabelAddr) return;
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op is Opcode.Phi or Opcode.LabelAddr) return;
+                if (i.IsTerminator) for (int t = 0; t < i.TargetCount; t++) back |= i.TargetAt(t).Order <= b.Order;
+            }
         }
+        if (!back) return;
         for (int round = 0; round < 8; round++)
             if (!Once(function)) break;
     }
@@ -114,9 +134,9 @@ public sealed class LoopLoads : IPass
     /// </summary>
     private static bool Hoist(Block first, Block into, Summary summary, Func<VReg, bool> invariant, Defs defs, Block?[] sites)
     {
-        int budget = Budget;
+        System.Runtime.CompilerServices.StrongBox<int> held = HeldBy(into);
         bool moved = false;
-        for (int k = 0; k < first.Instrs.Count && budget > 0; k++)
+        for (int k = 0; k < first.Instrs.Count && held.Value < Budget; k++)
         {
             Instr i = first.Instrs[k];
             if (ReferenceEquals(i, first.Terminator)) break;
@@ -125,7 +145,7 @@ public sealed class LoopLoads : IPass
                 first.Instrs.RemoveAt(k--);
                 into.Instrs.Insert(into.Instrs.Count - 1, i);
                 if (i.Dest!.Id < sites.Length) sites[i.Dest.Id] = into;
-                budget--;
+                held.Value++;
                 moved = true;
                 continue;
             }
@@ -140,16 +160,27 @@ public sealed class LoopLoads : IPass
         if (i.Dest is not { } dest || !defs.IsSingle(dest) || i.Operands is not [RegOperand { Reg: var address }] || !invariant(address)) return false;
         if (i.Op == Opcode.ArrayLength) return true;
         return i.Op == Opcode.Load && !i.Device && i.Family is not null && i.Offset is >= 0 && i.Offset + i.Size <= Covered
-            && dest.Type.IsInt() && !summary.Writes(i.Offset, i.Size);
+            && dest.Type.IsInt() && !Interior(address, defs) && !summary.Writes(i.Offset, i.Size);
     }
 
-    /// <summary>Nothing the program sees, and no fault but a read's: computing, and reads.</summary>
+    /// <summary>
+    /// AN ADDRESS INSIDE AN OBJECT, made by adding to another: a struct's
+    /// field reached through it carries a Family too (Lowering's field
+    /// access), at the struct's own offset, which a field's offset from the
+    /// object's start is never compared with. Neither such a read is moved
+    /// nor such a write placed (Summarise): an object's own address is
+    /// never a sum.
+    /// </summary>
+    private static bool Interior(VReg address, Defs defs)
+        => !defs.IsSingle(address) || defs.Site(address) is { } site && site.Block.Instrs[site.Index].Op is Opcode.Add or Opcode.Sub;
+
+    /// <summary>Nothing the program sees, and no fault but a read's: computing, and reads of memory -- never a device's, whose every read is seen.</summary>
     private static bool Quiet(Instr i)
-        => IrInfo.IsPure(i) && i.Op is not (Opcode.Phi or Opcode.LabelAddr) || i.Op is Opcode.ArrayLength || i.Op == Opcode.Load && !i.Device;
+        => !i.Device && (IrInfo.IsPure(i) && i.Op is not (Opcode.Phi or Opcode.LabelAddr) || i.Op is Opcode.ArrayLength || i.Op == Opcode.Load);
 
     /// <summary>
     /// THE LOOP'S TEST ASKED ONCE BEFORE IT TOO, where the header is that test
-    /// alone -- pure, no read, a branch out of the loop one way and into a
+    /// alone -- computing, no read of memory at all, a branch out of the loop one way and into a
     /// block only it enters the other -- and that block starts with a read
     /// Hoist would move: the way in tests and goes out, or into a new block
     /// of its own that jumps to that block, which is then the loop's first.
@@ -163,7 +194,7 @@ public sealed class LoopLoads : IPass
         Block body = branch.TargetAt(stay), exit = branch.TargetAt(1 - stay);
         if (loop.Contains(exit) || !loop.Contains(body) || ReferenceEquals(body, header) || cfg.Preds(body).Count != 1) return false;
         foreach (Instr i in header.Instrs)
-            if (!ReferenceEquals(i, branch) && !(IrInfo.IsPure(i) && i.Op is not (Opcode.Phi or Opcode.LabelAddr))) return false;
+            if (!ReferenceEquals(i, branch) && !(IrInfo.IsPure(i) && !i.Device && i.Op is not (Opcode.Phi or Opcode.LabelAddr or Opcode.Load))) return false;
         bool any = false;
         foreach (Instr i in body.Instrs)
         {
@@ -173,6 +204,8 @@ public sealed class LoopLoads : IPass
         }
         if (!any) return false;
         Block way = function.NewBlock(body.Label + ".in");
+        // One budget for the loop: what its first way in holds already counts.
+        HeldBy(way).Value = HeldBy(preheader).Value;
         Instr jump = new() { Op = Opcode.Jump, Line = branch.Line };
         jump.SetTargets(new[] { body });
         way.Instrs.Add(jump);
@@ -203,7 +236,7 @@ public sealed class LoopLoads : IPass
                     {
                         case SymOperand { Name: var cell } when cell.StartsWith("s_", StringComparison.Ordinal) || cell.StartsWith("ts_", StringComparison.Ordinal):
                             break;
-                        case RegOperand when i.Family is not null:
+                        case RegOperand { Reg: var at } when i.Family is not null && !Interior(at, defs):
                             summary.Fields.Add((i.Offset, i.Size));
                             break;
                         case RegOperand { Reg: var r } when ArrayBased(r, defs, arrays, 6):
