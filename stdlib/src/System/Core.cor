@@ -10836,16 +10836,6 @@ public unsafe readonly ref struct Span<T> {
         return true;
     }
 
-    /// `n` elements from one place to another, as .NET's CopyTo moves them:
-    /// two windows onto one block may overlap, and a move up is made from
-    /// the top down so nothing is overwritten before it is read. The
-    /// objects the two are in, handed along, are in use until it returns.
-    ///
-    /// ELEMENTS HOLDING NO REFERENCE ARE BYTES, moved as one block (Sys.
-    /// MemoryMove: a word at a time, streamed when it is long, from the end
-    /// down where it moves up over itself) -- a constant of the element type,
-    /// so the loops below are only references' code. Those stay a store an
-    /// element: each takes the collector's barrier and its card.
     /// The element at an address: a variable of the span's element type
     /// there. (A cast of the address in place reads `(T*)(...)` as a product
     /// where T has its own `*`, as UInt128 has.)
@@ -10860,11 +10850,26 @@ public unsafe readonly ref struct Span<T> {
         Move(source, Sys.ArrayData(source) + (nuint)at * (nuint)sizeof(T), into, Sys.ArrayData(into) + (nuint)to * (nuint)sizeof(T), n);
     }
 
+    /// `n` elements from one place to another, as .NET's CopyTo moves them:
+    /// two windows onto one block may overlap, and a move up is made from
+    /// the top down so nothing is overwritten before it is read. The
+    /// objects the two are in, handed along, are in use until it returns.
+    ///
+    /// ELEMENTS HOLDING NO REFERENCE ARE BYTES, moved as one block (Sys.
+    /// MemoryMove: a word at a time, streamed when it is long, from the end
+    /// down where it moves up over itself) -- a constant of the element type,
+    /// so the loops below are only references' code. Those stay a store an
+    /// element: each takes the collector's barrier and its card.
     internal static void Move(object? from, nuint src, object? into, nuint dst, int n) {
         if (n == 0) { return; }
         nuint bytes = (nuint)n * (nuint)sizeof(T);
         if (!Sys.ElementsHoldReferences<T>(null)) {
-            bool oneBlock = from != null && (object?)from == (object?)into;
+            // MAYBE ONE BLOCK: the same object, or memory no object holds on
+            // either side -- two spans over one pointer's memory, or one over
+            // a variable (CreateSpan) and one over its array. The move then
+            // asks the addresses which way to go (Lowering.MoveBytes); only
+            // two different objects never overlap.
+            bool oneBlock = from == null || into == null || (object?)from == (object?)into;
             // NUMBERS NEVER AN ADDRESS -- characters, ints, floats -- as such
             // to region inference; a long's or a nint's may be one, and moves
             // as bytes it follows (Sys.NumbersMove, MemoryMove).
@@ -15437,11 +15442,12 @@ public static class Enumerable {
             found = false;
             return default(TSource)!;
         }
-        // AN ELEMENT OF THE LIST AS IT WAS WHEN THE ASK BEGAN (.NET reads the
-        // span it took then): one a predicate or selector removed since reads
-        // as default(T) -- what .NET reads for a list of references, whose
-        // removed slots List clears -- and nothing past the list's live count
-        // is read, storage the list may since have given back.
+        // AN ELEMENT OF THE LIST WHILE IT IS ONE: .NET reads the span it took
+        // when the ask began, stale slots and all; one a predicate or selector
+        // removed since reads here as default(T) -- what .NET reads for a list
+        // of references, whose removed slots List clears, but not for numbers,
+        // whose stale value .NET reads -- because nothing past the list's live
+        // count is read: storage the list may since have given back.
         private static TSource At(List<TSource> list, int i) => (uint)i < (uint)list.Count ? list[i] : default(TSource)!;
 
     }
@@ -15601,11 +15607,12 @@ public static class Enumerable {
             found = false;
             return default(TResult)!;
         }
-        // AN ELEMENT OF THE LIST AS IT WAS WHEN THE ASK BEGAN (.NET reads the
-        // span it took then): one a predicate or selector removed since reads
-        // as default(T) -- what .NET reads for a list of references, whose
-        // removed slots List clears -- and nothing past the list's live count
-        // is read, storage the list may since have given back.
+        // AN ELEMENT OF THE LIST WHILE IT IS ONE: .NET reads the span it took
+        // when the ask began, stale slots and all; one a predicate or selector
+        // removed since reads here as default(T) -- what .NET reads for a list
+        // of references, whose removed slots List clears, but not for numbers,
+        // whose stale value .NET reads -- because nothing past the list's live
+        // count is read: storage the list may since have given back.
         private static TSource At(List<TSource> list, int i) => (uint)i < (uint)list.Count ? list[i] : default(TSource)!;
 
     }
@@ -15912,11 +15919,12 @@ public static class Enumerable {
             found = false;
             return default(TResult)!;
         }
-        // AN ELEMENT OF THE LIST AS IT WAS WHEN THE ASK BEGAN (.NET reads the
-        // span it took then): one a predicate or selector removed since reads
-        // as default(T) -- what .NET reads for a list of references, whose
-        // removed slots List clears -- and nothing past the list's live count
-        // is read, storage the list may since have given back.
+        // AN ELEMENT OF THE LIST WHILE IT IS ONE: .NET reads the span it took
+        // when the ask began, stale slots and all; one a predicate or selector
+        // removed since reads here as default(T) -- what .NET reads for a list
+        // of references, whose removed slots List clears, but not for numbers,
+        // whose stale value .NET reads -- because nothing past the list's live
+        // count is read: storage the list may since have given back.
         private static TSource At(List<TSource> list, int i) => (uint)i < (uint)list.Count ? list[i] : default(TSource)!;
 
     }

@@ -2114,6 +2114,15 @@ public sealed partial class Lowering
     // (an interface's by its own flag).
     private const int TypeFlagAbstract = 0x10000000;
 
+    // A CLASS WHOSE FIELDS OWN NOTHING (CopiedChain: [FieldsOwnNothing], or
+    // copied by bytes somewhere up its chain): lowering tags none of their
+    // stores, so no field of it is ever found to own what it holds, and
+    // freeing one of its objects frees the block alone. Read by the lifetime
+    // rules from the descriptor itself, in a unit and at the link alike
+    // (Escape.ClassMadeHere): one made in a function holding what it was
+    // handed is a box.
+    internal const int TypeFlagFieldsOwnNothing = 0x1000;
+
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
     private const int DescVariance = 11;
@@ -3547,7 +3556,8 @@ public sealed partial class Lowering
         int classFlags = (t.Kind == TypeKind.Class && EquatableSlot is not null && TypedEquals(t) is not null ? TypeFlagEquatable : 0)
             | (t.Kind == TypeKind.Class && DelegateObject(t) ? TypeFlagDelegateObject : 0)
             | (t.Kind == TypeKind.Class && MulticastObject(t) ? TypeFlagMulticastObject : 0)
-            | (t.Kind == TypeKind.Class && t.Decl is { } declared && (declared.Mods.HasFlag(Mods.Abstract) || declared.Mods.HasFlag(Mods.Static)) ? TypeFlagAbstract : 0);
+            | (t.Kind == TypeKind.Class && t.Decl is { } declared && (declared.Mods.HasFlag(Mods.Abstract) || declared.Mods.HasFlag(Mods.Static)) ? TypeFlagAbstract : 0)
+            | (t.Kind == TypeKind.Class && CopiedChain(t) ? TypeFlagFieldsOwnNothing : 0);
         if (classFlags != 0) WriteWord(block, DescFlags * w, classFlags);
 
         // THE SHARED COPIES ITS CHAIN STANDS ON (DataItem.SharedCopies): a

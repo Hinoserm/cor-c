@@ -957,17 +957,14 @@ public sealed class Inline : IParallelModulePass
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
-                if (i.Op == Opcode.Call && i.Callee is Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues
-                        or Corsac.Lang.Lto.RuntimeAbi.CardMark or Corsac.Lang.Lto.RuntimeAbi.CardMarkObject
+                if (i.Op == Opcode.Call && i.Callee is Corsac.Lang.Lto.RuntimeAbi.CardMark or Corsac.Lang.Lto.RuntimeAbi.CardMarkObject
                         or Corsac.Lang.Lto.RuntimeAbi.ShadeObject)
                 {
                     continue;
                 }
-                // The flag's read and the branch on it, and the field address
-                // that only the bookkeeping takes.
-                if (i.Op == Opcode.Load && i.Operands.Count > 0 && i.Operands[0] is SymOperand { Name: "s_Runtime_Marking_t$V$I32" }) continue;
-                if (k + 1 < b.Instrs.Count && i.Op == Opcode.Add && b.Instrs[k + 1] is { Op: Opcode.Call, Callee: Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.CardMark }) continue;
-                if (i.Op == Opcode.Jump && b.Instrs.Count <= 3 && b.Instrs.Any(x => x.Op == Opcode.Call && x.Callee == Corsac.Lang.Lto.RuntimeAbi.WriteBarrier)) continue;
+                // The card's field address, which only the bookkeeping takes.
+                if (k + 1 < b.Instrs.Count && i.Op == Opcode.Add && b.Instrs[k + 1] is { Op: Opcode.Call, Callee: Corsac.Lang.Lto.RuntimeAbi.CardMark }) continue;
+                if (SnapshotBarrier(b, k)) continue;
                 n++;
             }
         }
@@ -989,20 +986,30 @@ public sealed class Inline : IParallelModulePass
     {
         int n = 0;
         foreach (Block b in f.Blocks)
-        {
-            if (IsBarrierBlock(b)) continue;
-            n += b.Instrs.Count;
-            if (b.Instrs.Count >= 2 && b.Instrs[^2] is { Op: Opcode.Load, Operands: [SymOperand { Name: MarkingFlag }] }) n -= 2;
-        }
+            for (int k = 0; k < b.Instrs.Count; k++)
+                if (!SnapshotBarrier(b, k)) n++;
         return n;
     }
 
     /// <summary>Runtime.Marking, the barrier's test.</summary>
     private const string MarkingFlag = "s_Runtime_Marking_t$V$I32";
 
-    /// <summary>Lowering's barrier block: `a = add x k; call Runtime.WriteBarrier a v; jump`.</summary>
-    private static bool IsBarrierBlock(Block b)
-        => b.Instrs.Count == 3 && b.Instrs[0].Op == Opcode.Add && b.Instrs[1] is { Op: Opcode.Call, Callee: Escape.Barrier } && b.Instrs[2].Op == Opcode.Jump;
+    /// <summary>
+    /// Whether instruction `k` of `b` is the snapshot barrier's
+    /// (Lowering.ReferenceBarrier), the one weighing of it Size and HotSize
+    /// share: the read of Runtime.Marking and the branch on it, the call of
+    /// Runtime.WriteBarrier (or its value form), the field address it alone
+    /// takes (none at offset 0), and the jump back of the block it is in.
+    /// </summary>
+    private static bool SnapshotBarrier(Block b, int k)
+    {
+        Instr i = b.Instrs[k];
+        if (i.Op == Opcode.Call && i.Callee is Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues) return true;
+        if (i.Op == Opcode.Load && i.Operands.Count > 0 && i.Operands[0] is SymOperand { Name: MarkingFlag }) return true;
+        if (i.Op == Opcode.Branch && k > 0 && b.Instrs[k - 1] is { Op: Opcode.Load, Operands: [SymOperand { Name: MarkingFlag }] }) return true;
+        if (k + 1 < b.Instrs.Count && i.Op == Opcode.Add && b.Instrs[k + 1] is { Op: Opcode.Call, Callee: Corsac.Lang.Lto.RuntimeAbi.WriteBarrier }) return true;
+        return i.Op == Opcode.Jump && b.Instrs.Count <= 3 && b.Instrs.Any(x => x.Op == Opcode.Call && x.Callee == Corsac.Lang.Lto.RuntimeAbi.WriteBarrier);
+    }
 
     /// <summary>
     /// Replaces the call at <paramref name="index"/> of <paramref name="site"/>

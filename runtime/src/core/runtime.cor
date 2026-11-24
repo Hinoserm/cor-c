@@ -3780,6 +3780,8 @@ public static partial class Runtime
     {
         if (bytes.Length == 0) return;
         WriteBytes(StdOut, bytes.Address, (nuint)bytes.Length);
+        // The span's object kept until the write is done (an address is no use of it).
+        Sys.KeepAlive(bytes.Owner);
     }
 
     public static void PrintLine()

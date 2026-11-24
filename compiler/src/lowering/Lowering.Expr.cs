@@ -948,7 +948,7 @@ public sealed partial class Lowering
             return Convert(at, NullableValue(v, from.Underlying), from.Underlying, to);
         }
 
-        if (!pointers && from.IsNullableValue || to.IsNullableValue)
+        if (from.IsNullableValue || to.IsNullableValue)
         {
             return v;
         }

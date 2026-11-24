@@ -2941,6 +2941,23 @@ continue;
     private static bool StampedBox(Function f, VReg made) => OwnsNoField(StampOf(f, made)?.Descriptor);
 
     /// <summary>
+    /// Whether a class's descriptor says its fields own nothing (lowering's
+    /// TypeFlagFieldsOwnNothing, in its flags word): read from the descriptor
+    /// this run holds, this unit's or the link's.
+    /// </summary>
+    private static bool FieldsOwnNothing(string descriptor)
+    {
+        DataItem? item = null;
+        if (_stampItems is null || !_stampItems.TryGetValue(descriptor, out item))
+            if (_typeItems is null || !_typeItems.TryGetValue(descriptor, out item)) return false;
+        int word = IrTypes.Word.Bytes();
+        int at = 6 * word;   // Lowering's DescFlags word
+        if (item.Bytes.Length < at + word) return false;
+        long flags = word == 8 ? BitConverter.ToInt64(item.Bytes, at) : BitConverter.ToInt32(item.Bytes, at);
+        return (flags & Corsac.Lang.Lower.Lowering.TypeFlagFieldsOwnNothing) != 0;
+    }
+
+    /// <summary>
     /// Whether the block `made` makes is an object of a class, allocated and
     /// stamped here with its own descriptor (`t_...`, at the methods' base):
     /// its type exactly known, no shared copy's (StampOf), so no subclass's
@@ -2956,7 +2973,7 @@ continue;
     private static bool ClassMadeHere(Function f, VReg made)
     {
         if (StampOf(f, made) is not Stamp stamp || stamp.Base != Target.Current.DescriptorBytes
-            || !stamp.Descriptor.StartsWith("t_", StringComparison.Ordinal)) return false;
+            || !stamp.Descriptor.StartsWith("t_", StringComparison.Ordinal) || !FieldsOwnNothing(stamp.Descriptor)) return false;
         RegisterWrites writes = AnalysisCache.WritesOf(f);
         WriteList ws = writes.TryGetValue(made, out WriteList found) ? found : default;
         if (ws.Count != 1 || ws[0] is not { Op: Opcode.Call, Callee: Allocator or ObjectAllocator }) return false;

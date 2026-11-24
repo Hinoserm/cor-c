@@ -26,6 +26,9 @@
 // fill a,y,z,c 2
 // clear a,null,null,c
 // list 1,20,3 14000000
+// pointer overlap up 00010001020304050609
+// pointer overlap down 01020304050609050609
+// variable overlap 1,1,2,3,4,6
 // tostring hi bc
 //
 // MemoryMarshal.Cast and AsBytes view one element type's memory as
@@ -33,7 +36,8 @@
 // a span over a pointer and over a variable (CreateSpan), the empty
 // references .NET hands out without throwing, the refusals of types holding
 // references, of too few bytes and of a negative length, and CopyTo, Fill
-// and Clear of numbers and of references over themselves both ways. A span
+// and Clear of numbers and of references over themselves both ways, over
+// memory no object holds and over a variable and its array as well. A span
 // is .NET's portable shape here (an object, a byte offset, a count), and
 // the indexer's element is an address: in the copy every reference type's
 // span shares, that `T*` is a number, never a boxed one (Lowering.Convert).
@@ -123,6 +127,16 @@ static unsafe class P
         Span<int> ls = CollectionsMarshal.AsSpan(list);
         ls[1] = 20;
         Console.WriteLine("list " + string.Join(",", list) + " " + Hex(MemoryMarshal.AsBytes(ls).Slice(4, 4)));
+        byte* q = stackalloc byte[10];
+        Span<byte> shift = new Span<byte>(q, 10);
+        for (int i = 0; i < 10; i++) shift[i] = (byte)i;
+        shift.Slice(0, 7).CopyTo(shift.Slice(2));
+        Console.WriteLine("pointer overlap up " + Hex(shift));
+        shift.Slice(3, 7).CopyTo(shift);
+        Console.WriteLine("pointer overlap down " + Hex(shift));
+        int[] spread = { 1, 2, 3, 4, 5, 6 };
+        MemoryMarshal.CreateSpan(ref spread[0], 4).CopyTo(spread.AsSpan(1));
+        Console.WriteLine("variable overlap " + Ints(spread));
         Console.WriteLine("tostring " + new Span<char>(new[] { 'h', 'i' }).ToString() + " " + "abc".AsSpan(1).ToString());
     }
 

@@ -4629,6 +4629,9 @@ public static class RandomAccess
         if (fileOffset < 0) throw new ArgumentOutOfRangeException("fileOffset");
         if (buffer.Length == 0) return 0;
         long got = Os.Pread(handle.Fd, buffer.Address, (nuint)buffer.Length, fileOffset);
+        // The span's object kept until the read is done: its address alone is
+        // no use of it, and a blocking read may see a collection.
+        GC.KeepAlive(buffer.Owner);
         if (got < 0) throw Interop.GetExceptionForIoErrnoOnHandle((int)got, null);
         return (int)got;
     }
@@ -4644,6 +4647,7 @@ public static class RandomAccess
         while (done < buffer.Length)
         {
             long put = Os.Pwrite(handle.Fd, buffer.Address + (nuint)done, (nuint)(buffer.Length - done), fileOffset + done);
+            GC.KeepAlive(buffer.Owner);
             if (put < 0) throw Interop.GetExceptionForIoErrnoOnHandle((int)put, null);
             if (put == 0) throw new IOException("the write made no progress");
             done += (int)put;
