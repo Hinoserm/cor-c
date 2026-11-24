@@ -253,6 +253,14 @@ public sealed partial class Escape : IModulePass
         _storedParameters = null;
         _items = null;
         _indirect = IndirectTargets(m, byName);
+        // A UNIT'S OWN OVERRIDES OF ITS VIRTUAL CALLS, for the order of the
+        // summaries alone: its calls name the link's question (VirtualCallees),
+        // but a call on an object of a type known here -- a LINQ iterator a
+        // caller made and walks, its MoveNext found by its stamp (TypedTargets)
+        // -- reads that type's method's summary, which must be made first.
+        // Made in module order, the iterator's MoveNext, an instantiation
+        // made late, came after the caller that asked it, and was no answer.
+        _orderIndirect = m.PreserveExports || m.Entry is null ? IndirectTargets(m, byName, ordering: true) : null;
         _reachGraphs = null;
 
         // Which parameters of which functions escape: pessimistic until a
@@ -2597,7 +2605,7 @@ continue;
             Needs? needs = _hinting ? new(this) : null;
             Flow flow = Analyse(f, new[] { f.Params[p] }, summaries, null, needs: needs, returnsHolder: true);
             if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
-                Console.Error.WriteLine($"held {f.Name}:{p} escapes={flow.Escapes} via {flow.Why} at [{string.Join(",", flow.HeldReturned?.Order() ?? Enumerable.Empty<long>())}]");
+                Console.Error.WriteLine($"held {f.Name}:{p} escapes={flow.Escapes} via {flow.Why} at [{string.Join(",", flow.HeldReturned?.Order() ?? Enumerable.Empty<long>())}] roots={flow.HeldRoots?.Count} ownsNothing={flow.HeldOwnsNothing} condition={(needs is null ? "none" : needs.Condition.IsTrue ? "true" : "conditional")}");
             if (flow.Escapes || flow.HeldReturned is not { Count: > 0 } offsets || flow.HeldRoots is null || !flow.HeldOwnsNothing) continue;
             long[] at = offsets.Order().ToArray();
             if (needs is null || needs.Condition.IsTrue)
@@ -2769,6 +2777,10 @@ continue;
     {
         if (f.Async is not null || f.Params.Count == 0 || !ReturnsFirst(f.Name)) return;
         RegisterWrites writes = new(f);
+        void Refused(int where, Instr? at = null)
+        {
+            if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"copies {f.Name} refused at check {where}: {at}");
+        }
         // The argument and its copies; the blocks made here and theirs.
         HashSet<VReg> self = new() { f.Params[0] };
         HashSet<VReg> made = new();
@@ -2784,7 +2796,12 @@ continue;
                     if (i.Dest is null || !writes.TryGetValue(i.Dest, out WriteList ws) || ws.Count != 1) continue;
                     if (i.Op == Opcode.Call && i.Callee is Allocator or ObjectAllocator)
                     {
-                        if (StampOf(f, i.Dest) is Stamp stamp && stamp.Base == Target.Current.DescriptorBytes && OwnsNoField(stamp.Descriptor) && made.Add(i.Dest))
+                        // A machine, or AN OBJECT OF A CLASS (ClassMadeHere): an
+                        // iterator class's copy, whose fields are written below
+                        // with the argument's own words only -- no object made
+                        // for them, so none is a field that owns what it holds.
+                        if (StampOf(f, i.Dest) is Stamp stamp && stamp.Base == Target.Current.DescriptorBytes
+                            && (OwnsNoField(stamp.Descriptor) || ClassMadeHere(f, i.Dest)) && made.Add(i.Dest))
                         {
                             grew = true;
                             if (!stamps.Contains(stamp)) stamps.Add(stamp);
@@ -2796,6 +2813,20 @@ continue;
                     if (made.Contains(from) && made.Add(i.Dest)) grew = true;
                 }
         }
+        // THE ARGUMENT OR ITS COPY, joined on the way to the return: a
+        // variable every write of which is a copy of one or the other (a
+        // class's `return this;` and `return new X(this);`, one result).
+        HashSet<VReg> joined = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d && !self.Contains(d) && !made.Contains(d) && !joined.Contains(d) && !f.Params.Contains(d)
+                    && writes.TryGetValue(d, out WriteList ws) && ws.Count > 1)
+                {
+                    bool only = true;
+                    foreach (Instr w in ws)
+                        if (w is not { Op: Opcode.Copy, Operands: [RegOperand { Reg: var from }] } || !self.Contains(from) && !made.Contains(from)) { only = false; break; }
+                    if (only) joined.Add(d);
+                }
         // A word of the argument, by the register it is loaded into.
         Dictionary<VReg, Instr> loaded = new();
         foreach (Block b in f.Blocks)
@@ -2808,9 +2839,10 @@ continue;
             {
                 if (i.Op == Opcode.Ret)
                 {
-                    if (i.Operands is not [RegOperand { Reg: var back }] || !self.Contains(back) && !made.Contains(back)) return;
+                    if (i.Operands is not [RegOperand { Reg: var back }] || !self.Contains(back) && !made.Contains(back) && !joined.Contains(back)) { Refused(1); return; }
                     continue;
                 }
+                if (i.Op == Opcode.Copy && i.Dest is { } joining && joined.Contains(joining)) continue;
                 bool touchesMade = false, touchesLoaded = false;
                 foreach (Operand o in i.Operands)
                     if (o is RegOperand { Reg: var r })
@@ -2828,18 +2860,23 @@ continue;
                         if (i.Operands[1] is SymOperand or ImmOperand) continue;
                         if (i.Operands[1] is RegOperand { Reg: var v } && loaded.TryGetValue(v, out Instr? load)
                             && load.Offset == i.Offset && load.Size == i.Size) continue;
-                        return;
+                        { Refused(2, i); return; }
                     // The copy's field address, for its card mark only.
                     case Opcode.Add when i.Dest is not null && i.Operands is [RegOperand { Reg: var from }, ImmOperand] && made.Contains(from):
                         addresses.Add(i.Dest);
                         continue;
                     case Opcode.Call when IsCollectorNote(i.Callee) && !touchesLoaded:
                         continue;
+                    // The card mark of a word stored into the copy (an inlined
+                    // constructor's field store, the address the copy's own):
+                    // it is told the word, and keeps nothing.
+                    case Opcode.Call when i.Callee == Barrier && i.Operands is [RegOperand { Reg: var at }, _] && addresses.Contains(at):
+                        continue;
                     // A number of the argument compared, the state tested.
                     case var _ when IrInfo.IsIntCompare(i.Op) && !touchesMade:
                         continue;
                     default:
-                        return;
+                        { Refused(3, i); return; }
                 }
             }
         // Each field address made only for a card mark.
@@ -2847,7 +2884,7 @@ continue;
             foreach (Instr i in b.Instrs)
                 if (i.Op != Opcode.Call || !IsCollectorNote(i.Callee))
                     foreach (Operand o in i.Operands)
-                        if (o is RegOperand { Reg: var r } && addresses.Contains(r)) return;
+                        if (o is RegOperand { Reg: var r } && addresses.Contains(r)) { Refused(4); return; }
         // THE ARGUMENT ITSELF: read at its words, compared, written with
         // numbers and null (the state), handed back -- nothing else. What
         // it does to the argument's fields, then: the words a number is
@@ -2864,6 +2901,7 @@ continue;
                 {
                     case Opcode.Load when i.Operands is [RegOperand] && i.Dest is not null && loaded.ContainsKey(i.Dest):
                     case Opcode.Ret:
+                    case Opcode.Copy when i.Dest is not null && joined.Contains(i.Dest):
                         continue;
                     case Opcode.Store when i.Operands.Count == 2 && i.Operands[0] is RegOperand { Reg: var into } && self.Contains(into)
                         && i.Operands[1] is ImmOperand or SymOperand:
@@ -2873,7 +2911,7 @@ continue;
                     case var _ when IrInfo.IsIntCompare(i.Op) || i.Op == Opcode.Branch:
                         continue;
                     default:
-                        return;
+                        { Refused(5, i); return; }
                 }
             }
         if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"copies {f.Name} dirty [{string.Join(",", fields.Dirty.Order())}]");
@@ -2891,6 +2929,20 @@ continue;
     /// the block alone, never what it holds.
     /// </summary>
     private static bool StampedBox(Function f, VReg made) => OwnsNoField(StampOf(f, made)?.Descriptor);
+
+    /// <summary>
+    /// Whether the block `made` makes is an object of a class, allocated and
+    /// stamped here with its own descriptor (`t_...`, at the methods' base):
+    /// its type exactly known, no shared copy's (StampOf), so no subclass's
+    /// owned fields come with it.
+    /// </summary>
+    private static bool ClassMadeHere(Function f, VReg made)
+    {
+        if (StampOf(f, made) is not Stamp stamp || stamp.Base != Target.Current.DescriptorBytes
+            || !stamp.Descriptor.StartsWith("t_", StringComparison.Ordinal)) return false;
+        WriteList ws = AnalysisCache.WritesOf(f).TryGetValue(made, out WriteList found) ? found : default;
+        return ws.Count == 1 && ws[0] is { Op: Opcode.Call, Callee: Allocator or ObjectAllocator };
+    }
 
     /// <summary>The descriptor stored into the first word of the block `made` makes, where it is made; null for none, or for two different.</summary>
     private static Stamp? StampOf(Function f, VReg made)
@@ -3496,6 +3548,16 @@ continue;
         // that cannot be handed to a call as a box (`refusedRoots`).
         Dictionary<object, Stamp[]?>? kinds = null;
         HashSet<object>? refusedRoots = null;
+        // VARIABLES WHOSE MERGE WAITS ON A REGISTER NOT YET READ
+        // (MergeFrameWrites): a write copies the result of a call that may
+        // hand back a holder, or another such join -- Where's iterators made
+        // apart, the first one met before the others. Each is joined once
+        // that register is a holder; one still waiting when nothing changes
+        // is an escape.
+        HashSet<VReg>? waitingMerges = null;
+        // Whether every object asked about is a parameter (Acceptable's class objects).
+        bool paramRoots = true;
+        foreach (VReg r in roots) if (!f.Params.Contains(r)) { paramRoots = false; break; }
         // The registers that hold the object itself, or null, and nothing
         // else: the roots, and what is only ever copied from them (exact).
         HashSet<VReg>? bases = null;
@@ -3973,6 +4035,33 @@ continue;
                         if (flow.Derived.Add(d)) { Bears(d); resolved = true; changed = true; }
                     }
                 }
+                // THE ARGUMENT OR A BLOCK MADE HERE, joined on the way to the
+                // return (ReturnsFirst): an iterator class's GetEnumerator,
+                // `if (_state == 0) return this; return new X(this);` --
+                // itself the first time, a copy after, as a `yield` method's
+                // machine hands back with two returns. What comes back is the
+                // argument or a new block, never another's object: handed
+                // back, not borrowed. Whether the copy holds only the
+                // argument's own words is SummariseCopies' to say.
+                if (!resolved && returnsAny && pending.Count > 0)
+                {
+                    foreach (VReg d in pending.ToList())
+                    {
+                        if (f.Params.Contains(d) || !writes.TryGetValue(d, out WriteList all)) continue;
+                        bool joined = true;
+                        foreach (Instr w in all)
+                        {
+                            if (w is { Op: Opcode.Copy, Operands: [RegOperand { Reg: var from }] }
+                                && (flow.Derived.Contains(from) && !flow.Borrowed.Contains(from)
+                                    || writes.TryGetValue(from, out WriteList fw) && fw.Count == 1 && fw[0] is { Op: Opcode.Call, Callee: Allocator or ObjectAllocator })) continue;
+                            joined = false;
+                            break;
+                        }
+                        if (!joined) continue;
+                        pending.Remove(d);
+                        if (flow.Derived.Add(d)) { Bears(d); resolved = true; changed = true; }
+                    }
+                }
                 // Still some that can hold another value, and nothing more to
                 // learn: each is at most a BORROW -- `cur = root`, then `cur =
                 // n` as it walks down -- and is followed as one. Read through,
@@ -4002,6 +4091,9 @@ continue;
         // What holds the object and was handed to a call is used as long as
         // the object is: its registers join the derived ones (as borrows, for
         // what they are: other objects), for where the object is last used.
+        if (!flow.Escapes && waitingMerges is not null)
+            foreach (VReg w in waitingMerges)
+                if (!holderRegs!.ContainsKey(w)) { flow.Escapes = true; break; }
         if (!flow.Escapes && handed is not null)
             foreach (VReg r in handed)
                 if (flow.Derived.Add(r)) flow.Borrowed.Add(r);
@@ -4130,10 +4222,13 @@ continue;
         // (a foreach's List walk) -- may hold the object wherever it points:
         // those blocks are taken as one, what any holds held by all. Anything
         // else written to it, and nothing can be said.
-        bool MergeFrameWrites(VReg d, object root)
+        // Null where a write copies a register not a holder yet: asked again
+        // once it is (waitingMerges).
+        bool? MergeFrameWrites(VReg d, object root)
         {
             writes ??= AnalysisCache.WritesOf(f);
             if (!writes.TryGetValue(d, out WriteList ws)) return false;
+            bool waiting = false;
             List<object> slots = new();
             bool tracing = PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal);
             if (tracing) Console.Error.WriteLine($"merge {f.Name}: {d} to {root}, {ws.Count} writes");
@@ -4149,8 +4244,15 @@ continue;
                 else if (from is RegOperand { Reg: var result } && result != d && holderRegs!.TryGetValue(result, out var handedBack) && handedBack.Delta == 0)
                     slots.Add(handedBack.Root);
                 else if (from is ImmOperand { Value: 0 }) continue;
+                // NOT KNOWN YET: a call's result that may hand back a holder
+                // (Held), or another variable joining such results -- a `?:`
+                // over two factories, one inlined with its own result
+                // variable. Asked again once it is a holder (waitingMerges);
+                // never one, and the object escapes.
+                else if (from is RegOperand { Reg: var later } && later != d && !f.Params.Contains(later)) waiting = true;
                 else return false;
             }
+            if (waiting) return null;
             object one = Canon(root);
             if (tracing) Console.Error.WriteLine($"merge {f.Name}:   into {one}: {string.Join(", ", slots)}");
             foreach (object slot in slots)
@@ -4305,7 +4407,9 @@ continue;
                 writes ??= AnalysisCache.WritesOf(f);
                 if (!writes.TryGetValue(d, out WriteList all) || !OnlyHolder(all, root, delta))
                 {
-                    if (delta != 0 || !MergeFrameWrites(d, root)) { flow.Escapes = true; return; }
+                    bool? merged = delta != 0 ? false : MergeFrameWrites(d, root);
+                    if (merged is null) { (waitingMerges ??= new()).Add(d); return; }
+                    if (merged == false) { flow.Escapes = true; return; }
                     root = Canon(root);
                 }
             }
@@ -4353,11 +4457,22 @@ continue;
         // Whether a root may be handed to a call as a box: a block that owns
         // none of its fields, made here (StampedBox) or handed back by a call
         // that holds the object in it (boxes), and every root taken with it.
+        // Or, HOLDING A PARAMETER -- handed back (returnsHolder), or walked
+        // here (a parameter's own question) -- AN OBJECT OF A CLASS made
+        // here: a LINQ iterator written as a class (.NET's
+        // ArrayWhereIterator), as a yield machine is. Freeing it frees its
+        // owned fields only, and the fields it holds the parameter in are
+        // none: each is written here with the parameter, no object made for
+        // it, and a field owns what it holds only where every store into it
+        // anywhere is one (OwnedFields) -- so the block goes, and what it
+        // holds stays the caller's, as a box's does. Not for an object made
+        // here: stored into such a field, a fresh one may be what makes the
+        // field one that owns it.
         bool Acceptable(object root)
         {
             root = Canon(root);
             if (refusedRoots is not null && refusedRoots.Contains(root)) return false;
-            return root is VReg box && (boxes?.Contains(box) == true || StampedBox(f, box));
+            return root is VReg box && (boxes?.Contains(box) == true || StampedBox(f, box) || (returnsHolder || paramRoots) && ClassMadeHere(f, box));
         }
 
         // The methods a virtual call on a holder of known types reaches: each
@@ -4593,7 +4708,7 @@ continue;
                     if (keeps || uses is not { Opaque: false } || holds.Any(uses.Dirty.Contains))
                     {
                         if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
-                            Console.Error.WriteLine($"holder {f.Name}: {i} to {t}:{p} keeps={keeps} fields={(uses is null ? "none" : uses.Opaque ? "opaque " + uses.Why : "dirty " + string.Join(",", uses.Dirty.Order()))} at {string.Join(",", holds.Order())}"
+                            Console.Error.WriteLine($"holder {f.Name}: {i} to {t}:{p} keeps={keeps} summary={(summaries.TryGetValue(t, out bool[]? said) ? string.Concat(said.Select(b => b ? '1' : '0')) : "none")} fields={(uses is null ? "none" : uses.Opaque ? "opaque " + uses.Why : "dirty " + string.Join(",", uses.Dirty.Order()))} at {string.Join(",", holds.Order())}"
                                 + DirtyWhy(uses, holds));
                         return false;
                     }
@@ -4787,6 +4902,9 @@ continue;
     /// </summary>
     [ThreadStatic] private static Dictionary<Instr, string[]>? _indirect;
 
+    /// <summary>A unit's own overrides of each virtual call, for CallCycles' order alone (see Run).</summary>
+    [ThreadStatic] private static Dictionary<Instr, string[]>? _orderIndirect;
+
     /// <summary>
     /// Per function, per parameter: whether it escapes only as the receiver
     /// of a delegate's Invoke (Instr.DelegateInvoke) -- Enumerable.Any's
@@ -4937,7 +5055,7 @@ continue;
         return null;
     }
 
-    private static Dictionary<Instr, string[]>? IndirectTargets(Module m, Dictionary<string, Function> byName)
+    private static Dictionary<Instr, string[]>? IndirectTargets(Module m, Dictionary<string, Function> byName, bool ordering = false)
     {
         // Not the whole program: each virtual call stands for its overrides
         // under one name, for the link to answer (VirtualCallees).
@@ -4945,7 +5063,9 @@ continue;
         // virtual calls too: an argument handed through an interface -- a key
         // to a dictionary's comparer -- is then a condition on every override,
         // which the link answers, not an escape no unit can take back.
-        if (m.PreserveExports || m.Entry is null) return m.PreserveExports || m.LeavesLinkHints ? VirtualCallees(m.Functions) : null;
+        // For the ORDER of the summaries alone (CallCycles, `ordering`), the
+        // overrides this module has, worked out below as for a whole program.
+        if (!ordering && (m.PreserveExports || m.Entry is null)) return m.PreserveExports || m.LeavesLinkHints ? VirtualCallees(m.Functions) : null;
 
         // Where in a descriptor its methods begin: the offsets objects are
         // stamped with (`store @t_Type+48` into the new object's first word).
@@ -5036,6 +5156,8 @@ continue;
                 foreach (DataReloc r in item.Relocs) Reach(r.Symbol, descriptor);
             }
             if (m.Entry is not null) Reach(m.Entry, false);
+            // A library's, for the order alone: every function may be called.
+            if (ordering && m.Entry is null) foreach (Function f in m.Functions) Reach(f.Name, false);
             foreach (Function f in m.Functions)
                 if (f.Name.Contains("StaticInit$", StringComparison.Ordinal)
                     || f.Name.StartsWith("m_Runtime_", StringComparison.Ordinal) || f.Name.StartsWith("m_Gc_", StringComparison.Ordinal))
@@ -5148,9 +5270,15 @@ continue;
                         list.Add(c);
                     // A virtual call's overrides are its callees too, so they
                     // are summarised before it is.
-                    else if (i.Op == Opcode.CallIndirect && _indirect is not null && _indirect.TryGetValue(i, out string[]? targets))
-                        foreach (string t in targets)
-                            if (byName.TryGetValue(t, out Function? o) && seen.Add(o)) list.Add(o);
+                    else if (i.Op == Opcode.CallIndirect)
+                    {
+                        if (_indirect is not null && _indirect.TryGetValue(i, out string[]? targets))
+                            foreach (string t in targets)
+                                if (byName.TryGetValue(t, out Function? o) && seen.Add(o)) list.Add(o);
+                        if (_orderIndirect is not null && _orderIndirect.TryGetValue(i, out string[]? own))
+                            foreach (string t in own)
+                                if (byName.TryGetValue(t, out Function? o) && seen.Add(o)) list.Add(o);
+                    }
                 }
             callees[f] = list;
         }

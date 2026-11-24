@@ -1,0 +1,70 @@
+// test: linq_iterators_count_and_call_as_dotnet
+// expect-exit: 0
+// expect-output:
+// list.Select.Any True calls=0
+// list.Select.Count 5 calls=5
+// list.Select.First 2 calls=1
+// list.Select.Last 10 calls=1
+// list.Select.ElementAt 6 calls=1
+// array.Where.Last 5 calls=1
+// array.Where.First 1 calls=1
+// array.Where.Count 3 calls=5
+// lazy.Select.Any True calls=1
+// lazy.Select.Last 10 calls=1
+// range.Select.Count 10 calls=10
+// range.Select.Any True calls=0
+// range.Select.Last 18 calls=1
+// where.select.count 3 calls=8
+// where.select.last 10 calls=2
+// select.select.first 4 calls=2
+// trycount True 5 calls=0
+// trycount.where False 0 calls=0
+// toarray 2,4,6,8,10 calls=5
+// repeat 3 bb calls=0
+// foreach 18 calls=8
+// mod none calls=0
+//
+// LINQ'S ITERATORS AS .NET 10'S (Enumerable's Iterator<TSource> and its
+// array, list, IList, sequence, Where-then-Select, Range and Repeat kinds):
+// each line what .NET prints -- a projected list's Any asks its Count and
+// calls the selector nowhere, Count calls it once an element, First, Last and
+// ElementAt once, a Where's Last over an array from its end, a list's
+// iterator reads the list as it was when it started.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+static class P {
+    static int calls;
+    static int F(int x) { calls++; return x * 2; }
+    static bool Odd(int x) { calls++; return (x & 1) != 0; }
+    static void Say(string what, object v) { Console.WriteLine(what + " " + v + " calls=" + calls); calls = 0; }
+    static int Main() {
+        List<int> list = new() { 1, 2, 3, 4, 5 };
+        int[] array = { 1, 2, 3, 4, 5 };
+        IEnumerable<int> lazy = list.Where(x => true);
+        Say("list.Select.Any", list.Select(F).Any());
+        Say("list.Select.Count", list.Select(F).Count());
+        Say("list.Select.First", list.Select(F).First());
+        Say("list.Select.Last", list.Select(F).Last());
+        Say("list.Select.ElementAt", list.Select(F).ElementAt(2));
+        Say("array.Where.Last", array.Where(Odd).Last());
+        Say("array.Where.First", array.Where(Odd).First());
+        Say("array.Where.Count", array.Where(Odd).Count());
+        Say("lazy.Select.Any", lazy.Select(F).Any());
+        Say("lazy.Select.Last", lazy.Select(F).Last());
+        Say("range.Select.Count", Enumerable.Range(0, 10).Select(F).Count());
+        Say("range.Select.Any", Enumerable.Range(0, 10).Select(F).Any());
+        Say("range.Select.Last", Enumerable.Range(0, 10).Select(F).Last());
+        Say("where.select.count", array.Where(Odd).Select(F).Count());
+        Say("where.select.last", list.Where(Odd).Select(F).Last());
+        Say("select.select.first", array.Select(F).Select(F).First());
+        Say("trycount", list.Select(F).TryGetNonEnumeratedCount(out int c) + " " + c);
+        Say("trycount.where", array.Where(Odd).TryGetNonEnumeratedCount(out int d) + " " + d);
+        Say("toarray", string.Join(",", list.Select(F).ToArray()));
+        Say("repeat", Enumerable.Repeat("a", 3).Count() + " " + string.Join("", Enumerable.Repeat("b", 2)));
+        int sum = 0; foreach (int v in array.Where(Odd).Select(F)) sum += v;
+        Say("foreach", sum);
+        try { list.Where(x => x > 0).Select(x => { list.Add(9); return x; }).ToList(); Say("mod", "none"); } catch (InvalidOperationException e) { Say("mod", e.GetType().Name); }
+        return 0;
+    }
+}

@@ -265,6 +265,9 @@ public sealed class Inline : IParallelModulePass
             Corsac.Program.BenchmarkStage("inline-begin " + caller.Name + " instructions=" + Size(caller));
 #endif
             InlineInto(caller, byName, pinned, addressTaken, callers, recursive, keepsEverything);
+            // Its inlined constructors' barriers on the blocks it made (FreshStoreBarriers),
+            // gone before it is weighed as a callee.
+            FreshStoreBarriers.Drop(caller);
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("inline-end " + caller.Name + " instructions=" + Size(caller));
 #endif
@@ -518,7 +521,7 @@ public sealed class Inline : IParallelModulePass
                     bool dispatchesFresh = ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren
                         && size + calleeSize <= GrowthLimit
                         && (calleeSize <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh)
-                            || calleeSize <= FreshResultBody && call.Dest is not null && MakesWhatItReturnsOnce(callee));
+                            || calleeSize <= FreshResultBody && call.Dest is not null && MakesWhatItReturnsOnce(callee, byName));
                     exposesChildren |= dispatchesFresh;
                     if (ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren)
                     {
@@ -716,11 +719,13 @@ public sealed class Inline : IParallelModulePass
     // Asked at every call site of a callee: answered once a callee, while
     // nothing has been inlined into it (its size says so).
     private readonly Dictionary<Function, (int Size, bool Answer)> _makes = new(ReferenceEqualityComparer.Instance);
-    private bool MakesWhatItReturnsOnce(Function callee)
+    private bool MakesWhatItReturnsOnce(Function callee, Dictionary<string, Function> byName)
     {
         int size = Size(callee);
         if (_makes.TryGetValue(callee, out var known) && known.Size == size) return known.Answer;
-        bool answer = MakesWhatItReturns(callee);
+        // No, while it is asked: a cycle of factories makes nothing.
+        _makes[callee] = (size, false);
+        bool answer = MakesWhatItReturns(callee, name => byName.TryGetValue(name, out Function? made) && MakesWhatItReturnsOnce(made, byName));
         _makes[callee] = (size, answer);
         return answer;
     }
@@ -728,11 +733,14 @@ public sealed class Inline : IParallelModulePass
     /// <summary>
     /// Whether every return hands back an object the function made: an
     /// allocator's result, through copies -- and through a variable every
-    /// write of which is such a copy (the result an inlined body joins).
+    /// write of which is such a copy (the result an inlined body joins) --
+    /// or the result of a call to another such function (`factory`): LINQ's
+    /// Select making an array's or a List's iterator itself, and any other
+    /// kind in a function of its own, kept out of line.
     /// </summary>
-    private static bool MakesWhatItReturns(Function f)
+    private static bool MakesWhatItReturns(Function f, Func<string, bool> factory)
     {
-        FreshValues fresh = new(f);
+        FreshValues fresh = new(f) { Factory = factory };
         bool any = false;
         foreach (Block b in f.Blocks)
         {
@@ -765,6 +773,8 @@ public sealed class Inline : IParallelModulePass
             _known = spare is not null && spare._known.Length >= _registers ? spare._known : new byte[_registers];
             Array.Clear(_known, 0, _registers);
         }
+        /// <summary>Whether a direct call's callee hands back only what it makes (MakesWhatItReturns): its result is made here too. Null: no call is.</summary>
+        public Func<string, bool>? Factory { get; init; }
         public bool Made(VReg r) => Made(r, 0);
         private bool Made(VReg r, int depth)
         {
@@ -774,6 +784,7 @@ public sealed class Inline : IParallelModulePass
             foreach (Instr d in defs)
             {
                 bool ok = d.Op == Opcode.Call && Escape.IsAllocator(d.Callee)
+                    || d.Op == Opcode.Call && d.Callee is { } maker && Factory is not null && Factory(maker)
                     || d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands[0] is RegOperand next && Made(next.Reg, depth + 1);
                 if (!ok) return false;
             }

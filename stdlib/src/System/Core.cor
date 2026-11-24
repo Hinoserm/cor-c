@@ -14756,55 +14756,258 @@ public static class Enumerable {
 
     public static IEnumerable<int> Range(int start, int count) {
         if (count < 0 || (long)start + count - 1 > int.MaxValue) { throw new ArgumentOutOfRangeException("count"); }
-        return RangeIterator(start, count);
+        if (count == 0) { return Array.Empty<int>(); }
+        return new RangeIterator(start, count);
     }
 
-    private static IEnumerable<int> RangeIterator(int start, int count) {
-        for (int i = 0; i < count; i++) { yield return start + i; }
+    /// .NET's RangeIterator: its count, first, last and n-th known without a walk.
+    private sealed class RangeIterator : Iterator<int> {
+        private readonly int _start, _end;
+
+        public RangeIterator(int start, int count) { _start = start; _end = start + count; }
+
+        public override IEnumerator<int> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new RangeIterator(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private RangeIterator(RangeIterator from) { _start = from._start; _end = from._end; _state = 1; }
+
+        public override bool MoveNext() {
+            if (_state == 1) { _current = _start; _state = 2; return true; }
+            if (_state == 2) {
+                // As .NET's: Current is one past the last once it ends.
+                _current = _current + 1;
+                if (_current != _end) { return true; }
+                _state = -1;
+            }
+            return false;
+        }
+
+        public override int[] ToArray() {
+            int[] made = new int[_end - _start];
+            for (int i = 0; i < made.Length; i++) { made[i] = _start + i; }
+            return made;
+        }
+
+        public override List<int> ToList() {
+            List<int> made = new List<int>(_end - _start);
+            for (int value = _start; value != _end; value++) { made.Add(value); }
+            return made;
+        }
+
+        public override int GetCount(bool onlyIfCheap) => _end - _start;
+
+        public override int TryGetElementAt(int index, out bool found) {
+            if ((uint)index < (uint)(_end - _start)) { found = true; return _start + index; }
+            found = false;
+            return 0;
+        }
+
+        public override int TryGetFirst(out bool found) { found = true; return _start; }
+
+        public override int TryGetLast(out bool found) { found = true; return _end - 1; }
     }
 
     public static IEnumerable<TResult> Repeat<TResult>(TResult element, int count) {
         if (count < 0) { throw new ArgumentOutOfRangeException("count"); }
-        return RepeatIterator(element, count);
+        if (count == 0) { return Array.Empty<TResult>(); }
+        return new RepeatIterator<TResult>(element, count);
     }
 
-    private static IEnumerable<T> RepeatIterator<T>(T element, int count) {
-        for (int i = 0; i < count; i++) { yield return element; }
+    /// .NET's RepeatIterator: its count and every element known without a walk.
+    private sealed class RepeatIterator<TResult> : Iterator<TResult> {
+        private readonly TResult _element;
+        private readonly int _count;
+
+        public RepeatIterator(TResult element, int count) { _element = element; _count = count; _current = element; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new RepeatIterator<TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private RepeatIterator(RepeatIterator<TResult> from) { _element = from._element; _count = from._count; _current = from._current; _state = 1; }
+
+        public override void Dispose() {
+            // Its element stays its Current, as .NET's.
+            _state = -1;
+        }
+
+        public override bool MoveNext() {
+            int sent = _state - 1;
+            if (sent >= 0 && sent != _count) { _state++; return true; }
+            Dispose();
+            return false;
+        }
+
+        public override TResult[] ToArray() {
+            TResult[] made = new TResult[_count];
+            for (int i = 0; i < made.Length; i++) { made[i] = _element; }
+            return made;
+        }
+
+        public override List<TResult> ToList() {
+            List<TResult> made = new List<TResult>(_count);
+            for (int i = 0; i < _count; i++) { made.Add(_element); }
+            return made;
+        }
+
+        public override int GetCount(bool onlyIfCheap) => _count;
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            if ((uint)index < (uint)_count) { found = true; return _element; }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetFirst(out bool found) { found = true; return _element; }
+
+        public override TResult TryGetLast(out bool found) { found = true; return _element; }
     }
 
     public static IEnumerable<TSource> AsEnumerable<TSource>(this IEnumerable<TSource> source) { return source; }
 
-    // ---- filtering and projecting (deferred) ----------------------------
+    // ---- filtering and projecting (deferred): .NET's iterators ---------
+    //
+    // WHERE AND SELECT ARE .NET 10's ITERATOR CLASSES (System.Linq's
+    // Iterator<TSource> and its SpeedOpt kinds; IsSizeOptimized is false
+    // there unless NativeAOT asks), not plain `yield` methods: a sequence
+    // that knows what it is answers the questions .NET's does without
+    // walking, and calls what it was given as often as .NET's calls it --
+    // `list.Select(f).Any()` asks the list's Count and calls f nowhere,
+    // Count() calls f once an element, First() and Last() of a projected
+    // list once, ElementAt once, a Where's Last over an array from its end.
+    // Each iterator is its own first enumerator and a copy of its words
+    // after, as a `yield` method's machine is (its GetEnumerator): the copy
+    // made field by field from the receiver's own, which the lifetime rules
+    // follow as they follow a machine's (Escape.SummariseCopies) -- what the
+    // iterator holds, the enumerator holds, and the source a LINQ call is
+    // handed is freed by its caller when the walk is done. No thread asked:
+    // a machine asks none either.
+
+    private abstract class Iterator<TSource> : IEnumerable<TSource>, IEnumerator<TSource> {
+        internal int _state;
+        internal TSource _current = default(TSource)!;
+
+        public TSource Current => _current;
+        object? IEnumerator.Current => _current;
+
+        public virtual void Dispose() { End(); }
+
+        /// The walk over: what Dispose does for a kind that holds nothing to
+        /// let go of, called by its MoveNext directly -- no virtual call
+        /// whose every override the lifetime rules must answer for.
+        internal void End() {
+            _current = default(TSource)!;
+            _state = -1;
+        }
+
+        /// Itself, the first time; after, a copy of its words (each kind's own).
+        public abstract IEnumerator<TSource> GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public abstract bool MoveNext();
+        void IEnumerator.Reset() { throw new NotSupportedException(); }
+
+        public abstract TSource[] ToArray();
+        public abstract List<TSource> ToList();
+        /// The count; with onlyIfCheap, -1 where counting would walk or run the caller's code.
+        public abstract int GetCount(bool onlyIfCheap);
+
+        public virtual TSource TryGetElementAt(int index, out bool found)
+            => index == 0 ? TryGetFirst(out found) : TryGetElementAtNonIterator(this, index, out found);
+        public virtual TSource TryGetFirst(out bool found) => TryGetFirstNonIterator(this, out found);
+        public virtual TSource TryGetLast(out bool found) => TryGetLastNonIterator(this, out found);
+    }
+
+    private static TSource TryGetFirstNonIterator<TSource>(IEnumerable<TSource> source, out bool found) {
+        if (source is IList<TSource> list) {
+            if (list.Count > 0) { found = true; return list[0]; }
+        }
+        else {
+            using (IEnumerator<TSource> e = source.GetEnumerator()) {
+                if (e.MoveNext()) { found = true; return e.Current; }
+            }
+        }
+        found = false;
+        return default(TSource)!;
+    }
+
+    private static TSource TryGetLastNonIterator<TSource>(IEnumerable<TSource> source, out bool found) {
+        if (source is IList<TSource> list) {
+            int count = list.Count;
+            if (count > 0) { found = true; return list[count - 1]; }
+        }
+        else {
+            using (IEnumerator<TSource> e = source.GetEnumerator()) {
+                if (e.MoveNext()) {
+                    TSource result;
+                    do { result = e.Current; } while (e.MoveNext());
+                    found = true;
+                    return result;
+                }
+            }
+        }
+        found = false;
+        return default(TSource)!;
+    }
+
+    private static TSource TryGetElementAtNonIterator<TSource>(IEnumerable<TSource> source, int index, out bool found) {
+        if (source is IList<TSource> list) {
+            if ((uint)index < (uint)list.Count) { found = true; return list[index]; }
+        }
+        else if (index >= 0) {
+            using (IEnumerator<TSource> e = source.GetEnumerator()) {
+                while (e.MoveNext()) {
+                    if (index == 0) { found = true; return e.Current; }
+                    index--;
+                }
+            }
+        }
+        found = false;
+        return default(TSource)!;
+    }
+
+
 
     public static IEnumerable<TSource> Where<TSource>(this IEnumerable<TSource> source, Func<TSource, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
-        return WhereIterator(source, predicate);
+        return WhereOf(source, predicate);
     }
 
-    private static IEnumerable<T> WhereIterator<T>(IEnumerable<T> source, Func<T, bool> predicate) {
-        // AN ARRAY OR A LIST IS WALKED AS ITSELF, as .NET's ArrayWhereIterator
-        // and ListWhereIterator do: by index, or with the list's own struct
-        // enumerator, not with an enumerator boxed for the interface. Asked
-        // with `is`, as .NET asks, so a List's subclass is walked as a List.
-        if (source is T[] array) { return WhereArray(array, predicate); }
-        if (source is List<T> list) { return WhereList(list, predicate); }
-        return WhereAny(source, predicate);
+    // AN ARRAY OR A LIST HERE, SMALL ENOUGH TO INLINE: where the call is
+    // inlined into its caller, the iterator is made there, its type known,
+    // and the caller's walk of it (a foreach's tests of the type it walks,
+    // a Sum's calls on it) folds to that type's -- what lets the caller free
+    // the source it handed over when the walk is done. Anything else out of
+    // line (WhereOverAny). An empty array is walked as any other (.NET hands
+    // back the shared empty array, which a caller taking the result for the
+    // box its source is held in would free).
+    private static IEnumerable<T> WhereOf<T>(IEnumerable<T> source, Func<T, bool> predicate) {
+        if (source is T[] array) { return new ArrayWhereIterator<T>(array, predicate); }
+        if (source is List<T> list) { return new ListWhereIterator<T>(list, predicate); }
+        return WhereOverAny(source, predicate);
     }
 
-    private static IEnumerable<T> WhereAny<T>(IEnumerable<T> source, Func<T, bool> predicate) {
-        foreach (T item in source) { if (predicate(item)) { yield return item; } }
-    }
-
-    private static IEnumerable<T> WhereArray<T>(T[] source, Func<T, bool> predicate) {
-        for (int i = 0; i < source.Length; i++) { T item = source[i]; if (predicate(item)) { yield return item; } }
-    }
-
-    private static IEnumerable<T> WhereList<T>(List<T> source, Func<T, bool> predicate) {
-        foreach (T item in source) { if (predicate(item)) { yield return item; } }
+    // A WHERE OVER A WHERE IS ONE, its predicates chained (.NET's
+    // Iterator.Where override), asked by type: no virtual call the lifetime
+    // rules cannot follow. Over any other sequence, a Where of it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static IEnumerable<T> WhereOverAny<T>(IEnumerable<T> source, Func<T, bool> predicate) {
+        if (source is Iterator<T>) {
+            if (source is ArrayWhereIterator<T> overArray) { return new ArrayWhereIterator<T>(overArray, predicate); }
+            if (source is ListWhereIterator<T> overList) { return new ListWhereIterator<T>(overList, predicate); }
+            if (source is IEnumerableWhereIterator<T> overAny) { return new IEnumerableWhereIterator<T>(overAny, predicate); }
+        }
+        return new IEnumerableWhereIterator<T>(source, predicate);
     }
 
     public static IEnumerable<TSource> Where<TSource>(this IEnumerable<TSource> source, Func<TSource, int, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
+        if (source is TSource[] { Length: 0 }) { return Array.Empty<TSource>(); }
         return WhereIndexed(source, predicate);
     }
 
@@ -14818,30 +15021,36 @@ public static class Enumerable {
 
     public static IEnumerable<TResult> Select<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult> selector) {
         NotNull(source, "source"); NotNull(selector, "selector");
-        return SelectIterator(source, selector);
+        return SelectOf(source, selector);
     }
 
-    private static IEnumerable<R> SelectIterator<T, R>(IEnumerable<T> source, Func<T, R> selector) {
-        // As Where's: .NET's ArraySelectIterator and ListSelectIterator.
-        if (source is T[] array) { return SelectArray(array, selector); }
-        if (source is List<T> list) { return SelectList(list, selector); }
-        return SelectAny(source, selector);
+    // An array or a List here, small enough to inline, as WhereOf is.
+    private static IEnumerable<R> SelectOf<T, R>(IEnumerable<T> source, Func<T, R> selector) {
+        if (source is T[] array) { return new ArraySelectIterator<T, R>(array, selector); }
+        if (source is List<T> list) { return new ListSelectIterator<T, R>(list, selector); }
+        return SelectOverAny(source, selector);
     }
 
-    private static IEnumerable<R> SelectAny<T, R>(IEnumerable<T> source, Func<T, R> selector) {
-        foreach (T item in source) { yield return selector(item); }
-    }
-
-    private static IEnumerable<R> SelectArray<T, R>(T[] source, Func<T, R> selector) {
-        for (int i = 0; i < source.Length; i++) { yield return selector(source[i]); }
-    }
-
-    private static IEnumerable<R> SelectList<T, R>(List<T> source, Func<T, R> selector) {
-        foreach (T item in source) { yield return selector(item); }
+    // A SELECT OVER A WHERE IS ONE ITERATOR (.NET's WhereSelect kinds), asked
+    // by type, as WhereOverAny asks; over any other iterator one that asks
+    // that iterator its count and edges (IteratorSelectIterator) -- .NET
+    // folds a Select over a Select into one, which calls the same selectors
+    // as often, in the same order. Then any other list, then any sequence.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static IEnumerable<R> SelectOverAny<T, R>(IEnumerable<T> source, Func<T, R> selector) {
+        if (source is Iterator<T> iterator) {
+            if (source is ArrayWhereIterator<T> overArray) { return new ArrayWhereSelectIterator<T, R>(overArray, selector); }
+            if (source is ListWhereIterator<T> overList) { return new ListWhereSelectIterator<T, R>(overList, selector); }
+            if (source is IEnumerableWhereIterator<T> overAny) { return new IEnumerableWhereSelectIterator<T, R>(overAny, selector); }
+            return new IteratorSelectIterator<T, R>(iterator, selector);
+        }
+        if (source is IList<T> ilist) { return new IListSelectIterator<T, R>(ilist, selector); }
+        return new IEnumerableSelectIterator<T, R>(source, selector);
     }
 
     public static IEnumerable<TResult> Select<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, int, TResult> selector) {
         NotNull(source, "source"); NotNull(selector, "selector");
+        if (source is TSource[] { Length: 0 }) { return Array.Empty<TResult>(); }
         return SelectIndexed(source, selector);
     }
 
@@ -14850,6 +15059,897 @@ public static class Enumerable {
         foreach (T item in source) {
             index = checked(index + 1);
             yield return selector(item, index);
+        }
+    }
+
+    // ---- Where's iterators ---------------------------------------------------
+
+    private sealed class IEnumerableWhereIterator<TSource> : Iterator<TSource> {
+        private readonly IEnumerable<TSource> _source;
+        private readonly Func<TSource, bool> _predicate;
+        // A WHERE OVER THIS ONE (Enumerable.Where): the inner kept whole, its
+        // source and its test read where asked, its predicate before ours --
+        // .NET's combined predicate, with nothing of the inner's copied into
+        // this, which the lifetime rules follow as a parameter kept in the box.
+        private readonly IEnumerableWhereIterator<TSource>? _inner;
+        // THE INNERMOST WHERE, the one that holds the source: read in one
+        // step, so Source is two loads where it is used -- not a call down
+        // the chain that hands the source back.
+        private readonly IEnumerableWhereIterator<TSource>? _root;
+
+        /// The source walked: this one's, or the inner Where's.
+        internal IEnumerable<TSource> Source => _root != null ? _root._source : _source;
+
+        /// The test of an element: the inner's predicates, then this one's.
+        internal bool Test(TSource item) => (_inner == null || _inner.Test(item)) && _predicate(item);
+
+        public IEnumerableWhereIterator(IEnumerableWhereIterator<TSource> inner, Func<TSource, bool> predicate) { _inner = inner; _root = inner._root ?? inner; _source = null!; _predicate = predicate; }
+        private IEnumerator<TSource>? _enumerator;
+
+        public IEnumerableWhereIterator(IEnumerable<TSource> source, Func<TSource, bool> predicate) { _source = source; _predicate = predicate; }
+
+        public override IEnumerator<TSource> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new IEnumerableWhereIterator<TSource>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private IEnumerableWhereIterator(IEnumerableWhereIterator<TSource> from) { _source = from._source; _predicate = from._predicate; _inner = from._inner; _root = from._root; _state = 1; }
+
+        public override void Dispose() {
+            if (_enumerator != null) { _enumerator.Dispose(); _enumerator = null; }
+            base.Dispose();
+        }
+
+        public override bool MoveNext() {
+            if (_state == 1) { _enumerator = Source.GetEnumerator(); _state = 2; }
+            if (_state == 2) {
+                while (_enumerator!.MoveNext()) {
+                    TSource item = _enumerator.Current;
+                    if (Test(item)) { _current = item; return true; }
+                }
+                Dispose();
+            }
+            return false;
+        }
+
+
+        public override int GetCount(bool onlyIfCheap) {
+            if (onlyIfCheap) { return -1; }
+            int count = 0;
+            foreach (TSource item in Source) { if (Test(item)) { count = checked(count + 1); } }
+            return count;
+        }
+
+        public override TSource[] ToArray() => ToList().ToArray();
+
+        public override List<TSource> ToList() {
+            List<TSource> made = new List<TSource>();
+            foreach (TSource item in Source) { if (Test(item)) { made.Add(item); } }
+            return made;
+        }
+
+        public override TSource TryGetFirst(out bool found) {
+            foreach (TSource item in Source) { if (Test(item)) { found = true; return item; } }
+            found = false;
+            return default(TSource)!;
+        }
+
+        public override TSource TryGetLast(out bool found) {
+            using (IEnumerator<TSource> e = Source.GetEnumerator()) {
+                while (e.MoveNext()) {
+                    TSource current = e.Current;
+                    if (Test(current)) {
+                        TSource last = current;
+                        while (e.MoveNext()) { current = e.Current; if (Test(current)) { last = current; } }
+                        found = true;
+                        return last;
+                    }
+                }
+            }
+            found = false;
+            return default(TSource)!;
+        }
+
+        public override TSource TryGetElementAt(int index, out bool found) {
+            if (index >= 0) {
+                foreach (TSource item in Source) {
+                    if (Test(item)) {
+                        if (index == 0) { found = true; return item; }
+                        index--;
+                    }
+                }
+            }
+            found = false;
+            return default(TSource)!;
+        }
+    }
+
+    private sealed class ArrayWhereIterator<TSource> : Iterator<TSource> {
+        private readonly TSource[] _source;
+        private readonly Func<TSource, bool> _predicate;
+        // A WHERE OVER THIS ONE (Enumerable.Where): the inner kept whole, its
+        // source and its test read where asked, its predicate before ours --
+        // .NET's combined predicate, with nothing of the inner's copied into
+        // this, which the lifetime rules follow as a parameter kept in the box.
+        private readonly ArrayWhereIterator<TSource>? _inner;
+        // THE INNERMOST WHERE, the one that holds the source: read in one
+        // step, so Source is two loads where it is used -- not a call down
+        // the chain that hands the source back.
+        private readonly ArrayWhereIterator<TSource>? _root;
+
+        /// The source walked: this one's, or the inner Where's.
+        internal TSource[] Source => _root != null ? _root._source : _source;
+
+        /// The test of an element: the inner's predicates, then this one's.
+        internal bool Test(TSource item) => (_inner == null || _inner.Test(item)) && _predicate(item);
+
+        public ArrayWhereIterator(ArrayWhereIterator<TSource> inner, Func<TSource, bool> predicate) { _inner = inner; _root = inner._root ?? inner; _source = null!; _predicate = predicate; }
+
+        public ArrayWhereIterator(TSource[] source, Func<TSource, bool> predicate) { _source = source; _predicate = predicate; }
+
+        public override IEnumerator<TSource> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new ArrayWhereIterator<TSource>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private ArrayWhereIterator(ArrayWhereIterator<TSource> from) { _source = from._source; _predicate = from._predicate; _inner = from._inner; _root = from._root; _state = 1; }
+
+        public override bool MoveNext() {
+            int index = _state - 1;
+            TSource[] source = Source;
+            while ((uint)index < (uint)source.Length) {
+                TSource item = source[index];
+                index = _state++;
+                if (Test(item)) { _current = item; return true; }
+            }
+            End();
+            return false;
+        }
+
+
+        public override int GetCount(bool onlyIfCheap) {
+            if (onlyIfCheap) { return -1; }
+            int count = 0;
+            for (int i = 0; i < Source.Length; i++) { if (Test(Source[i])) { count = checked(count + 1); } }
+            return count;
+        }
+
+        public override TSource[] ToArray() => ToList().ToArray();
+
+        public override List<TSource> ToList() {
+            List<TSource> made = new List<TSource>();
+            for (int i = 0; i < Source.Length; i++) { TSource item = Source[i]; if (Test(item)) { made.Add(item); } }
+            return made;
+        }
+
+        public override TSource TryGetFirst(out bool found) {
+            for (int i = 0; i < Source.Length; i++) { TSource item = Source[i]; if (Test(item)) { found = true; return item; } }
+            found = false;
+            return default(TSource)!;
+        }
+
+        // From the end, as .NET's: the last match is the first from there.
+        public override TSource TryGetLast(out bool found) {
+            for (int i = Source.Length - 1; i >= 0; i--) { if (Test(Source[i])) { found = true; return Source[i]; } }
+            found = false;
+            return default(TSource)!;
+        }
+
+        public override TSource TryGetElementAt(int index, out bool found) {
+            if (index >= 0) {
+                for (int i = 0; i < Source.Length; i++) {
+                    TSource item = Source[i];
+                    if (Test(item)) {
+                        if (index == 0) { found = true; return item; }
+                        index--;
+                    }
+                }
+            }
+            found = false;
+            return default(TSource)!;
+        }
+    }
+
+    // A LIST'S ITERATORS READ IT AS IT IS WHEN THEY START (.NET's walk a span
+    // of it, CollectionsMarshal.AsSpan): its count taken once, so a selector
+    // or predicate that adds to the list neither loops for ever nor is seen.
+    // Walked as an enumerator (MoveNext), the list's own version check throws.
+    private sealed class ListWhereIterator<TSource> : Iterator<TSource> {
+        private readonly List<TSource> _source;
+        private readonly Func<TSource, bool> _predicate;
+        // A WHERE OVER THIS ONE (Enumerable.Where): the inner kept whole, its
+        // source and its test read where asked, its predicate before ours --
+        // .NET's combined predicate, with nothing of the inner's copied into
+        // this, which the lifetime rules follow as a parameter kept in the box.
+        private readonly ListWhereIterator<TSource>? _inner;
+        // THE INNERMOST WHERE, the one that holds the source: read in one
+        // step, so Source is two loads where it is used -- not a call down
+        // the chain that hands the source back.
+        private readonly ListWhereIterator<TSource>? _root;
+
+        /// The source walked: this one's, or the inner Where's.
+        internal List<TSource> Source => _root != null ? _root._source : _source;
+
+        /// The test of an element: the inner's predicates, then this one's.
+        internal bool Test(TSource item) => (_inner == null || _inner.Test(item)) && _predicate(item);
+
+        public ListWhereIterator(ListWhereIterator<TSource> inner, Func<TSource, bool> predicate) { _inner = inner; _root = inner._root ?? inner; _source = null!; _predicate = predicate; }
+        // THE LIST WALKED BY INDEX, as its enumerator walks it -- its count and
+        // its version asked at every step (List.Enumerator.MoveNext): no
+        // struct of the list's copied in, which the lifetime rules read as a
+        // copy of bytes they cannot follow.
+        private int _index, _version;
+
+        public ListWhereIterator(List<TSource> source, Func<TSource, bool> predicate) { _source = source; _predicate = predicate; }
+
+        public override IEnumerator<TSource> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new ListWhereIterator<TSource>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private ListWhereIterator(ListWhereIterator<TSource> from) { _source = from._source; _predicate = from._predicate; _inner = from._inner; _root = from._root; _state = 1; }
+
+        public override bool MoveNext() {
+            List<TSource> source = Source;
+            if (_state == 1) { _index = 0; _version = source.version; _state = 2; }
+            if (_state == 2) {
+                // As List.Enumerator.MoveNext steps: refused once the list has
+                // changed, done at its count. The index a field of this one's,
+                // never handed to a call by reference.
+                while (true) {
+                    if (_version != source.version) { ThrowHelper.CollectionModified(); }
+                    int index = _index;
+                    if ((uint)index >= (uint)source.Count) { break; }
+                    _index = index + 1;
+                    TSource item = source[index];
+                    if (Test(item)) { _current = item; return true; }
+                }
+                End();
+            }
+            return false;
+        }
+
+
+        public override int GetCount(bool onlyIfCheap) {
+            if (onlyIfCheap) { return -1; }
+            int count = 0;
+            for (int i = 0, length = Source.Count; i < length; i++) { if (Test(Source[i])) { count = checked(count + 1); } }
+            return count;
+        }
+
+        public override TSource[] ToArray() => ToList().ToArray();
+
+        public override List<TSource> ToList() {
+            List<TSource> made = new List<TSource>();
+            for (int i = 0, count = Source.Count; i < count; i++) { TSource item = Source[i]; if (Test(item)) { made.Add(item); } }
+            return made;
+        }
+
+        public override TSource TryGetFirst(out bool found) {
+            for (int i = 0, count = Source.Count; i < count; i++) { TSource item = Source[i]; if (Test(item)) { found = true; return item; } }
+            found = false;
+            return default(TSource)!;
+        }
+
+        public override TSource TryGetLast(out bool found) {
+            for (int i = Source.Count - 1; i >= 0; i--) { TSource item = Source[i]; if (Test(item)) { found = true; return item; } }
+            found = false;
+            return default(TSource)!;
+        }
+
+        public override TSource TryGetElementAt(int index, out bool found) {
+            if (index >= 0) {
+                for (int i = 0, count = Source.Count; i < count; i++) {
+                    TSource item = Source[i];
+                    if (Test(item)) {
+                        if (index == 0) { found = true; return item; }
+                        index--;
+                    }
+                }
+            }
+            found = false;
+            return default(TSource)!;
+        }
+    }
+
+    // ---- Where then Select, one iterator ---------------------------------
+
+    private sealed class ArrayWhereSelectIterator<TSource, TResult> : Iterator<TResult> {
+        // THE WHERE IT FOLLOWS, KEPT WHOLE: its source and its test read where
+        // asked, as its fields were (its Where's chained predicates too).
+        private readonly ArrayWhereIterator<TSource> _where;
+        private readonly Func<TSource, TResult> _selector;
+
+        public ArrayWhereSelectIterator(ArrayWhereIterator<TSource> where, Func<TSource, TResult> selector) { _where = where; _selector = selector; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new ArrayWhereSelectIterator<TSource, TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private ArrayWhereSelectIterator(ArrayWhereSelectIterator<TSource, TResult> from) { _where = from._where; _selector = from._selector; _state = 1; }
+
+        public override bool MoveNext() {
+            int index = _state - 1;
+            TSource[] source = _where.Source;
+            while ((uint)index < (uint)source.Length) {
+                TSource item = source[index];
+                index = _state++;
+                if (_where.Test(item)) { _current = _selector(item); return true; }
+            }
+            End();
+            return false;
+        }
+
+
+        public override int GetCount(bool onlyIfCheap) {
+            if (onlyIfCheap) { return -1; }
+            int count = 0;
+            for (int i = 0; i < _where.Source.Length; i++) {
+                TSource item = _where.Source[i];
+                if (_where.Test(item)) { _selector(item); count = checked(count + 1); }
+            }
+            return count;
+        }
+
+        public override TResult[] ToArray() => ToList().ToArray();
+
+        public override List<TResult> ToList() {
+            List<TResult> made = new List<TResult>();
+            for (int i = 0; i < _where.Source.Length; i++) { TSource item = _where.Source[i]; if (_where.Test(item)) { made.Add(_selector(item)); } }
+            return made;
+        }
+
+        public override TResult TryGetFirst(out bool found) {
+            for (int i = 0; i < _where.Source.Length; i++) { TSource item = _where.Source[i]; if (_where.Test(item)) { found = true; return _selector(item); } }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetLast(out bool found) {
+            for (int i = _where.Source.Length - 1; i >= 0; i--) { TSource item = _where.Source[i]; if (_where.Test(item)) { found = true; return _selector(item); } }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            if (index >= 0) {
+                for (int i = 0; i < _where.Source.Length; i++) {
+                    TSource item = _where.Source[i];
+                    if (_where.Test(item)) {
+                        if (index == 0) { found = true; return _selector(item); }
+                        index--;
+                    }
+                }
+            }
+            found = false;
+            return default(TResult)!;
+        }
+    }
+
+    private sealed class ListWhereSelectIterator<TSource, TResult> : Iterator<TResult> {
+        // THE WHERE IT FOLLOWS, KEPT WHOLE: its source and its test read where
+        // asked, as its fields were (its Where's chained predicates too).
+        private readonly ListWhereIterator<TSource> _where;
+        private readonly Func<TSource, TResult> _selector;
+        // The list walked by index, as ListWhereIterator's is.
+        private int _index, _version;
+
+        public ListWhereSelectIterator(ListWhereIterator<TSource> where, Func<TSource, TResult> selector) { _where = where; _selector = selector; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new ListWhereSelectIterator<TSource, TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private ListWhereSelectIterator(ListWhereSelectIterator<TSource, TResult> from) { _where = from._where; _selector = from._selector; _state = 1; }
+
+        public override bool MoveNext() {
+            List<TSource> source = _where.Source;
+            if (_state == 1) { _index = 0; _version = source.version; _state = 2; }
+            if (_state == 2) {
+                while (true) {
+                    if (_version != source.version) { ThrowHelper.CollectionModified(); }
+                    int index = _index;
+                    if ((uint)index >= (uint)source.Count) { break; }
+                    _index = index + 1;
+                    TSource item = source[index];
+                    if (_where.Test(item)) { _current = _selector(item); return true; }
+                }
+                End();
+            }
+            return false;
+        }
+
+
+        public override int GetCount(bool onlyIfCheap) {
+            if (onlyIfCheap) { return -1; }
+            int count = 0;
+            for (int i = 0, length = _where.Source.Count; i < length; i++) {
+                TSource item = _where.Source[i];
+                if (_where.Test(item)) { _selector(item); count = checked(count + 1); }
+            }
+            return count;
+        }
+
+        public override TResult[] ToArray() => ToList().ToArray();
+
+        public override List<TResult> ToList() {
+            List<TResult> made = new List<TResult>();
+            for (int i = 0, count = _where.Source.Count; i < count; i++) { TSource item = _where.Source[i]; if (_where.Test(item)) { made.Add(_selector(item)); } }
+            return made;
+        }
+
+        public override TResult TryGetFirst(out bool found) {
+            for (int i = 0, count = _where.Source.Count; i < count; i++) { TSource item = _where.Source[i]; if (_where.Test(item)) { found = true; return _selector(item); } }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetLast(out bool found) {
+            for (int i = _where.Source.Count - 1; i >= 0; i--) { TSource item = _where.Source[i]; if (_where.Test(item)) { found = true; return _selector(item); } }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            if (index >= 0) {
+                for (int i = 0, count = _where.Source.Count; i < count; i++) {
+                    TSource item = _where.Source[i];
+                    if (_where.Test(item)) {
+                        if (index == 0) { found = true; return _selector(item); }
+                        index--;
+                    }
+                }
+            }
+            found = false;
+            return default(TResult)!;
+        }
+    }
+
+    private sealed class IEnumerableWhereSelectIterator<TSource, TResult> : Iterator<TResult> {
+        // THE WHERE IT FOLLOWS, KEPT WHOLE: its source and its test read where
+        // asked, as its fields were (its Where's chained predicates too).
+        private readonly IEnumerableWhereIterator<TSource> _where;
+        private readonly Func<TSource, TResult> _selector;
+        private IEnumerator<TSource>? _enumerator;
+
+        public IEnumerableWhereSelectIterator(IEnumerableWhereIterator<TSource> where, Func<TSource, TResult> selector) { _where = where; _selector = selector; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new IEnumerableWhereSelectIterator<TSource, TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private IEnumerableWhereSelectIterator(IEnumerableWhereSelectIterator<TSource, TResult> from) { _where = from._where; _selector = from._selector; _state = 1; }
+
+        public override void Dispose() {
+            if (_enumerator != null) { _enumerator.Dispose(); _enumerator = null; }
+            base.Dispose();
+        }
+
+        public override bool MoveNext() {
+            if (_state == 1) { _enumerator = _where.Source.GetEnumerator(); _state = 2; }
+            if (_state == 2) {
+                while (_enumerator!.MoveNext()) {
+                    TSource item = _enumerator.Current;
+                    if (_where.Test(item)) { _current = _selector(item); return true; }
+                }
+                Dispose();
+            }
+            return false;
+        }
+
+
+        public override int GetCount(bool onlyIfCheap) {
+            if (onlyIfCheap) { return -1; }
+            int count = 0;
+            foreach (TSource item in _where.Source) { if (_where.Test(item)) { _selector(item); count = checked(count + 1); } }
+            return count;
+        }
+
+        public override TResult[] ToArray() => ToList().ToArray();
+
+        public override List<TResult> ToList() {
+            List<TResult> made = new List<TResult>();
+            foreach (TSource item in _where.Source) { if (_where.Test(item)) { made.Add(_selector(item)); } }
+            return made;
+        }
+
+        public override TResult TryGetFirst(out bool found) {
+            foreach (TSource item in _where.Source) { if (_where.Test(item)) { found = true; return _selector(item); } }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetLast(out bool found) {
+            using (IEnumerator<TSource> e = _where.Source.GetEnumerator()) {
+                while (e.MoveNext()) {
+                    TSource current = e.Current;
+                    if (_where.Test(current)) {
+                        TSource last = current;
+                        while (e.MoveNext()) { current = e.Current; if (_where.Test(current)) { last = current; } }
+                        found = true;
+                        return _selector(last);
+                    }
+                }
+            }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            if (index >= 0) {
+                foreach (TSource item in _where.Source) {
+                    if (_where.Test(item)) {
+                        if (index == 0) { found = true; return _selector(item); }
+                        index--;
+                    }
+                }
+            }
+            found = false;
+            return default(TResult)!;
+        }
+    }
+
+    // ---- Select's iterators ----------------------------------------------------
+
+    private sealed class IEnumerableSelectIterator<TSource, TResult> : Iterator<TResult> {
+        private readonly IEnumerable<TSource> _source;
+        private readonly Func<TSource, TResult> _selector;
+        private IEnumerator<TSource>? _enumerator;
+
+        public IEnumerableSelectIterator(IEnumerable<TSource> source, Func<TSource, TResult> selector) { _source = source; _selector = selector; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new IEnumerableSelectIterator<TSource, TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private IEnumerableSelectIterator(IEnumerableSelectIterator<TSource, TResult> from) { _source = from._source; _selector = from._selector; _state = 1; }
+
+        public override void Dispose() {
+            if (_enumerator != null) { _enumerator.Dispose(); _enumerator = null; }
+            base.Dispose();
+        }
+
+        public override bool MoveNext() {
+            if (_state == 1) { _enumerator = _source.GetEnumerator(); _state = 2; }
+            if (_state == 2) {
+                if (_enumerator!.MoveNext()) { _current = _selector(_enumerator.Current); return true; }
+                Dispose();
+            }
+            return false;
+        }
+
+
+        public override TResult[] ToArray() => ToList().ToArray();
+
+        public override List<TResult> ToList() {
+            List<TResult> made = new List<TResult>();
+            foreach (TSource item in _source) { made.Add(_selector(item)); }
+            return made;
+        }
+
+        public override int GetCount(bool onlyIfCheap) {
+            if (onlyIfCheap) { return -1; }
+            int count = 0;
+            foreach (TSource item in _source) { _selector(item); count = checked(count + 1); }
+            return count;
+        }
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            if (index >= 0) {
+                using (IEnumerator<TSource> e = _source.GetEnumerator()) {
+                    while (e.MoveNext()) {
+                        if (index == 0) { found = true; return _selector(e.Current); }
+                        index--;
+                    }
+                }
+            }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetFirst(out bool found) {
+            using (IEnumerator<TSource> e = _source.GetEnumerator()) {
+                if (e.MoveNext()) { found = true; return _selector(e.Current); }
+            }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetLast(out bool found) {
+            using (IEnumerator<TSource> e = _source.GetEnumerator()) {
+                if (e.MoveNext()) {
+                    TSource last = e.Current;
+                    while (e.MoveNext()) { last = e.Current; }
+                    found = true;
+                    return _selector(last);
+                }
+            }
+            found = false;
+            return default(TResult)!;
+        }
+    }
+
+    private sealed class ArraySelectIterator<TSource, TResult> : Iterator<TResult> {
+        private readonly TSource[] _source;
+        private readonly Func<TSource, TResult> _selector;
+
+        public ArraySelectIterator(TSource[] source, Func<TSource, TResult> selector) { _source = source; _selector = selector; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new ArraySelectIterator<TSource, TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private ArraySelectIterator(ArraySelectIterator<TSource, TResult> from) { _source = from._source; _selector = from._selector; _state = 1; }
+
+        public override bool MoveNext() {
+            TSource[] source = _source;
+            int index = _state - 1;
+            if ((uint)index < (uint)source.Length) {
+                _state++;
+                _current = _selector(source[index]);
+                return true;
+            }
+            End();
+            return false;
+        }
+
+
+        public override TResult[] ToArray() {
+            TResult[] results = new TResult[_source.Length];
+            for (int i = 0; i < _source.Length; i++) { results[i] = _selector(_source[i]); }
+            return results;
+        }
+
+        public override List<TResult> ToList() {
+            List<TResult> list = new List<TResult>(_source.Length);
+            for (int i = 0; i < _source.Length; i++) { list.Add(_selector(_source[i])); }
+            return list;
+        }
+
+        public override int GetCount(bool onlyIfCheap) {
+            // Every element's selector run, for what it does, unless only a cheap count is asked.
+            if (!onlyIfCheap) { for (int i = 0; i < _source.Length; i++) { _selector(_source[i]); } }
+            return _source.Length;
+        }
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            if ((uint)index < (uint)_source.Length) { found = true; return _selector(_source[index]); }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetFirst(out bool found) { found = true; return _selector(_source[0]); }
+
+        public override TResult TryGetLast(out bool found) { found = true; return _selector(_source[_source.Length - 1]); }
+    }
+
+    private sealed class ListSelectIterator<TSource, TResult> : Iterator<TResult> {
+        private readonly List<TSource> _source;
+        private readonly Func<TSource, TResult> _selector;
+        // The list walked by index, as ListWhereIterator's is.
+        private int _index, _version;
+
+        public ListSelectIterator(List<TSource> source, Func<TSource, TResult> selector) { _source = source; _selector = selector; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new ListSelectIterator<TSource, TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private ListSelectIterator(ListSelectIterator<TSource, TResult> from) { _source = from._source; _selector = from._selector; _state = 1; }
+
+        public override bool MoveNext() {
+            if (_state == 1) { _index = 0; _version = _source.version; _state = 2; }
+            if (_state == 2) {
+                if (_version != _source.version) { ThrowHelper.CollectionModified(); }
+                int index = _index;
+                if ((uint)index < (uint)_source.Count) { _index = index + 1; _current = _selector(_source[index]); return true; }
+                End();
+            }
+            return false;
+        }
+
+
+        public override TResult[] ToArray() {
+            int count = _source.Count;
+            if (count == 0) { return Array.Empty<TResult>(); }
+            TResult[] results = new TResult[count];
+            for (int i = 0; i < count; i++) { results[i] = _selector(_source[i]); }
+            return results;
+        }
+
+        public override List<TResult> ToList() {
+            int count = _source.Count;
+            List<TResult> list = new List<TResult>(count);
+            for (int i = 0; i < count; i++) { list.Add(_selector(_source[i])); }
+            return list;
+        }
+
+        public override int GetCount(bool onlyIfCheap) {
+            int count = _source.Count;
+            if (!onlyIfCheap) { for (int i = 0; i < count; i++) { _selector(_source[i]); } }
+            return count;
+        }
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            if ((uint)index < (uint)_source.Count) { found = true; return _selector(_source[index]); }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetFirst(out bool found) {
+            if (_source.Count != 0) { found = true; return _selector(_source[0]); }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetLast(out bool found) {
+            int count = _source.Count;
+            if (count != 0) { found = true; return _selector(_source[count - 1]); }
+            found = false;
+            return default(TResult)!;
+        }
+    }
+
+    private sealed class IListSelectIterator<TSource, TResult> : Iterator<TResult> {
+        private readonly IList<TSource> _source;
+        private readonly Func<TSource, TResult> _selector;
+        private IEnumerator<TSource>? _enumerator;
+
+        public IListSelectIterator(IList<TSource> source, Func<TSource, TResult> selector) { _source = source; _selector = selector; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new IListSelectIterator<TSource, TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private IListSelectIterator(IListSelectIterator<TSource, TResult> from) { _source = from._source; _selector = from._selector; _state = 1; }
+
+        public override void Dispose() {
+            if (_enumerator != null) { _enumerator.Dispose(); _enumerator = null; }
+            base.Dispose();
+        }
+
+        public override bool MoveNext() {
+            if (_state == 1) { _enumerator = _source.GetEnumerator(); _state = 2; }
+            if (_state == 2) {
+                if (_enumerator!.MoveNext()) { _current = _selector(_enumerator.Current); return true; }
+                Dispose();
+            }
+            return false;
+        }
+
+
+        public override TResult[] ToArray() {
+            int count = _source.Count;
+            if (count == 0) { return Array.Empty<TResult>(); }
+            TResult[] results = new TResult[count];
+            for (int i = 0; i < count; i++) { results[i] = _selector(_source[i]); }
+            return results;
+        }
+
+        public override List<TResult> ToList() {
+            int count = _source.Count;
+            List<TResult> list = new List<TResult>(count);
+            for (int i = 0; i < count; i++) { list.Add(_selector(_source[i])); }
+            return list;
+        }
+
+        public override int GetCount(bool onlyIfCheap) {
+            int count = _source.Count;
+            if (!onlyIfCheap) { for (int i = 0; i < count; i++) { _selector(_source[i]); } }
+            return count;
+        }
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            if ((uint)index < (uint)_source.Count) { found = true; return _selector(_source[index]); }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetFirst(out bool found) {
+            if (_source.Count != 0) { found = true; return _selector(_source[0]); }
+            found = false;
+            return default(TResult)!;
+        }
+
+        public override TResult TryGetLast(out bool found) {
+            int count = _source.Count;
+            if (count != 0) { found = true; return _selector(_source[count - 1]); }
+            found = false;
+            return default(TResult)!;
+        }
+    }
+
+    /// A Select over another of these iterators: its count and its edges
+    /// asked of that one, the selector run only on what is answered.
+    private sealed class IteratorSelectIterator<TSource, TResult> : Iterator<TResult> {
+        private readonly Iterator<TSource> _source;
+        private readonly Func<TSource, TResult> _selector;
+        private IEnumerator<TSource>? _enumerator;
+
+        public IteratorSelectIterator(Iterator<TSource> source, Func<TSource, TResult> selector) { _source = source; _selector = selector; }
+
+        public override IEnumerator<TResult> GetEnumerator() {
+            if (_state == 0) { _state = 1; return this; }
+            return new IteratorSelectIterator<TSource, TResult>(this);
+        }
+
+        /// The enumerator a second GetEnumerator hands out: this one's words, started.
+        private IteratorSelectIterator(IteratorSelectIterator<TSource, TResult> from) { _source = from._source; _selector = from._selector; _state = 1; }
+
+        public override void Dispose() {
+            if (_enumerator != null) { _enumerator.Dispose(); _enumerator = null; }
+            base.Dispose();
+        }
+
+        public override bool MoveNext() {
+            if (_state == 1) { _enumerator = _source.GetEnumerator(); _state = 2; }
+            if (_state == 2) {
+                if (_enumerator!.MoveNext()) { _current = _selector(_enumerator.Current); return true; }
+                Dispose();
+            }
+            return false;
+        }
+
+
+        public override TResult TryGetElementAt(int index, out bool found) {
+            TSource input = _source.TryGetElementAt(index, out bool sourceFound);
+            found = sourceFound;
+            return sourceFound ? _selector(input) : default(TResult)!;
+        }
+
+        public override TResult TryGetFirst(out bool found) {
+            TSource input = _source.TryGetFirst(out bool sourceFound);
+            found = sourceFound;
+            return sourceFound ? _selector(input) : default(TResult)!;
+        }
+
+        public override TResult TryGetLast(out bool found) {
+            TSource input = _source.TryGetLast(out bool sourceFound);
+            found = sourceFound;
+            return sourceFound ? _selector(input) : default(TResult)!;
+        }
+
+        public override TResult[] ToArray() {
+            int count = _source.GetCount(true);
+            if (count == 0) { return Array.Empty<TResult>(); }
+            if (count < 0) { return ToList().ToArray(); }
+            TResult[] array = new TResult[count];
+            int index = 0;
+            foreach (TSource input in _source) { array[index] = _selector(input); index++; }
+            return array;
+        }
+
+        public override List<TResult> ToList() {
+            int count = _source.GetCount(true);
+            List<TResult> list = count > 0 ? new List<TResult>(count) : new List<TResult>();
+            foreach (TSource input in _source) { list.Add(_selector(input)); }
+            return list;
+        }
+
+        public override int GetCount(bool onlyIfCheap) {
+            if (!onlyIfCheap) {
+                int count = 0;
+                foreach (TSource item in _source) { _selector(item); count = checked(count + 1); }
+                return count;
+            }
+            return _source.GetCount(onlyIfCheap);
         }
     }
 
@@ -15452,6 +16552,7 @@ public static class Enumerable {
 
     public static List<TSource> ToList<TSource>(this IEnumerable<TSource> source) {
         NotNull(source, "source");
+        if (source is Iterator<TSource> iterator) { return iterator.ToList(); }
         // NOT ASKED WHETHER IT IS AN ORDERED SEQUENCE, which .NET's asks so as
         // to leave one element unsorted and its keys unasked: the lifetime
         // rules took every sequence handed here for one, its fields for an
@@ -15462,6 +16563,7 @@ public static class Enumerable {
 
     public static TSource[] ToArray<TSource>(this IEnumerable<TSource> source) {
         NotNull(source, "source");
+        if (source is Iterator<TSource> iterator) { return iterator.ToArray(); }
         // A collection straight into an array its size, as .NET's does.
         if (source is ICollection<TSource> collection) {
             TSource[] copied = new TSource[collection.Count];
@@ -15527,8 +16629,14 @@ public static class Enumerable {
     // order.
     public static TSource First<TSource>(this IEnumerable<TSource> source) {
         NotNull(source, "source");
-        // A list is asked for its first, as .NET asks any IList.
+        // A list is asked for its first, as .NET asks any IList; one of the
+        // iterators asks itself (Iterator.TryGetFirst).
         if (source is IList<TSource> list) { if (list.Count > 0) { return list[0]; } throw NoElements(); }
+        if (source is Iterator<TSource> iterator) {
+            TSource leading = iterator.TryGetFirst(out bool leads);
+            if (leads) { return leading; }
+            throw NoElements();
+        }
         if (source is IOrderedEdge<TSource> ordered) {
             TSource edge = ordered.Edge(false, null, out bool found);
             if (found) { return edge; }
@@ -15553,6 +16661,10 @@ public static class Enumerable {
     public static TSource FirstOrDefault<TSource>(this IEnumerable<TSource> source, TSource defaultValue) {
         NotNull(source, "source");
         if (source is IList<TSource> list) { return list.Count > 0 ? list[0] : defaultValue; }
+        if (source is Iterator<TSource> iterator) {
+            TSource leading = iterator.TryGetFirst(out bool leads);
+            return leads ? leading : defaultValue;
+        }
         if (source is IOrderedEdge<TSource> ordered) {
             TSource edge = ordered.Edge(false, null, out bool found);
             return found ? edge : defaultValue;
@@ -15584,6 +16696,11 @@ public static class Enumerable {
         NotNull(source, "source");
         if (Items(source, out int count) is { } items) { if (count > 0) { return items[count - 1]; } throw NoElements(); }
         if (source is IList<TSource> list) { if (list.Count > 0) { return list[list.Count - 1]; } throw NoElements(); }
+        if (source is Iterator<TSource> iterator) {
+            TSource ending = iterator.TryGetLast(out bool ends);
+            if (ends) { return ending; }
+            throw NoElements();
+        }
         if (source is IReadOnlyList<TSource> view) { if (view.Count > 0) { return view[view.Count - 1]; } throw NoElements(); }
         if (source is IOrderedEdge<TSource> ordered) {
             TSource edge = ordered.Edge(true, null, out bool any);
@@ -15629,6 +16746,10 @@ public static class Enumerable {
         NotNull(source, "source");
         if (Items(source, out int count) is { } items) { return count > 0 ? items[count - 1] : defaultValue; }
         if (source is IList<TSource> list) { return list.Count > 0 ? list[list.Count - 1] : defaultValue; }
+        if (source is Iterator<TSource> iterator) {
+            TSource ending = iterator.TryGetLast(out bool ends);
+            return ends ? ending : defaultValue;
+        }
         if (source is IReadOnlyList<TSource> view) { return view.Count > 0 ? view[view.Count - 1] : defaultValue; }
         if (source is IOrderedEdge<TSource> ordered) {
             TSource edge = ordered.Edge(true, null, out bool found);
@@ -15721,6 +16842,11 @@ public static class Enumerable {
             if (index < 0 || index >= list.Count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
             return list[index];
         }
+        if (source is Iterator<TSource> iterator) {
+            TSource at = iterator.TryGetElementAt(index, out bool found);
+            if (found) { return at; }
+            throw new ArgumentOutOfRangeException("index");
+        }
         if (index >= 0) {
             foreach (TSource item in source) {
                 if (index == 0) { return item; }
@@ -15753,6 +16879,10 @@ public static class Enumerable {
         NotNull(source, "source");
         if (index < 0) { return default(TSource); }
         if (source is IReadOnlyList<TSource> list) { return index < list.Count ? list[index] : default(TSource); }
+        if (source is Iterator<TSource> iterator) {
+            TSource at = iterator.TryGetElementAt(index, out bool found);
+            return found ? at : default(TSource);
+        }
         foreach (TSource item in source) {
             if (index == 0) { return item; }
             index = index - 1;
@@ -15765,6 +16895,15 @@ public static class Enumerable {
     public static bool Any<TSource>(this IEnumerable<TSource> source) {
         NotNull(source, "source");
         if (Sized(source) is int count) { return count != 0; }
+        // ONE OF THE ITERATORS, as .NET's Any asks it: its cheap count where
+        // it has one -- a projected list's Count, no selector run -- else
+        // whether it has a first (Iterator.TryGetFirst).
+        if (source is Iterator<TSource> iterator) {
+            int cheap = iterator.GetCount(true);
+            if (cheap >= 0) { return cheap != 0; }
+            iterator.TryGetFirst(out bool found);
+            return found;
+        }
         // AN ORDERED SEQUENCE AS .NET's answers it: by its source's count
         // where that is a collection's, no key asked; else by its first,
         // found in one walk, nothing sorted (Edge). Through IOrderedEdge, not
@@ -15858,6 +16997,9 @@ public static class Enumerable {
     public static int Count<TSource>(this IEnumerable<TSource> source) {
         NotNull(source, "source");
         if (Sized(source) is int count) { return count; }
+        // One of the iterators counts itself: a projection's selector run once
+        // an element for what it does, as .NET's Count runs it.
+        if (source is Iterator<TSource> iterator) { return iterator.GetCount(false); }
         // AN ORDERED SEQUENCE IS COUNTED BY ITS SOURCE, as .NET's counts it:
         // nothing is sorted and no key is asked for. Through IOrderedEdge,
         // as First and Last ask it: the link answers that call by the
@@ -15905,7 +17047,13 @@ public static class Enumerable {
 
     public static bool TryGetNonEnumeratedCount<TSource>(this IEnumerable<TSource> source, out int count) {
         NotNull(source, "source");
-        if (source is IReadOnlyCollection<TSource> collection) { count = collection.Count; return true; }
+        // .NET's: an ICollection<T>'s count, an iterator's cheap one, a
+        // non-generic ICollection's (Sized: a Queue's, a Stack's).
+        if (Sized(source) is int sized) { count = sized; return true; }
+        if (source is Iterator<TSource> iterator) {
+            int cheap = iterator.GetCount(true);
+            if (cheap >= 0) { count = cheap; return true; }
+        }
         count = 0;
         return false;
     }
