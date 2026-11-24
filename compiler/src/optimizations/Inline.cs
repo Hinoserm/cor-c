@@ -265,9 +265,6 @@ public sealed class Inline : IParallelModulePass
             Corsac.Program.BenchmarkStage("inline-begin " + caller.Name + " instructions=" + Size(caller));
 #endif
             InlineInto(caller, byName, pinned, addressTaken, callers, recursive, keepsEverything);
-            // Its inlined constructors' barriers on the blocks it made (FreshStoreBarriers),
-            // gone before it is weighed as a callee.
-            FreshStoreBarriers.Drop(caller);
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("inline-end " + caller.Name + " instructions=" + Size(caller));
 #endif
@@ -370,6 +367,7 @@ public sealed class Inline : IParallelModulePass
                             HashSet<Function> recursive, bool keepsEverything)
     {
         int size = Size(caller);
+        Func<string, bool> factory = name => byName.TryGetValue(name, out Function? made) && MakesWhatItReturnsOnce(made, byName);
         bool changed = true;
         // Many rejected call sites ask the same definition/CFG questions.
         // Reuse the analysis only until Expand mutates this caller.
@@ -421,7 +419,7 @@ public sealed class Inline : IParallelModulePass
                     // (FreshDispatched) -- a List built from an iterator, a
                     // Join over one -- or everywhere, with InlineHandlers.
                     bool handlers = caller.Async is null && (InlineHandlers
-                        || !Inlineable(callee, pinned) && Size(callee) <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh));
+                        || !Inlineable(callee, pinned) && Size(callee) <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh, factory));
                     string? refused = NotInlineable(callee, pinned, handlers)
                         ?? (recursive.Contains(callee) ? "in a call cycle"
                             : Escape.IsCollectorLeaf(callee.Name) ? "the collector's leaf"
@@ -520,7 +518,7 @@ public sealed class Inline : IParallelModulePass
                         && FreshOwner(caller, b, i, call, ref callerDefs);
                     bool dispatchesFresh = ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren
                         && size + calleeSize <= GrowthLimit
-                        && (calleeSize <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh)
+                        && (calleeSize <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh, factory)
                             || calleeSize <= FreshResultBody && call.Dest is not null && MakesWhatItReturnsOnce(callee, byName));
                     exposesChildren |= dispatchesFresh;
                     if (ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren)
@@ -683,12 +681,17 @@ public sealed class Inline : IParallelModulePass
     /// allocator's result, through copies) on which the callee makes a
     /// virtual call: the call FreshArgumentBody brings into sight.
     /// </summary>
-    private static bool FreshDispatched(Function caller, Instr call, Function callee, ref FreshValues? cached, ref FreshValues? stale)
+    private static bool FreshDispatched(Function caller, Instr call, Function callee, ref FreshValues? cached, ref FreshValues? stale, Func<string, bool>? factory)
     {
         // Made in the stale one's storage, which is then this one's alone.
+        // AN OBJECT A FACTORY MADE IS MADE HERE TOO (MakesWhatItReturns): the
+        // iterator Select makes of a List itself, or by a call of its own for
+        // any other sequence, is fresh either way, and the walk it is handed
+        // to (string.Join's foreach) comes into sight as it did when every
+        // way was a `yield` machine made in line.
         if (cached is null)
         {
-            cached = new FreshValues(caller, stale);
+            cached = new FreshValues(caller, stale) { Factory = factory };
             stale = null;
         }
         FreshValues fresh = cached;
@@ -971,15 +974,35 @@ public sealed class Inline : IParallelModulePass
         return n;
     }
 
+    /// <summary>
+    /// A body's weight: its instructions, but for the SNAPSHOT BARRIER's
+    /// (Lowering.ReferenceBarrier) -- the test of Runtime.Marking and the
+    /// block that calls Runtime.WriteBarrier while it is set, run only while
+    /// a concurrent mark is under way. Every reference store of an inlined
+    /// constructor brings one; weighed as the store itself, a factory that
+    /// makes one of several kinds of object (LINQ's Where and Select, each
+    /// kind's constructor inlined) was over every limit, and never reached
+    /// the caller that walks what it makes. They stay in the code as they
+    /// are; only the weighing leaves them out.
+    /// </summary>
     private static int Size(Function f)
     {
         int n = 0;
         foreach (Block b in f.Blocks)
         {
+            if (IsBarrierBlock(b)) continue;
             n += b.Instrs.Count;
+            if (b.Instrs.Count >= 2 && b.Instrs[^2] is { Op: Opcode.Load, Operands: [SymOperand { Name: MarkingFlag }] }) n -= 2;
         }
         return n;
     }
+
+    /// <summary>Runtime.Marking, the barrier's test.</summary>
+    private const string MarkingFlag = "s_Runtime_Marking_t$V$I32";
+
+    /// <summary>Lowering's barrier block: `a = add x k; call Runtime.WriteBarrier a v; jump`.</summary>
+    private static bool IsBarrierBlock(Block b)
+        => b.Instrs.Count == 3 && b.Instrs[0].Op == Opcode.Add && b.Instrs[1] is { Op: Opcode.Call, Callee: Escape.Barrier } && b.Instrs[2].Op == Opcode.Jump;
 
     /// <summary>
     /// Replaces the call at <paramref name="index"/> of <paramref name="site"/>

@@ -4628,7 +4628,7 @@ public static class RandomAccess
         if (handle.IsClosed) throw new ObjectDisposedException("handle");
         if (fileOffset < 0) throw new ArgumentOutOfRangeException("fileOffset");
         if (buffer.Length == 0) return 0;
-        long got = Os.Pread(handle.Fd, buffer.Array, buffer.Start, buffer.Length, fileOffset);
+        long got = Os.Pread(handle.Fd, buffer.Address, (nuint)buffer.Length, fileOffset);
         if (got < 0) throw Interop.GetExceptionForIoErrnoOnHandle((int)got, null);
         return (int)got;
     }
@@ -4643,7 +4643,7 @@ public static class RandomAccess
         int done = 0;
         while (done < buffer.Length)
         {
-            long put = Os.Pwrite(handle.Fd, buffer.Items, buffer.Start + done, buffer.Length - done, fileOffset + done);
+            long put = Os.Pwrite(handle.Fd, buffer.Address + (nuint)done, (nuint)(buffer.Length - done), fileOffset + done);
             if (put < 0) throw Interop.GetExceptionForIoErrnoOnHandle((int)put, null);
             if (put == 0) throw new IOException("the write made no progress");
             done += (int)put;

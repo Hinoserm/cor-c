@@ -531,13 +531,88 @@ public static class CollectionsMarshal
 
 namespace System.Runtime.InteropServices
 {
-    /// .NET's MemoryMarshal, as far as memory that is an array's can go: a
-    /// reference to the first element, and a value of an unmanaged type read
-    /// from bytes or written to them, as native data is.
+    /// .NET's MemoryMarshal: a reference to a span's or an array's first
+    /// element, a span of one element type's memory viewed as another's
+    /// (Cast, AsBytes) or over a variable (CreateSpan), and a value of an
+    /// unmanaged type read from bytes or written to them, as native data is.
+    /// A span is an object, a byte offset and a count (ReadOnlySpan), so a
+    /// view of other memory is the same object and offset with another count.
     public static unsafe class MemoryMarshal
     {
-        public static ref T GetArrayDataReference<T>(T[] array) { return ref array[0]; }
-        public static ref T GetReference<T>(Span<T> span) { return ref span[0]; }
+        /// Where element 0 is or would be: an empty array's or span's too,
+        /// never read through, as .NET's (no IndexOutOfRangeException).
+        public static ref T GetArrayDataReference<T>(T[] array) { return ref Span<T>.At(Sys.ArrayData(array)); }
+        public static ref T GetReference<T>(Span<T> span) { return ref Span<T>.At(span.Address); }
+        public static ref T GetReference<T>(ReadOnlySpan<T> span) { return ref Span<T>.At(span.Address); }
+
+        /// THE SAME MEMORY AS ANOTHER ELEMENT TYPE, as .NET's: both types free
+        /// of references (ArgumentException), the count what whole elements
+        /// of the new type the bytes hold -- the bytes left over dropped --
+        /// and OverflowException past int's range. Any byte offset is kept:
+        /// an x86 reads a misaligned element as it reads any other.
+        public static Span<TTo> Cast<TFrom, TTo>(Span<TFrom> span) where TFrom : struct where TTo : struct
+        {
+            NoReferences<TFrom>(); NoReferences<TTo>();
+            return Span<TTo>.Over(span.Owner, span.Offset, checked((int)((long)span.Length * sizeof(TFrom) / sizeof(TTo))));
+        }
+
+        public static ReadOnlySpan<TTo> Cast<TFrom, TTo>(ReadOnlySpan<TFrom> span) where TFrom : struct where TTo : struct
+        {
+            NoReferences<TFrom>(); NoReferences<TTo>();
+            return ReadOnlySpan<TTo>.Over(span.Owner, span.Offset, checked((int)((long)span.Length * sizeof(TFrom) / sizeof(TTo))));
+        }
+
+        /// The span's bytes, every one of them (no element is cut short).
+        public static Span<byte> AsBytes<T>(Span<T> span) where T : struct
+        {
+            NoReferences<T>();
+            return Span<byte>.Over(span.Owner, span.Offset, checked(span.Length * sizeof(T)));
+        }
+
+        public static ReadOnlySpan<byte> AsBytes<T>(ReadOnlySpan<T> span) where T : struct
+        {
+            NoReferences<T>();
+            return ReadOnlySpan<byte>.Over(span.Owner, span.Offset, checked(span.Length * sizeof(T)));
+        }
+
+        /// `length` elements from a variable on, unchecked, as .NET's: the
+        /// span holds the address alone, and the variable must outlive it --
+        /// on the stack the collector finds it by that address
+        /// (Gc.BlockForPointer), as it finds any reference there.
+        public static Span<T> CreateSpan<T>(ref T reference, int length)
+        {
+            if (length < 0) { throw new ArgumentOutOfRangeException("length"); }
+            return Span<T>.Over(null, (nint)Sys.AddressOf(ref reference), length);
+        }
+
+        public static ReadOnlySpan<T> CreateReadOnlySpan<T>(ref T reference, int length)
+        {
+            if (length < 0) { throw new ArgumentOutOfRangeException("length"); }
+            return ReadOnlySpan<T>.Over(null, (nint)Sys.AddressOf(ref reference), length);
+        }
+
+        /// A value of an unmanaged type laid over the bytes themselves, as
+        /// .NET's: ArgumentOutOfRangeException where they are too few.
+        public static ref T AsRef<T>(Span<byte> span) where T : struct
+        {
+            NoReferences<T>();
+            if (span.Length < sizeof(T)) { throw new ArgumentOutOfRangeException("length"); }
+            return ref Span<T>.At(span.Address);
+        }
+
+        public static ref readonly T AsRef<T>(ReadOnlySpan<byte> span) where T : struct
+        {
+            NoReferences<T>();
+            if (span.Length < sizeof(T)) { throw new ArgumentOutOfRangeException("length"); }
+            return ref Span<T>.At(span.Address);
+        }
+
+        /// .NET's refusal of a type holding references, whose memory as bytes
+        /// would hide them from the collector.
+        private static void NoReferences<T>()
+        {
+            if (Sys.ElementsHoldReferences<T>(null)) { throw new ArgumentException("Cannot use type '" + typeof(T).FullName + "'. Only value types without pointers or references are supported."); }
+        }
 
         public static T Read<T>(ReadOnlySpan<byte> source) where T : struct
         {

@@ -1324,12 +1324,22 @@ public sealed partial class Lowering
     /// </summary>
     private bool TagsField(FieldSymbol f) => HoldsReference(f.Type) && (f.Static || f.Owner.Kind == TypeKind.Class && !CopiedChain(f.Owner));
 
-    /// <summary>Whether a class or one of its bases is one whose code may copy its objects by bytes (TypeDecl.MemberwiseCopied).</summary>
+    /// <summary>
+    /// Whether a class or one of its bases is one whose code may copy its
+    /// objects by bytes (TypeDecl.MemberwiseCopied), or one that says its
+    /// fields OWN NOTHING ([FieldsOwnNothing]): they hold only what the
+    /// object was handed, as a `yield` method's machine does -- LINQ's
+    /// iterator classes (Enumerable.Iterator). Untagged, no field of it is
+    /// ever one the analyses find owns what it holds, so freeing such an
+    /// object frees it alone, and the lifetime rules may take one made by
+    /// a function for the box it hands back holding its parameter
+    /// (Escape.ClassMadeHere).
+    /// </summary>
     private static bool CopiedChain(TypeSymbol t)
     {
         for (TypeSymbol? s = t; s is not null; s = s.Base)
         {
-            if (s.Decl?.MemberwiseCopied == true) return true;
+            if (s.Decl?.MemberwiseCopied == true || s.Decl?.Attributes.Contains("FieldsOwnNothing") == true) return true;
         }
         return false;
     }

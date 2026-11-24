@@ -10484,15 +10484,28 @@ public struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     void IList<T>.RemoveAt(int index) { throw new NotSupportedException(); }
 }
 
-public readonly ref struct ReadOnlySpan<T> {
-    private readonly T[] items;
-    private readonly int from;
+/// THE PORTABLE SPAN'S SHAPE (.NET Framework's System.Memory: an object, a
+/// byte offset, a length): the object the elements are in -- an array, or a
+/// string's characters (Sys.CharsOf) -- or null for memory no object holds
+/// (`new Span<T>(void*, int)`), the byte offset of the first element from
+/// that object's data (Sys.ArrayData), or the address itself where there is
+/// no object, and the count. An element is at that address plus its index
+/// times sizeof(T), whatever type the object's own elements are: so
+/// MemoryMarshal.Cast and AsBytes view one element type's memory as
+/// another's, at any byte offset, as .NET's do. The object is held as a
+/// reference, so the collector, and every lifetime rule of the compiler,
+/// sees the span use it; an element's `ref` is an address inside it, which
+/// the collector maps to its block (Gc.BlockForPointer) and the compiler
+/// follows from the array (Sys.ArrayData keeps it, Lowering.Addressed).
+public unsafe readonly ref struct ReadOnlySpan<T> {
+    private readonly object? owner;
+    private readonly nint offset;
     private readonly int count;
 
     /// No array is an empty span, as .NET's constructor makes it.
     public ReadOnlySpan(T[]? source) {
-        items = source!;
-        from = 0;
+        owner = source;
+        offset = 0;
         count = source == null ? 0 : source.Length;
     }
 
@@ -10505,18 +10518,41 @@ public readonly ref struct ReadOnlySpan<T> {
         else if ((uint)start > (uint)source.Length || (uint)length > (uint)(source.Length - start)) {
             throw new ArgumentOutOfRangeException();
         }
-        items = source!;
-        from = start;
+        owner = source;
+        offset = (nint)start * sizeof(T);
         count = length;
     }
+
+    /// `length` elements at `pointer`, memory no object holds, as .NET's:
+    /// refused for an element type holding references, which the collector
+    /// would never find there.
+    public ReadOnlySpan(void* pointer, int length) {
+        if (Sys.ElementsHoldReferences<T>(null)) { throw new ArgumentException("The type cannot hold references to be viewed through a pointer."); }
+        if (length < 0) { throw new ArgumentOutOfRangeException("length"); }
+        owner = null;
+        offset = (nint)pointer;
+        count = length;
+    }
+
+    private ReadOnlySpan(object? owner, nint offset, int length, bool unchecked_) {
+        this.owner = owner;
+        this.offset = offset;
+        count = length;
+    }
+
+    /// A span over what another holds, unchecked: MemoryMarshal's Cast and AsBytes, Slice.
+    internal static ReadOnlySpan<T> Over(object? owner, nint offset, int length) { return new ReadOnlySpan<T>(owner, offset, length, false); }
 
     public int Length => count;
     public bool IsEmpty => count == 0;
 
     /// What the span reads, for the library's own code that must hand the
-    /// memory itself on (Runtime.Print of bytes), as MemoryMarshal does in .NET.
-    internal T[] Items => items;
-    internal int Start => from;
+    /// memory itself on (Runtime.Print of bytes), as MemoryMarshal does in
+    /// .NET: the object (null for none), the offset, and the first element's
+    /// address -- good while the span, which holds the object, is.
+    internal object? Owner => owner;
+    internal nint Offset => offset;
+    internal nuint Address => owner == null ? (nuint)offset : Sys.ArrayData(owner) + (nuint)offset;
 
     /// AN ELEMENT OF THE SPAN, not merely of its array: an index past the
     /// window is .NET's IndexOutOfRangeException even where the array
@@ -10524,24 +10560,23 @@ public readonly ref struct ReadOnlySpan<T> {
     public ref readonly T this[int index] {
         get {
             if ((uint)index >= (uint)count) { throw new IndexOutOfRangeException(); }
-            return ref items[from + index];
+            return ref Span<T>.At(Address + (nuint)index * (nuint)sizeof(T));
         }
     }
 
     public ReadOnlySpan<T> Slice(int start) {
         if ((uint)start > (uint)count) { throw new ArgumentOutOfRangeException(); }
-        return new ReadOnlySpan<T>(items, from + start, count - start);
+        return Over(owner, offset + (nint)start * sizeof(T), count - start);
     }
 
     public ReadOnlySpan<T> Slice(int start, int length) {
         if ((uint)start > (uint)count || (uint)length > (uint)(count - start)) { throw new ArgumentOutOfRangeException(); }
-        return new ReadOnlySpan<T>(items, from + start, length);
+        return Over(owner, offset + (nint)start * sizeof(T), length);
     }
 
     public T[] ToArray() {
         T[] made = new T[count];
-
-        if (count != 0) { Span<T>.Move(items!, from, made, 0, count); }
+        if (count != 0) { Span<T>.Move(owner, Address, made, Sys.ArrayData(made), count); }
         return made;
     }
 
@@ -10552,7 +10587,7 @@ public readonly ref struct ReadOnlySpan<T> {
         if (typeof(T) != typeof(char)) { return "System.ReadOnlySpan<" + typeof(T).Name + ">[" + count + "]"; }
         string made = Sys.NewChars(count);
         for (int i = 0; i < count; i++) {
-            Sys.SetChar(made, i, (int)Sys.Word(items[from + i]));
+            Sys.SetChar(made, i, (int)Sys.Word(this[i]));
         }
         return made;
     }
@@ -10561,13 +10596,13 @@ public readonly ref struct ReadOnlySpan<T> {
     /// .NET refuses a shorter one before copying anything.
     public void CopyTo(Span<T> into) {
         if ((uint)count > (uint)into.Length) { throw new ArgumentException("Destination is too short.", "destination"); }
-        Span<T>.Move(items, from, into.Array, into.Start, count);
+        Span<T>.Move(owner, Address, into.Owner, into.Address, count);
     }
 
     /// False, and nothing copied, where CopyTo would refuse.
     public bool TryCopyTo(Span<T> into) {
         if ((uint)count > (uint)into.Length) { return false; }
-        Span<T>.Move(items, from, into.Array, into.Start, count);
+        Span<T>.Move(owner, Address, into.Owner, into.Address, count);
         return true;
     }
 
@@ -10691,9 +10726,12 @@ public readonly struct ReadOnlyMemory<T> {
     public override string ToString() => typeof(T) == typeof(char) ? Span.ToString() : "System.ReadOnlyMemory<" + typeof(T).Name + ">[" + count + "]";
 }
 
-public readonly ref struct Span<T> {
-    private readonly T[] items;
-    private readonly int from;
+/// THE PORTABLE SPAN'S SHAPE, as ReadOnlySpan's: the object the elements
+/// are in (or null), the byte offset of the first from its data (or the
+/// address), the count.
+public unsafe readonly ref struct Span<T> {
+    private readonly object? owner;
+    private readonly nint offset;
     private readonly int count;
 
     /// An empty span, as .NET's Span<T>.Empty.
@@ -10701,8 +10739,8 @@ public readonly ref struct Span<T> {
 
     /// No array is an empty span, as .NET's constructor makes it.
     public Span(T[]? source) {
-        items = source!;
-        from = 0;
+        owner = source;
+        offset = 0;
         count = source == null ? 0 : source.Length;
     }
 
@@ -10714,16 +10752,37 @@ public readonly ref struct Span<T> {
         else if ((uint)start > (uint)source.Length || (uint)length > (uint)(source.Length - start)) {
             throw new ArgumentOutOfRangeException();
         }
-        items = source!;
-        from = start;
+        owner = source;
+        offset = (nint)start * sizeof(T);
         count = length;
     }
+
+    /// `length` elements at `pointer`, as ReadOnlySpan's: refused for an
+    /// element type holding references.
+    public Span(void* pointer, int length) {
+        if (Sys.ElementsHoldReferences<T>(null)) { throw new ArgumentException("The type cannot hold references to be viewed through a pointer."); }
+        if (length < 0) { throw new ArgumentOutOfRangeException("length"); }
+        owner = null;
+        offset = (nint)pointer;
+        count = length;
+    }
+
+    private Span(object? owner, nint offset, int length, bool unchecked_) {
+        this.owner = owner;
+        this.offset = offset;
+        count = length;
+    }
+
+    /// A span over what another holds, unchecked: MemoryMarshal's Cast, AsBytes and CreateSpan, Slice.
+    internal static Span<T> Over(object? owner, nint offset, int length) { return new Span<T>(owner, offset, length, false); }
 
     public int Length => count;
     public bool IsEmpty => count == 0;
 
-    internal T[] Array => items;
-    internal int Start => from;
+    /// The object, the offset and the first element's address (ReadOnlySpan's).
+    internal object? Owner => owner;
+    internal nint Offset => offset;
+    internal nuint Address => owner == null ? (nuint)offset : Sys.ArrayData(owner) + (nuint)offset;
 
     /// An element of the span, not merely of its array, as ReadOnlySpan's:
     /// the variable itself, as .NET's indexer answers it -- `ref span[i]`,
@@ -10731,76 +10790,93 @@ public readonly ref struct Span<T> {
     public ref T this[int index] {
         get {
             if ((uint)index >= (uint)count) { throw new IndexOutOfRangeException(); }
-            return ref items[from + index];
+            return ref Span<T>.At(Address + (nuint)index * (nuint)sizeof(T));
         }
     }
 
     /// Every element made `value`, as .NET's Fill.
     public void Fill(T value) {
-        for (int i = 0; i < count; i++) { items[from + i] = value; }
+        nuint at = Address;
+        for (int i = 0; i < count; i++) { Span<T>.At(at + (nuint)i * (nuint)sizeof(T)) = value; }
     }
 
     /// Every element back to default(T): zero, false or null.
     public void Clear() {
-        for (int i = 0; i < count; i++) { items[from + i] = default(T)!; }
+        if (count == 0) { return; }
+        // NOTHING TO TELL THE COLLECTOR of zeroes over numbers: the bytes at once.
+        if (!Sys.ElementsHoldReferences<T>(null)) { Sys.MemorySet(Address, 0, (nuint)count * (nuint)sizeof(T)); return; }
+        nuint at = Address;
+        for (int i = 0; i < count; i++) { Span<T>.At(at + (nuint)i * (nuint)sizeof(T)) = default(T)!; }
     }
 
     public Span<T> Slice(int start) {
         if ((uint)start > (uint)count) { throw new ArgumentOutOfRangeException(); }
-        return new Span<T>(items, from + start, count - start);
+        return Over(owner, offset + (nint)start * sizeof(T), count - start);
     }
 
     public Span<T> Slice(int start, int length) {
         if ((uint)start > (uint)count || (uint)length > (uint)(count - start)) { throw new ArgumentOutOfRangeException(); }
-        return new Span<T>(items, from + start, length);
+        return Over(owner, offset + (nint)start * sizeof(T), length);
     }
 
     public T[] ToArray() {
         T[] made = new T[count];
-
-        if (count != 0) { Move(items!, from, made, 0, count); }
+        if (count != 0) { Move(owner, Address, made, Sys.ArrayData(made), count); }
         return made;
     }
 
     public void CopyTo(Span<T> into) {
         if ((uint)count > (uint)into.Length) { throw new ArgumentException("Destination is too short.", "destination"); }
-        Move(items, from, into.items, into.from, count);
+        Move(owner, Address, into.owner, into.Address, count);
     }
 
     public bool TryCopyTo(Span<T> into) {
         if ((uint)count > (uint)into.Length) { return false; }
-        Move(items, from, into.items, into.from, count);
+        Move(owner, Address, into.owner, into.Address, count);
         return true;
     }
 
-    /// `n` elements from one array's place to another's, as .NET's CopyTo
-    /// moves them: two windows onto one array may overlap, and a move up the
-    /// array is made from the top down so nothing is overwritten before it is
-    /// read.
+    /// `n` elements from one place to another, as .NET's CopyTo moves them:
+    /// two windows onto one block may overlap, and a move up is made from
+    /// the top down so nothing is overwritten before it is read. The
+    /// objects the two are in, handed along, are in use until it returns.
     ///
     /// ELEMENTS HOLDING NO REFERENCE ARE BYTES, moved as one block (Sys.
     /// MemoryMove: a word at a time, streamed when it is long, from the end
     /// down where it moves up over itself) -- a constant of the element type,
-    /// so the loops below are only an array of references' code. Those stay
-    /// a store an element: each takes the collector's barrier and its card.
+    /// so the loops below are only references' code. Those stay a store an
+    /// element: each takes the collector's barrier and its card.
+    /// The element at an address: a variable of the span's element type
+    /// there. (A cast of the address in place reads `(T*)(...)` as a product
+    /// where T has its own `*`, as UInt128 has.)
+    internal static ref T At(nuint address) {
+        T* element = (T*)address;
+        return ref *element;
+    }
+
+    /// `n` elements from one array's place to another's (List's moves).
     internal static void Move(T[] source, int at, T[] into, int to, int n) {
         if (n == 0) { return; }
-        if (!Sys.ElementsHoldReferences(source)) {
-            nuint stride = (nuint)Sys.ElementStride(source);
-            nuint dst = Sys.ArrayData(into) + (nuint)to * stride, src = Sys.ArrayData(source) + (nuint)at * stride;
-            bool oneBlock = (object)source == (object)into;
+        Move(source, Sys.ArrayData(source) + (nuint)at * (nuint)sizeof(T), into, Sys.ArrayData(into) + (nuint)to * (nuint)sizeof(T), n);
+    }
+
+    internal static void Move(object? from, nuint src, object? into, nuint dst, int n) {
+        if (n == 0) { return; }
+        nuint bytes = (nuint)n * (nuint)sizeof(T);
+        if (!Sys.ElementsHoldReferences<T>(null)) {
+            bool oneBlock = from != null && (object?)from == (object?)into;
             // NUMBERS NEVER AN ADDRESS -- characters, ints, floats -- as such
             // to region inference; a long's or a nint's may be one, and moves
             // as bytes it follows (Sys.NumbersMove, MemoryMove).
-            if (Sys.ElementsAreNumbers(source)) { Sys.NumbersMove(dst, src, (nuint)n * stride, oneBlock); }
-            else { Sys.MemoryMove(dst, src, (nuint)n * stride, oneBlock); }
+            if (Sys.ElementsAreNumbers<T>(null)) { Sys.NumbersMove(dst, src, bytes, oneBlock); }
+            else { Sys.MemoryMove(dst, src, bytes, oneBlock); }
             return;
         }
-        if ((object)source == (object)into && to > at) {
-            for (int i = n - 1; i >= 0; i--) { into[to + i] = source[at + i]; }
+        if (dst > src && dst < src + bytes) {
+            for (int i = n - 1; i >= 0; i--) { Span<T>.At(dst + (nuint)i * (nuint)sizeof(T)) = Span<T>.At(src + (nuint)i * (nuint)sizeof(T)); }
             return;
         }
-        for (int i = 0; i < n; i++) { into[to + i] = source[at + i]; }
+        for (int i = 0; i < n; i++) { Span<T>.At(dst + (nuint)i * (nuint)sizeof(T)) = Span<T>.At(src + (nuint)i * (nuint)sizeof(T)); }
     }
 
     /// The characters of a Span<char> as a string; any other span is .NET's
@@ -10809,7 +10885,7 @@ public readonly ref struct Span<T> {
         if (typeof(T) != typeof(char)) { return "System.Span<" + typeof(T).Name + ">[" + count + "]"; }
         string made = Sys.NewChars(count);
         for (int i = 0; i < count; i++) {
-            Sys.SetChar(made, i, (int)Sys.Word(items[from + i]));
+            Sys.SetChar(made, i, (int)Sys.Word(this[i]));
         }
         return made;
     }
@@ -10818,7 +10894,7 @@ public readonly ref struct Span<T> {
 
     /// This span as read-only, over the same memory: .NET's implicit
     /// conversion, written out while the compiler has no user-defined ones.
-    public ReadOnlySpan<T> AsReadOnly() { return new ReadOnlySpan<T>(items, from, count); }
+    public ReadOnlySpan<T> AsReadOnly() { return ReadOnlySpan<T>.Over(owner, offset, count); }
 }
 
 /// The one empty array of each element type, as .NET's Array.Empty<T>()
@@ -11012,8 +11088,8 @@ public static class MemoryExtensions {
     // one register on i386 where a long was two.
     const uint Ones = 0x01010101, Highs = 0x80808080;
 
-    static nuint Data(ReadOnlySpan<byte> s) { return s.Length == 0 ? 0 : Sys.ArrayData(s.Items) + (nuint)s.Start; }
-    static nuint Data(Span<byte> s) { return s.Length == 0 ? 0 : Sys.ArrayData(s.Array) + (nuint)s.Start; }
+    static nuint Data(ReadOnlySpan<byte> s) { return s.Length == 0 ? 0 : s.Address; }
+    static nuint Data(Span<byte> s) { return s.Length == 0 ? 0 : s.Address; }
 
     /// Whether `n` bytes at `a` and `b` are the same: the runtime's
     /// (Runtime.BytesEqual, a machine word at a time; its packed form eight
@@ -14888,6 +14964,11 @@ public static class Enumerable {
     // handed is freed by its caller when the walk is done. No thread asked:
     // a machine asks none either.
 
+    // ITS FIELDS OWN NOTHING ([FieldsOwnNothing], Lowering.CopiedChain): an
+    // iterator holds what it was handed -- a source, a delegate, another
+    // iterator -- and freeing it never frees them; so a list handed to a
+    // LINQ call stays its caller's to free (Escape.ClassMadeHere).
+    [FieldsOwnNothing]
     private abstract class Iterator<TSource> : IEnumerable<TSource>, IEnumerator<TSource> {
         internal int _state;
         internal TSource _current = default(TSource)!;
@@ -15232,7 +15313,10 @@ public static class Enumerable {
 
         // From the end, as .NET's: the last match is the first from there.
         public override TSource TryGetLast(out bool found) {
-            for (int i = Source.Length - 1; i >= 0; i--) { if (Test(Source[i])) { found = true; return Source[i]; } }
+            TSource[] source = Source;
+            // Each element read once, as .NET reads it: a test that changes
+            // the array does not change what is answered.
+            for (int i = source.Length - 1; i >= 0; i--) { TSource item = source[i]; if (Test(item)) { found = true; return item; } }
             found = false;
             return default(TSource)!;
         }
@@ -15316,7 +15400,7 @@ public static class Enumerable {
         public override int GetCount(bool onlyIfCheap) {
             if (onlyIfCheap) { return -1; }
             int count = 0;
-            for (int i = 0, length = Source.Count; i < length; i++) { if (Test(Source[i])) { count = checked(count + 1); } }
+            for (int i = 0, length = Source.Count; i < length; i++) { if (Test(At(Source, i))) { count = checked(count + 1); } }
             return count;
         }
 
@@ -15324,18 +15408,18 @@ public static class Enumerable {
 
         public override List<TSource> ToList() {
             List<TSource> made = new List<TSource>();
-            for (int i = 0, count = Source.Count; i < count; i++) { TSource item = Source[i]; if (Test(item)) { made.Add(item); } }
+            for (int i = 0, count = Source.Count; i < count; i++) { TSource item = At(Source, i); if (Test(item)) { made.Add(item); } }
             return made;
         }
 
         public override TSource TryGetFirst(out bool found) {
-            for (int i = 0, count = Source.Count; i < count; i++) { TSource item = Source[i]; if (Test(item)) { found = true; return item; } }
+            for (int i = 0, count = Source.Count; i < count; i++) { TSource item = At(Source, i); if (Test(item)) { found = true; return item; } }
             found = false;
             return default(TSource)!;
         }
 
         public override TSource TryGetLast(out bool found) {
-            for (int i = Source.Count - 1; i >= 0; i--) { TSource item = Source[i]; if (Test(item)) { found = true; return item; } }
+            for (int i = Source.Count - 1; i >= 0; i--) { TSource item = At(Source, i); if (Test(item)) { found = true; return item; } }
             found = false;
             return default(TSource)!;
         }
@@ -15343,7 +15427,7 @@ public static class Enumerable {
         public override TSource TryGetElementAt(int index, out bool found) {
             if (index >= 0) {
                 for (int i = 0, count = Source.Count; i < count; i++) {
-                    TSource item = Source[i];
+                    TSource item = At(Source, i);
                     if (Test(item)) {
                         if (index == 0) { found = true; return item; }
                         index--;
@@ -15353,6 +15437,13 @@ public static class Enumerable {
             found = false;
             return default(TSource)!;
         }
+        // AN ELEMENT OF THE LIST AS IT WAS WHEN THE ASK BEGAN (.NET reads the
+        // span it took then): one a predicate or selector removed since reads
+        // as default(T) -- what .NET reads for a list of references, whose
+        // removed slots List clears -- and nothing past the list's live count
+        // is read, storage the list may since have given back.
+        private static TSource At(List<TSource> list, int i) => (uint)i < (uint)list.Count ? list[i] : default(TSource)!;
+
     }
 
     // ---- Where then Select, one iterator ---------------------------------
@@ -15471,7 +15562,7 @@ public static class Enumerable {
             if (onlyIfCheap) { return -1; }
             int count = 0;
             for (int i = 0, length = _where.Source.Count; i < length; i++) {
-                TSource item = _where.Source[i];
+                TSource item = At(_where.Source, i);
                 if (_where.Test(item)) { _selector(item); count = checked(count + 1); }
             }
             return count;
@@ -15481,18 +15572,18 @@ public static class Enumerable {
 
         public override List<TResult> ToList() {
             List<TResult> made = new List<TResult>();
-            for (int i = 0, count = _where.Source.Count; i < count; i++) { TSource item = _where.Source[i]; if (_where.Test(item)) { made.Add(_selector(item)); } }
+            for (int i = 0, count = _where.Source.Count; i < count; i++) { TSource item = At(_where.Source, i); if (_where.Test(item)) { made.Add(_selector(item)); } }
             return made;
         }
 
         public override TResult TryGetFirst(out bool found) {
-            for (int i = 0, count = _where.Source.Count; i < count; i++) { TSource item = _where.Source[i]; if (_where.Test(item)) { found = true; return _selector(item); } }
+            for (int i = 0, count = _where.Source.Count; i < count; i++) { TSource item = At(_where.Source, i); if (_where.Test(item)) { found = true; return _selector(item); } }
             found = false;
             return default(TResult)!;
         }
 
         public override TResult TryGetLast(out bool found) {
-            for (int i = _where.Source.Count - 1; i >= 0; i--) { TSource item = _where.Source[i]; if (_where.Test(item)) { found = true; return _selector(item); } }
+            for (int i = _where.Source.Count - 1; i >= 0; i--) { TSource item = At(_where.Source, i); if (_where.Test(item)) { found = true; return _selector(item); } }
             found = false;
             return default(TResult)!;
         }
@@ -15500,7 +15591,7 @@ public static class Enumerable {
         public override TResult TryGetElementAt(int index, out bool found) {
             if (index >= 0) {
                 for (int i = 0, count = _where.Source.Count; i < count; i++) {
-                    TSource item = _where.Source[i];
+                    TSource item = At(_where.Source, i);
                     if (_where.Test(item)) {
                         if (index == 0) { found = true; return _selector(item); }
                         index--;
@@ -15510,6 +15601,13 @@ public static class Enumerable {
             found = false;
             return default(TResult)!;
         }
+        // AN ELEMENT OF THE LIST AS IT WAS WHEN THE ASK BEGAN (.NET reads the
+        // span it took then): one a predicate or selector removed since reads
+        // as default(T) -- what .NET reads for a list of references, whose
+        // removed slots List clears -- and nothing past the list's live count
+        // is read, storage the list may since have given back.
+        private static TSource At(List<TSource> list, int i) => (uint)i < (uint)list.Count ? list[i] : default(TSource)!;
+
     }
 
     private sealed class IEnumerableWhereSelectIterator<TSource, TResult> : Iterator<TResult> {
@@ -15731,9 +15829,20 @@ public static class Enumerable {
             return default(TResult)!;
         }
 
-        public override TResult TryGetFirst(out bool found) { found = true; return _selector(_source[0]); }
+        // AN EMPTY ARRAY HAS NONE: .NET never makes this iterator over one, and
+        // its bodies read element 0 unasked; here an empty array is walked as
+        // any other (Enumerable.SelectOf), so they ask.
+        public override TResult TryGetFirst(out bool found) {
+            if (_source.Length == 0) { found = false; return default(TResult)!; }
+            found = true;
+            return _selector(_source[0]);
+        }
 
-        public override TResult TryGetLast(out bool found) { found = true; return _selector(_source[_source.Length - 1]); }
+        public override TResult TryGetLast(out bool found) {
+            if (_source.Length == 0) { found = false; return default(TResult)!; }
+            found = true;
+            return _selector(_source[_source.Length - 1]);
+        }
     }
 
     private sealed class ListSelectIterator<TSource, TResult> : Iterator<TResult> {
@@ -15768,41 +15877,48 @@ public static class Enumerable {
             int count = _source.Count;
             if (count == 0) { return Array.Empty<TResult>(); }
             TResult[] results = new TResult[count];
-            for (int i = 0; i < count; i++) { results[i] = _selector(_source[i]); }
+            for (int i = 0; i < count; i++) { results[i] = _selector(At(_source, i)); }
             return results;
         }
 
         public override List<TResult> ToList() {
             int count = _source.Count;
             List<TResult> list = new List<TResult>(count);
-            for (int i = 0; i < count; i++) { list.Add(_selector(_source[i])); }
+            for (int i = 0; i < count; i++) { list.Add(_selector(At(_source, i))); }
             return list;
         }
 
         public override int GetCount(bool onlyIfCheap) {
             int count = _source.Count;
-            if (!onlyIfCheap) { for (int i = 0; i < count; i++) { _selector(_source[i]); } }
+            if (!onlyIfCheap) { for (int i = 0; i < count; i++) { _selector(At(_source, i)); } }
             return count;
         }
 
         public override TResult TryGetElementAt(int index, out bool found) {
-            if ((uint)index < (uint)_source.Count) { found = true; return _selector(_source[index]); }
+            if ((uint)index < (uint)_source.Count) { found = true; return _selector(At(_source, index)); }
             found = false;
             return default(TResult)!;
         }
 
         public override TResult TryGetFirst(out bool found) {
-            if (_source.Count != 0) { found = true; return _selector(_source[0]); }
+            if (_source.Count != 0) { found = true; return _selector(At(_source, 0)); }
             found = false;
             return default(TResult)!;
         }
 
         public override TResult TryGetLast(out bool found) {
             int count = _source.Count;
-            if (count != 0) { found = true; return _selector(_source[count - 1]); }
+            if (count != 0) { found = true; return _selector(At(_source, count - 1)); }
             found = false;
             return default(TResult)!;
         }
+        // AN ELEMENT OF THE LIST AS IT WAS WHEN THE ASK BEGAN (.NET reads the
+        // span it took then): one a predicate or selector removed since reads
+        // as default(T) -- what .NET reads for a list of references, whose
+        // removed slots List clears -- and nothing past the list's live count
+        // is read, storage the list may since have given back.
+        private static TSource At(List<TSource> list, int i) => (uint)i < (uint)list.Count ? list[i] : default(TSource)!;
+
     }
 
     private sealed class IListSelectIterator<TSource, TResult> : Iterator<TResult> {
@@ -24797,14 +24913,14 @@ public class Random {
     /// asking Next(), as .NET's NextBytes(byte[]) does not ask it.
     public virtual void NextBytes(byte[] buffer) {
         ArgumentNullException.ThrowIfNull(buffer);
-        Fill(buffer, 0, buffer.Length);
+        Fill(new Span<byte>(buffer));
     }
 
     /// The low byte of Next() apiece from a seeded or derived Random -- here
     /// .NET DOES ask the override, unlike the array's overload.
     public virtual void NextBytes(Span<byte> buffer) {
         if (!subtractive) {
-            Fill(buffer.Array, buffer.Start, buffer.Length);
+            Fill(buffer);
             return;
         }
         for (int i = 0; i < buffer.Length; i++) { buffer[i] = (byte)Next(); }
@@ -24812,9 +24928,10 @@ public class Random {
 
     // EIGHT BYTES TO A XOSHIRO DRAW, lowest first, and what is left over from
     // one more; one byte to a subtractive draw.
-    private void Fill(byte[] items, int from, int count) {
+    private void Fill(Span<byte> items) {
+        int count = items.Length;
         if (subtractive) {
-            for (int i = 0; i < count; i++) { items[from + i] = (byte)InternalSample(); }
+            for (int i = 0; i < count; i++) { items[i] = (byte)InternalSample(); }
             return;
         }
 
@@ -24824,7 +24941,7 @@ public class Random {
             ulong made = NextState();
 
             for (int b = 0; b < 8 && at < count; b++) {
-                items[from + at] = (byte)made;
+                items[at] = (byte)made;
                 made = made >> 8;
                 at = at + 1;
             }

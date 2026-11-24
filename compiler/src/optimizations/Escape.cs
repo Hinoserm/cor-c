@@ -2510,7 +2510,17 @@ continue;
         Flow returned = Analyse(f, new[] { f.Params[0] }, summaries, null, returnsAny: true);
         if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
             Console.Error.WriteLine($"returnsfirst {f.Name}: {!returned.Escapes} via {returned.Why}");
-        if (!returned.Escapes) (_returnsFirst ??= new(StringComparer.Ordinal)).Add(f.Name);
+        if (returned.Escapes) return;
+        (_returnsFirst ??= new(StringComparer.Ordinal)).Add(f.Name);
+        // THE ARGUMENT OR A BLOCK MADE HERE (Analyse's join): handed back as
+        // the argument only where that block is a copy of the argument's own
+        // words (SummariseCopies) -- an iterator's second enumerator, not
+        // `return flag ? arg : new Unrelated()`.
+        if (returned.JoinedFresh)
+        {
+            SummariseCopies(f);
+            if (_copies?.ContainsKey(f.Name) != true) _returnsFirst.Remove(f.Name);
+        }
     }
 
     /// <summary>
@@ -2934,14 +2944,39 @@ continue;
     /// Whether the block `made` makes is an object of a class, allocated and
     /// stamped here with its own descriptor (`t_...`, at the methods' base):
     /// its type exactly known, no shared copy's (StampOf), so no subclass's
-    /// owned fields come with it.
+    /// fields come with it -- and A CLASS WHOSE FIELDS OWN NOTHING: no store
+    /// into it here names its field (Instr.Field), which lowering leaves off
+    /// only for a class that says so or may be copied by bytes
+    /// (Lowering.CopiedChain). A tagged field may be found, over the whole
+    /// program, to own what it holds (OwnedFields, the link's
+    /// OwnedFieldSolver: a parameter's store is fresh where every caller
+    /// hands a fresh object), and freeing the block would then free the
+    /// parameter its caller frees too.
     /// </summary>
     private static bool ClassMadeHere(Function f, VReg made)
     {
         if (StampOf(f, made) is not Stamp stamp || stamp.Base != Target.Current.DescriptorBytes
             || !stamp.Descriptor.StartsWith("t_", StringComparison.Ordinal)) return false;
-        WriteList ws = AnalysisCache.WritesOf(f).TryGetValue(made, out WriteList found) ? found : default;
-        return ws.Count == 1 && ws[0] is { Op: Opcode.Call, Callee: Allocator or ObjectAllocator };
+        RegisterWrites writes = AnalysisCache.WritesOf(f);
+        WriteList ws = writes.TryGetValue(made, out WriteList found) ? found : default;
+        if (ws.Count != 1 || ws[0] is not { Op: Opcode.Call, Callee: Allocator or ObjectAllocator }) return false;
+        // The block and the addresses into it: its copies, and constants added.
+        HashSet<VReg> into = new() { made };
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { } d && !into.Contains(d) && writes.TryGetValue(d, out WriteList dw) && dw.Count == 1
+                        && (i.Op is Opcode.Copy && i.Operands is [RegOperand { Reg: var from }] && into.Contains(from)
+                            || i.Op is Opcode.Add && i.Operands is [RegOperand { Reg: var bas }, ImmOperand] && into.Contains(bas)))
+                    { into.Add(d); grew = true; }
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Store && i.Field is not null && i.Operands.Count >= 1 && i.Operands[0] is RegOperand { Reg: var at } && into.Contains(at))
+                    return false;
+        return true;
     }
 
     /// <summary>The descriptor stored into the first word of the block `made` makes, where it is made; null for none, or for two different.</summary>
@@ -3443,6 +3478,8 @@ continue;
         public Instr? Why { get; set; }
         /// <summary>The blocks made here and returned holding the object (returnsHolder), and where in them it is.</summary>
         public List<VReg>? HeldRoots { get; set; }
+        /// <summary>Whether a returned variable was joined with a block made here (returnsAny): what SummariseCopies must find a copy of the argument's words.</summary>
+        public bool JoinedFresh { get; set; }
         public HashSet<long>? HeldReturned { get; set; }
         /// <summary>Whether every block returned holding it owns no field (a box, an iterator's machine), and what each is, where all are known.</summary>
         public bool HeldOwnsNothing { get; set; }
@@ -3478,6 +3515,13 @@ continue;
         {
             flow.Derived.Add(r);
         }
+        // AN OBJECT MADE HERE IS OF THE TYPE IT WAS STAMPED WITH (StampOf: its
+        // own descriptor, never a shared copy's), as exactly as an owned field
+        // whose stores all make one type: a virtual call on it reaches that
+        // type's method alone (ExactOverrides).
+        if (exact is null && source is { Op: Opcode.Call, Dest: { } sourceMade } && IsAllocator(source.Callee)
+            && StampOf(f, sourceMade) is Stamp sourceStamp && sourceStamp.Base == Target.Current.DescriptorBytes)
+            exact = (sourceStamp.Descriptor, sourceStamp.Base);
 
         // A register with more than one definition may hold something else
         // at another time; anything derived through it is unknowable. The
@@ -3555,12 +3599,11 @@ continue;
         // that register is a holder; one still waiting when nothing changes
         // is an escape.
         HashSet<VReg>? waitingMerges = null;
-        // Whether every object asked about is a parameter (Acceptable's class objects).
-        bool paramRoots = true;
-        foreach (VReg r in roots) if (!f.Params.Contains(r)) { paramRoots = false; break; }
         // The registers that hold the object itself, or null, and nothing
         // else: the roots, and what is only ever copied from them (exact).
         HashSet<VReg>? bases = null;
+        // And those holding an object of its exact type, or null (OfExactType).
+        HashSet<VReg>? ofExact = null;
         // Words of a frame block holding the block's own address (HolderUse).
         HashSet<(object Root, long Offset)>? selfRefs = null;
         // The holders' writes and reads, for Flow.HeldWrites and HeldReads.
@@ -4048,16 +4091,17 @@ continue;
                     foreach (VReg d in pending.ToList())
                     {
                         if (f.Params.Contains(d) || !writes.TryGetValue(d, out WriteList all)) continue;
-                        bool joined = true;
+                        bool joined = true, fresh = false;
                         foreach (Instr w in all)
                         {
-                            if (w is { Op: Opcode.Copy, Operands: [RegOperand { Reg: var from }] }
-                                && (flow.Derived.Contains(from) && !flow.Borrowed.Contains(from)
-                                    || writes.TryGetValue(from, out WriteList fw) && fw.Count == 1 && fw[0] is { Op: Opcode.Call, Callee: Allocator or ObjectAllocator })) continue;
+                            if (w is not { Op: Opcode.Copy, Operands: [RegOperand { Reg: var from }] }) { joined = false; break; }
+                            if (flow.Derived.Contains(from) && !flow.Borrowed.Contains(from)) continue;
+                            if (writes.TryGetValue(from, out WriteList fw) && fw.Count == 1 && fw[0] is { Op: Opcode.Call, Callee: Allocator or ObjectAllocator }) { fresh = true; continue; }
                             joined = false;
                             break;
                         }
                         if (!joined) continue;
+                        if (fresh) flow.JoinedFresh = true;
                         pending.Remove(d);
                         if (flow.Derived.Add(d)) { Bears(d); resolved = true; changed = true; }
                     }
@@ -4457,22 +4501,17 @@ continue;
         // Whether a root may be handed to a call as a box: a block that owns
         // none of its fields, made here (StampedBox) or handed back by a call
         // that holds the object in it (boxes), and every root taken with it.
-        // Or, HOLDING A PARAMETER -- handed back (returnsHolder), or walked
-        // here (a parameter's own question) -- AN OBJECT OF A CLASS made
-        // here: a LINQ iterator written as a class (.NET's
-        // ArrayWhereIterator), as a yield machine is. Freeing it frees its
-        // owned fields only, and the fields it holds the parameter in are
-        // none: each is written here with the parameter, no object made for
-        // it, and a field owns what it holds only where every store into it
-        // anywhere is one (OwnedFields) -- so the block goes, and what it
-        // holds stays the caller's, as a box's does. Not for an object made
-        // here: stored into such a field, a fresh one may be what makes the
-        // field one that owns it.
+        // Or AN OBJECT OF A CLASS WHOSE FIELDS OWN NOTHING made here
+        // (ClassMadeHere): a LINQ iterator written as a class (.NET's
+        // ArrayWhereIterator), as a yield machine is. No store into it names
+        // a field, so no field of it is ever found to own what it holds:
+        // freeing it frees the block alone, and what it holds stays the
+        // caller's -- a parameter, or an object made here -- as a box's does.
         bool Acceptable(object root)
         {
             root = Canon(root);
             if (refusedRoots is not null && refusedRoots.Contains(root)) return false;
-            return root is VReg box && (boxes?.Contains(box) == true || StampedBox(f, box) || (returnsHolder || paramRoots) && ClassMadeHere(f, box));
+            return root is VReg box && (boxes?.Contains(box) == true || StampedBox(f, box) || ClassMadeHere(f, box));
         }
 
         // The methods a virtual call on a holder of known types reaches: each
@@ -4525,12 +4564,48 @@ continue;
                 || methodWrites[0] is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } slotLoad
                 || !writes.TryGetValue(table, out WriteList tableWrites) || tableWrites.Count != 1
                 || tableWrites[0] is not { Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var self }] }) return null;
-            (string Name, long Offset)? stamp = IsBase(receiver) && IsBase(self) ? exact : null;
+            (string Name, long Offset)? stamp = OfExactType(receiver) && OfExactType(self) ? exact : null;
             if (stamp is not { } known || !_stampItems.TryGetValue(known.Name, out DataItem? item)) return null;
             long at = known.Offset + slotLoad.Offset;
             foreach (DataReloc reloc in item.Relocs)
                 if (reloc.Offset == at && reloc.Addend == 0) return new[] { reloc.Symbol };
             return null;
+        }
+
+        // Whether `r` holds an object of the exact type (`exact`) or null and
+        // nothing else: the object itself (IsBase), or what a call hands back
+        // that is the object or a copy of its words of that one type
+        // (Copies: an iterator's GetEnumerator, made direct after the late
+        // inliner and not inlined), through copies. A virtual call on it
+        // reaches that type's method, whichever of the two it is.
+        bool OfExactType(VReg r)
+        {
+            if (IsBase(r)) return true;
+            if (exact is not { } kind) return false;
+            if (ofExact is null)
+            {
+                ofExact = new(bases!);
+                writes ??= AnalysisCache.WritesOf(f);
+                bool Same(Instr w) => w is { Op: Opcode.Call, Callee: { } callee } && w.Operands.Count > 0 && w.Operands[0] is RegOperand { Reg: var of }
+                    && ofExact.Contains(of) && Copies(callee) is { Length: > 0 } made && made.All(m => m.Descriptor == kind.Name && m.Base == kind.Offset);
+                for (bool grew = true; grew;)
+                {
+                    grew = false;
+                    foreach (Block bb in f.Blocks)
+                        foreach (Instr w in bb.Instrs)
+                        {
+                            if (w.Dest is not { } d || ofExact.Contains(d) || f.Params.Contains(d) || !writes.TryGetValue(d, out WriteList all)) continue;
+                            bool only = true;
+                            for (int k = 0; k < all.Count && only; k++)
+                                only = Same(all[k]) || all[k].Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && all[k].Operands.Count == 1
+                                    && (all[k].Operands[0] is ImmOperand { Value: 0 } || all[k].Operands[0] is RegOperand { Reg: var y } && ofExact.Contains(y));
+                            if (!only) continue;
+                            ofExact.Add(d);
+                            grew = true;
+                        }
+                }
+            }
+            return ofExact.Contains(r);
         }
 
         // Whether `r` holds the object itself or null and nothing else: a

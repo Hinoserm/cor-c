@@ -1,0 +1,130 @@
+// test: span_cast_asbytes_and_pointer_spans_as_dotnet
+// expect-exit: 0
+// expect-output:
+// asbytes 16 0100000004030201ffffffff00010000
+// written 9,16909060,-1,1792
+// misaligned 2 04030201 08070605
+// truncated 1
+// longs 2 00000700ffffffff
+// shorts 8 5
+// toarray 772,258
+// chars 41004200
+// pointer 0303040303030303 4
+// pointer ints 2 03040303
+// cleared 0000000000000000
+// createspan 42
+// struct 8 443322116655
+// asref 1
+// empty refs ok
+// refs ArgumentException
+// short ArgumentOutOfRangeException
+// negative ArgumentOutOfRangeException
+// up 1,2,1,2,3,4
+// down 1,2,3,4,3,4
+// refs up a,a,b,c
+// refs down a,b,c,c
+// fill a,y,z,c 2
+// clear a,null,null,c
+// list 1,20,3 14000000
+// tostring hi bc
+//
+// MemoryMarshal.Cast and AsBytes view one element type's memory as
+// another's -- misaligned, cut to whole elements, written through --
+// a span over a pointer and over a variable (CreateSpan), the empty
+// references .NET hands out without throwing, the refusals of types holding
+// references, of too few bytes and of a negative length, and CopyTo, Fill
+// and Clear of numbers and of references over themselves both ways. A span
+// is .NET's portable shape here (an object, a byte offset, a count), and
+// the indexer's element is an address: in the copy every reference type's
+// span shares, that `T*` is a number, never a boxed one (Lowering.Convert).
+// Checked against .NET 10 (the same program, AllowUnsafeBlocks).
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+struct Pair { public int A; public short B; }
+struct Holder { public object O; }
+
+static unsafe class P
+{
+    static string Hex(ReadOnlySpan<byte> b) { string s = ""; foreach (byte x in b) s += x.ToString("x2"); return s; }
+    static string Ints(ReadOnlySpan<int> s) { string r = ""; foreach (int x in s) r += (r.Length > 0 ? "," : "") + x; return r; }
+
+    static void Main()
+    {
+        int[] ints = { 1, 0x01020304, -1, 256 };
+        Span<byte> bytes = MemoryMarshal.AsBytes(ints.AsSpan());
+        Console.WriteLine("asbytes " + bytes.Length + " " + Hex(bytes));
+        bytes[0] = 9; bytes[13] = 7;
+        Console.WriteLine("written " + Ints(ints));
+
+        byte[] raw = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+        ReadOnlySpan<int> odd = MemoryMarshal.Cast<byte, int>(new ReadOnlySpan<byte>(raw).Slice(1));
+        Console.WriteLine("misaligned " + odd.Length + " " + odd[0].ToString("x8") + " " + odd[1].ToString("x8"));
+        Console.WriteLine("truncated " + MemoryMarshal.Cast<byte, int>(raw.AsSpan(0, 7)).Length);
+        Span<long> longs = MemoryMarshal.Cast<int, long>(ints.AsSpan());
+        Console.WriteLine("longs " + longs.Length + " " + longs[1].ToString("x16"));
+        Span<short> shorts = MemoryMarshal.Cast<long, short>(longs);
+        shorts[0] = 5;
+        Console.WriteLine("shorts " + shorts.Length + " " + ints[0]);
+        Console.WriteLine("toarray " + string.Join(",", MemoryMarshal.Cast<int, short>(ints.AsSpan(1, 1)).ToArray()));
+
+        ReadOnlySpan<byte> text = MemoryMarshal.AsBytes("AB".AsSpan());
+        Console.WriteLine("chars " + Hex(text));
+
+        byte* p = stackalloc byte[8];
+        Span<byte> native = new Span<byte>(p, 8);
+        native.Fill(3); native[2] = 4;
+        Console.WriteLine("pointer " + Hex(native) + " " + p[2]);
+        Span<int> nativeInts = MemoryMarshal.Cast<byte, int>(native);
+        Console.WriteLine("pointer ints " + nativeInts.Length + " " + nativeInts[0].ToString("x8"));
+        native.Clear();
+        Console.WriteLine("cleared " + Hex(native));
+
+        int local = 41;
+        Span<int> one = MemoryMarshal.CreateSpan(ref local, 1);
+        one[0]++;
+        Console.WriteLine("createspan " + local);
+        Pair pair = new Pair { A = 0x11223344, B = 0x5566 };
+        ReadOnlySpan<byte> pairBytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref pair, 1));
+        Console.WriteLine("struct " + pairBytes.Length + " " + Hex(pairBytes.Slice(0, 6)));
+        ref Pair over = ref MemoryMarshal.AsRef<Pair>(MemoryMarshal.AsBytes(MemoryMarshal.CreateSpan(ref pair, 1)));
+        over.B = 1;
+        Console.WriteLine("asref " + pair.B);
+
+        ref int empty = ref MemoryMarshal.GetReference(Span<int>.Empty);
+        ref int arrayZero = ref MemoryMarshal.GetArrayDataReference(new int[0]);
+        Console.WriteLine("empty refs ok");
+
+        try { MemoryMarshal.Cast<Holder, byte>(new Holder[1].AsSpan()); Console.WriteLine("no throw"); }
+        catch (ArgumentException e) { Console.WriteLine("refs " + e.GetType().Name); }
+        try { MemoryMarshal.AsRef<long>(new byte[4].AsSpan()); Console.WriteLine("no throw"); }
+        catch (ArgumentOutOfRangeException e) { Console.WriteLine("short " + e.GetType().Name); }
+        try { new Span<int>((void*)p, -1); Console.WriteLine("no throw"); }
+        catch (ArgumentOutOfRangeException e) { Console.WriteLine("negative " + e.GetType().Name); }
+
+        int[] move = { 1, 2, 3, 4, 5, 6 };
+        move.AsSpan(0, 4).CopyTo(move.AsSpan(2));
+        Console.WriteLine("up " + Ints(move));
+        move.AsSpan(2, 4).CopyTo(move.AsSpan(0));
+        Console.WriteLine("down " + Ints(move));
+        string[] names = { "a", "b", "c", "d" };
+        names.AsSpan(0, 3).CopyTo(names.AsSpan(1));
+        Console.WriteLine("refs up " + string.Join(",", names));
+        names.AsSpan(1).CopyTo(names);
+        Console.WriteLine("refs down " + string.Join(",", names));
+        Span<string> sn = names.AsSpan(1, 2);
+        sn.Fill("z"); sn[0] = "y";
+        Console.WriteLine("fill " + string.Join(",", names) + " " + sn.ToArray().Length);
+        sn.Clear();
+        Console.WriteLine("clear " + string.Join(",", names.Select2()));
+        List<int> list = new() { 1, 2, 3 };
+        Span<int> ls = CollectionsMarshal.AsSpan(list);
+        ls[1] = 20;
+        Console.WriteLine("list " + string.Join(",", list) + " " + Hex(MemoryMarshal.AsBytes(ls).Slice(4, 4)));
+        Console.WriteLine("tostring " + new Span<char>(new[] { 'h', 'i' }).ToString() + " " + "abc".AsSpan(1).ToString());
+    }
+
+    static IEnumerable<string> Select2(this string[] a) { foreach (string? s in a) yield return s ?? "null"; }
+}

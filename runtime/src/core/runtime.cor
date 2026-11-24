@@ -3779,7 +3779,7 @@ public static partial class Runtime
     public static void Print(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length == 0) return;
-        WriteBytes(StdOut, Sys.ArrayData(bytes.Items) + (nuint)bytes.Start, (nuint)bytes.Length);
+        WriteBytes(StdOut, bytes.Address, (nuint)bytes.Length);
     }
 
     public static void PrintLine()

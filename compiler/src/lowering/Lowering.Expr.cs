@@ -832,6 +832,13 @@ public sealed partial class Lowering
             return lifted;
         }
 
+        // A POINTER IS A NUMBER, whatever it points at (below): never boxed,
+        // unboxed or taken for a Type. A pointer to a shared copy's type
+        // parameter -- `(T*)address` in the one copy every reference type's
+        // instantiation shares -- has its pointee's Prim, Any, and was boxed
+        // as though it were a value made an object.
+        bool pointers = from.IsPointer || to.IsPointer;
+
         // AND A VALUE BECOMING A NULLABLE ONE GOES INTO A CELL, holding what
         // the cell is declared to hold: `long? x = anInt` converts the int to a
         // long first and then puts it there.
@@ -839,7 +846,7 @@ public sealed partial class Lowering
         // The checker marks most of these and Eval boxes them; this is the ones
         // a conversion reaches directly -- a switch expression's arm, converted
         // to the type the whole expression came out as, above all.
-        if (!from.IsNullableValue && to.IsNullableValue
+        if (!pointers && !from.IsNullableValue && to.IsNullableValue
             && from.Prim != Prim.NullLiteral && Boxable(from))
         {
             return Box(at, Convert(at, v, from, to.Underlying), to.Underlying);
@@ -849,13 +856,13 @@ public sealed partial class Lowering
         // runtime keeps (Runtime.TypeObject), and an object cast to Type the
         // type that object is (TypeOfObject): a Type itself is its
         // descriptor's address, which no virtual call can be made on.
-        if (from.Prim == Prim.Type && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface })
+        if (!pointers && from.Prim == Prim.Type && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface })
             && RuntimeMethod("TypeObject", 1) is MethodSymbol typeObject)
         {
             Require(typeObject);
             return _e.Call(CallLabel(typeObject), IrTypes.Word, R(v))!;
         }
-        if (to.Prim == Prim.Type && (from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface })
+        if (!pointers && to.Prim == Prim.Type && (from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface })
             && RuntimeMethod("TypeOfObject", 1) is MethodSymbol typeOfObject)
         {
             Require(typeOfObject);
@@ -865,14 +872,14 @@ public sealed partial class Lowering
         // BOXING AND UNBOXING. A value converted to object is copied onto the
         // heap behind an object header -- see Lowering.Box -- and a cast back
         // out checks the box is of exactly the type asked for.
-        if (to.Prim == Prim.Any && Boxable(from))
+        if (!pointers && to.Prim == Prim.Any && Boxable(from))
         {
             return BoxValue(at, v, from);
         }
         // A NULLABLE VALUE BOXED is its value boxed, or null when it has
         // none (C# 10.2.9): the cell itself is no object, and handed over
         // as one it was printed as though it were.
-        if (from.IsNullableValue && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true })
+        if (!pointers && from.IsNullableValue && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true })
             && Boxable(from.Underlying))
         {
             VReg boxed = _f.NewReg(IrTypes.Word, "nbox");
@@ -887,7 +894,7 @@ public sealed partial class Lowering
             _e.SetBlock(end);
             return boxed;
         }
-        if (from.Prim == Prim.Any && Boxable(to))
+        if (!pointers && from.Prim == Prim.Any && Boxable(to))
         {
             return Unbox(at, v, to);
         }
@@ -895,11 +902,11 @@ public sealed partial class Lowering
         // interface cast back to the struct an unboxing. So is any value to
         // System.ValueType, and an enum to System.Enum, the classes every
         // box derives from (BoxBases), and the cast back out of them.
-        if (to.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && Boxable(from))
+        if (!pointers && to.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && Boxable(from))
         {
             return BoxValue(at, v, from);
         }
-        if (from.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && Boxable(to))
+        if (!pointers && from.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && Boxable(to))
         {
             return Unbox(at, v, to);
         }
@@ -913,7 +920,7 @@ public sealed partial class Lowering
         // AN OBJECT INTO A NULLABLE VALUE (C# 10.3.7): null is one with no
         // value, anything else unboxed as T -- a box of another type refused
         // as any unboxing is -- and the value wrapped.
-        if ((from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true }) && to.IsNullableValue && Boxable(to.Underlying))
+        if (!pointers && (from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true }) && to.IsNullableValue && Boxable(to.Underlying))
         {
             VReg made = _f.NewReg(IrTypes.Word, "unbn");
             Block some = _f.NewBlock("unbnsome"), end = _f.NewBlock("unbnend");
@@ -928,7 +935,7 @@ public sealed partial class Lowering
 
         // NULL AS A NULLABLE VALUE is one with no value: all zero, as
         // default(T?) is, and not a null pointer.
-        if (from.Prim == Prim.NullLiteral && to.IsNullableValue)
+        if (!pointers && from.Prim == Prim.NullLiteral && to.IsNullableValue)
         {
             return NullableEmpty(at, to);
         }
@@ -936,12 +943,12 @@ public sealed partial class Lowering
         // A NULLABLE VALUE TO WHAT IT HOLDS is its Value (C# 10.3.4): what is
         // in the cell, and InvalidOperationException when there is none. Taken
         // as a word it handed over the cell's address as the value.
-        if (from.IsNullableValue && !to.IsNullableValue && to.Prim != Prim.Any && to.Symbol is not ({ Kind: TypeKind.Interface } or { IsBoxBase: true }))
+        if (!pointers && from.IsNullableValue && !to.IsNullableValue && to.Prim != Prim.Any && to.Symbol is not ({ Kind: TypeKind.Interface } or { IsBoxBase: true }))
         {
             return Convert(at, NullableValue(v, from.Underlying), from.Underlying, to);
         }
 
-        if (from.IsNullableValue || to.IsNullableValue)
+        if (!pointers && from.IsNullableValue || to.IsNullableValue)
         {
             return v;
         }
