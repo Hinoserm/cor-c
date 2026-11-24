@@ -221,18 +221,24 @@ public sealed partial class Lowering
             _pendingStatic = null;
             if (Monomorphiser.SharedMethodCopy(m.Name) == 0 && !Buffered(m) && !_b.PackedNatives.Contains(m))
             {
+                // Its type touched first, as a call of a static touches it.
                 VReg word = StaticWord(through.Entry, through.Place);
                 VReg? result = returns == IrType.Void ? null : _f.NewReg(returns, "staticcall");
+                // A NUMBER where the result is one, as CallMethod marks a
+                // direct call's (NeverAddress): on both ways and the join.
+                bool number = result is not null && !m.RefReturn && NeverAddress(m.Returns);
+                if (number) result!.Number = true;
                 Block via = _f.NewBlock("staticvia"), mine = _f.NewBlock("staticmine"), end = _f.NewBlock("staticend");
                 _e.Branch(word, via, mine);
                 _e.SetBlock(via);
-                _e.CallIndirect(R(_e.Load(IrTypes.Word, through.Entry, 0)), IrType.Void, Array.Empty<Operand>());
                 VReg? viaResult = _e.CallIndirect(R(word), returns, args.ToArray());
                 if (ByValueOperands(m, args.Count) is ulong viaByValue and not 0) _e.Block.Instrs[^1].PassedByValue = viaByValue;
+                if (number) _e.Block.Instrs[^1].Number = true;
                 if (result is not null) _e.CopyTo(result, R(viaResult!));
                 _e.Jump(end);
                 _e.SetBlock(mine);
                 VReg? ownResult = CallDirect(m, returns, args);
+                if (number) for (int k = _e.Block.Instrs.Count - 1; k >= 0; k--) if (_e.Block.Instrs[k].Dest == ownResult) { _e.Block.Instrs[k].Number = true; break; }
                 if (result is not null) _e.CopyTo(result, R(ownResult!));
                 _e.Jump(end);
                 _e.SetBlock(end);
@@ -718,8 +724,12 @@ public sealed partial class Lowering
         // code's type context or dictionary, read at the place of the
         // overload bound here.
         _pendingStatic = null;
+        // ITS PLACE AMONG THE TYPE'S AS THE CALL NAMES THE TYPE, its bases'
+        // statics by the name among them -- `Derived<T>.F(x)` reaching
+        // Base's F -- as the table of the named instantiation lists them.
         if ((call.StaticCallSlot >= 0 || call.StaticCallNeed >= 0) && target.Static
-            && StaticsByName(target.Owner, target.Name).IndexOf(target) is int place and >= 0
+            && (call.Target is MemberExpr { Target: var named } && _b.TypeOf(named).Symbol is { } namedType ? namedType : target.Owner) is { } listed
+            && StaticsByName(listed, target.Name).IndexOf(target) is int place and >= 0
             && StaticEntry(call.CanonSelf, call.StaticCallSlot, call.StaticCallNeed) is VReg entry)
             _pendingStatic = (target, entry, place);
     }

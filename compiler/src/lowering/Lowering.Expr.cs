@@ -1800,7 +1800,7 @@ public sealed partial class Lowering
                     // Another instantiation's static property, read from
                     // shared code (MemberExpr.StaticSlot): its getter from
                     // the entry, this one's where the entry holds none.
-                    PendStaticAccessor(m, pg.Getter, 0);
+                    PendStaticAccessor(m, pg.Getter, PropertyGetter);
                     return CallAccessor(pg.Getter, self: false, target: m.Target);
                 case PropertySetSym:
                     return Fail(m, $"the property '{m.Name}' cannot be read: it has no get accessor");
@@ -4836,7 +4836,7 @@ public sealed partial class Lowering
             List<Operand> getArgs = new();
             if (receiver is not null)
                 getArgs.Add(R(receiver));
-            PendStaticAccessor(a.Target, pg, 0);
+            PendStaticAccessor(a.Target, pg, PropertyGetter);
             VReg current = CallMethod(pg, receiver, getArgs, a.Target is MemberExpr { Target: BaseExpr })!;
             VReg result = declared is not null ? DeclaredOperator(a, declared, current, targetType)
                 : targetType.Prim == Prim.String && op == BinOp.Add
@@ -4846,7 +4846,7 @@ public sealed partial class Lowering
             if (receiver is not null)
                 setArgs.Add(R(receiver));
             setArgs.Add(R(result));
-            PendStaticAccessor(a.Target, ps, 1);
+            PendStaticAccessor(a.Target, ps, PropertySetter);
             CallMethod(ps, receiver, setArgs, a.Target is MemberExpr { Target: BaseExpr });
             return result;
         }
@@ -4963,7 +4963,7 @@ public sealed partial class Lowering
         if (receiver is not null)
             args.Add(R(receiver));
         args.Add(R(value));
-        PendStaticAccessor(a.Target, setter, 1);
+        PendStaticAccessor(a.Target, setter, PropertySetter);
         CallMethod(setter, receiver, args, a.Target is MemberExpr { Target: BaseExpr });
         return value;
     }

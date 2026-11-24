@@ -3017,7 +3017,7 @@ public sealed partial class Lowering
                     // A static property's: its accessors' table.
                     if (!CanonicalCopy(chain[d]) && made[k] is { Kind: TypeKind.Class or TypeKind.Struct } holder
                         && (holder.Fields.FirstOrDefault(x => x.Static && x.Name == staticFor["static:".Length..]) is FieldSymbol field
-                            ? StaticAccessor(field)
+                            ? StaticFieldTable(field)
                             : StaticProperty(holder, staticFor["static:".Length..])) is string accessor)
                         table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, accessor, 0));
                     continue;

@@ -127,30 +127,73 @@ public sealed partial class Lowering
         _e.Jump(on);
         _e.SetBlock(on);
     }
+
+    // ---- another instantiation's statics, from shared code -----------------
+    //
+    // A generic type with statics is copied per argument (Monomorphiser.
+    // HasStaticState), and code one copy of which serves every reference
+    // argument finds the instantiation it means at run time, as .NET's and
+    // Mono's shared code ask a generic dictionary for a type's statics: an
+    // entry of its type context, or of a shared method copy's dictionary
+    // (Monomorphiser.CanonStaticField, CanonStaticCall), which each
+    // instantiation fills with a table of its own (TypeContext). Every table
+    // begins with the same two words -- the type's ready word and the
+    // function that runs its initialiser (StaticTouch), 0 where it needs none
+    // -- so that a touch is two loads and a compare once the type is made, as
+    // TouchType's own is, and a call only the first time.
+
+    /// <summary>The words every statics table begins with (StaticHeader): the ready word's address, then the touch.</summary>
+    private const int StaticHeaderWords = 2;
+
     /// <summary>
-    /// WHERE AN INSTANTIATION'S STATIC FIELD IS, AS A FUNCTION SHARED CODE CAN
-    /// CALL (MemberExpr.StaticSlot): its type touched, as any read of a static
-    /// touches it, then the field's address. What a shared copy's type context
-    /// holds for a static of a generic type copied per argument over its
-    /// parameters (TypeContext, "static:Name"), and what the copy calls for
-    /// its own where the context holds none. Null for a field no address
-    /// stands for: one per thread, a struct held in the static's own bytes,
-    /// a struct made the first time it is touched.
+    /// A type's ready word and its touch (StaticTouch) for a table's head:
+    /// both 0 for a type with no initialiser, or one the kernel's link made
+    /// (TouchType's own cases).
     /// </summary>
-    private string? StaticAccessor(FieldSymbol f)
+    private void StaticHeader(DataItem table, TypeSymbol holder)
     {
-        FieldSymbol store = SharedStatic(f);
-        if (!store.Static || store.ThreadStatic || StaticHeldInline(store) || !store.Boxed && !store.Initialised && IsStructValue(store.Type))
+        MethodSymbol? start = holder.FindMethods("StaticInit$").FirstOrDefault(m => m.Static && m.Params.Count == 0);
+        FieldSymbol? ready = holder.FindField(BindResult.ReadyField) is { Static: true } readyField && ReferenceEquals(readyField.Owner, holder) ? readyField : null;
+        if (start is null || ready is null)
         {
-            return null;
+            return;
         }
-        string label = "__static_at$" + StaticSymbol(store);
+        ready = SharedStatic(ready);
+        if (KernelInitialised is { } initialised && initialised.Contains(StaticSymbol(ready)))
+        {
+            return;
+        }
+        _statics.Add(ready);
+        table.Relocs.Add(new DataReloc(0, StaticSymbol(ready), 0));
+        table.Relocs.Add(new DataReloc(_t.WordSize, StaticTouch(holder), 0));
+    }
+
+    /// <summary>
+    /// A FUNCTION THAT TOUCHES A TYPE (TouchType), for shared code reaching a
+    /// static of an instantiation it names only through a table: a read of a
+    /// static or a call of one touches its type, and the type's own code does
+    /// not touch it again -- reached through a word, `_default` in
+    /// EqualityComparer of a sealed class was read before its initialiser ran.
+    /// </summary>
+    private string StaticTouch(TypeSymbol holder)
+    {
+        string label = "__static_touch$" + TypeKey(holder);
         if (!_structHelpers.Add(label))
         {
             return label;
         }
-        _statics.Add(store);
-        Function made = new(label, IrTypes.Word) { Coalescible = true, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner) };
+        Function made = new(label, IrType.Void) { Coalescible = true, FromLibrary = IsLibrary(holder), SystemCode = SystemCode(holder) };
+        InFunction(made, () =>
+        {
+            TouchType(holder, fromOutside: true);
+            _e.Ret(null);
+        });
+        return label;
+    }
+
+    /// <summary>Lowers `body` into a function of its own, the one being lowered left as it was.</summary>
+    private void InFunction(Function made, Action body)
+    {
         Function outerF = _f;
         Builder outerE = _e;
         MethodSymbol? outerMethod = _method;
@@ -159,8 +202,7 @@ public sealed partial class Lowering
             _f = made;
             _e = new Builder(made, made.NewBlock("entry"));
             _method = null;
-            TouchType(f.Owner, fromOutside: true);
-            _e.Ret(R(_e.Address(StaticSymbol(store))));
+            body();
         }
         finally
         {
@@ -169,22 +211,56 @@ public sealed partial class Lowering
             _method = outerMethod;
         }
         _m.Functions.Add(made);
+    }
+
+    /// <summary>
+    /// AN INSTANTIATION'S STATIC FIELD'S TABLE ("static:Name"): its head
+    /// (StaticHeader), the field's address, and for one per thread
+    /// ([ThreadStatic]), whose address is each thread's, the function that
+    /// answers this thread's cell instead.
+    /// </summary>
+    private string StaticFieldTable(FieldSymbol f)
+    {
+        FieldSymbol store = SharedStatic(f);
+        string label = "__static_of$" + StaticSymbol(store);
+        if (!_structHelpers.Add(label))
+        {
+            return label;
+        }
+        int w = _t.WordSize;
+        DataItem table = new(label, new byte[(StaticHeaderWords + 2) * w]) { ReadOnly = true, Exported = false, Align = w };
+        StaticHeader(table, f.Owner);
+        _statics.Add(store);
+        if (store.ThreadStatic)
+        {
+            string cell = "__static_cell$" + StaticSymbol(store);
+            if (_structHelpers.Add(cell))
+            {
+                Function made = new(cell, IrTypes.Word) { Coalescible = true, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner) };
+                InFunction(made, () => _e.Ret(R(ThreadStaticCell(store, f.Owner.Decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }))));
+            }
+            table.Relocs.Add(new DataReloc((StaticHeaderWords + 1) * w, cell, 0));
+        }
+        else
+        {
+            table.Relocs.Add(new DataReloc(StaticHeaderWords * w, StaticSymbol(store), 0));
+        }
+        _m.Data.Add(table);
         return label;
     }
+
     /// <summary>
-    /// A STATIC PROPERTY'S ACCESSORS as shared code may call them through an
-    /// entry (MemberExpr.StaticSlot), in a table as a method's are
-    /// (StaticOverloads): its type's touch, then the getter and the setter,
-    /// 0 for one it has not or one handed anything hidden
-    /// (CallableThroughEntry), then an auto property's backing field's
-    /// accessor (StaticAccessor), which the binder reads in the property's
+    /// A STATIC PROPERTY'S TABLE ("static:Name"): its head, its getter and
+    /// its setter -- 0 for one it has not, or one handed anything hidden
+    /// (CallableThroughEntry) -- and an auto property's backing field's
+    /// table (StaticFieldTable), which the binder reads in the property's
     /// place where it may (Binder.BackingReads). Null where it has none.
     /// </summary>
     private string? StaticProperty(TypeSymbol holder, string name)
     {
         MethodSymbol? getter = holder.FindMethods("get_", name).FirstOrDefault(x => x.Static && x.Params.Count == 0 && CallableThroughEntry(x));
         MethodSymbol? setter = holder.FindMethods("set_", name).FirstOrDefault(x => x.Static && x.Params.Count == 1 && CallableThroughEntry(x));
-        string? backing = holder.FindBackingField(name) is { Static: true } field ? StaticAccessor(field) : null;
+        FieldSymbol? backing = holder.FindBackingField(name) is { Static: true } field ? field : null;
         if (getter is null && setter is null && backing is null)
         {
             return null;
@@ -195,71 +271,25 @@ public sealed partial class Lowering
             return label;
         }
         int w = _t.WordSize;
-        DataItem table = new(label, new byte[4 * w]) { ReadOnly = true, Exported = false, Align = w };
-        if (backing is not null) table.Relocs.Add(new DataReloc(3 * w, backing, 0));
-        table.Relocs.Add(new DataReloc(0, StaticTouch(holder), 0));
+        DataItem table = new(label, new byte[(StaticHeaderWords + 3) * w]) { ReadOnly = true, Exported = false, Align = w };
+        StaticHeader(table, holder);
         if (getter is not null)
         {
             Require(getter);
-            table.Relocs.Add(new DataReloc(w, CallLabel(getter), 0));
+            table.Relocs.Add(new DataReloc(StaticHeaderWords * w, CallLabel(getter), 0));
         }
         if (setter is not null)
         {
             Require(setter);
-            table.Relocs.Add(new DataReloc(2 * w, CallLabel(setter), 0));
+            table.Relocs.Add(new DataReloc((StaticHeaderWords + 1) * w, CallLabel(setter), 0));
         }
+        if (backing is not null) table.Relocs.Add(new DataReloc((StaticHeaderWords + 2) * w, StaticFieldTable(backing), 0));
         _m.Data.Add(table);
         return label;
     }
 
-    /// <summary>
-    /// A static property's accessor called from shared code over another
-    /// instantiation (MemberExpr.StaticSlot): read from the entry's table at
-    /// `place` -- 0 the getter, 1 the setter (StaticProperty) -- by the next
-    /// call of it (CallDirect).
-    /// </summary>
-    private void PendStaticAccessor(Expr target, MethodSymbol accessor, int place)
-    {
-        if (accessor.Static && target is MemberExpr { } m && (m.StaticSlot >= 0 || m.StaticNeed >= 0)
-            && StaticEntry(m.StaticSelf, m.StaticSlot, m.StaticNeed) is VReg entry)
-            _pendingStatic = (accessor, entry, place);
-    }
-
-    /// <summary>
-    /// A FUNCTION THAT TOUCHES A TYPE (TouchType), for shared code calling a
-    /// static of an instantiation it names only through an entry: a call of
-    /// a static touches the type, and the type's own code does not touch it
-    /// again -- reached through a word, `_default` in EqualityComparer of a
-    /// sealed class was read before its initialiser ran.
-    /// </summary>
-    private string StaticTouch(TypeSymbol holder)
-    {
-        string label = "__static_touch$" + TypeKey(holder);
-        if (!_structHelpers.Add(label))
-        {
-            return label;
-        }
-        Function made = new(label, IrType.Void) { Coalescible = true, FromLibrary = IsLibrary(holder), SystemCode = SystemCode(holder) };
-        Function outerF = _f;
-        Builder outerE = _e;
-        MethodSymbol? outerMethod = _method;
-        try
-        {
-            _f = made;
-            _e = new Builder(made, made.NewBlock("entry"));
-            _method = null;
-            TouchType(holder, fromOutside: true);
-            _e.Ret(null);
-        }
-        finally
-        {
-            _f = outerF;
-            _e = outerE;
-            _method = outerMethod;
-        }
-        _m.Functions.Add(made);
-        return label;
-    }
+    /// <summary>A static property's table's word for its getter (0), its setter (1) and its backing field's table (2), after the head.</summary>
+    private const int PropertyGetter = 0, PropertySetter = 1, PropertyBacking = 2;
 
     /// <summary>
     /// Whether a static method is called with its declared arguments only
@@ -273,25 +303,64 @@ public sealed partial class Lowering
         && Monomorphiser.SharedMethodCopy(m.Name) == 0 && !_b.PackedNatives.Contains(m);
 
     /// <summary>
-    /// A class's static, non-generic methods by a name, in the order their
-    /// declarations stand in the source -- the same in every instantiation
-    /// of a template, whatever order binding asked for them in.
+    /// A STATIC OF A CLASS SHARING ITS CODE, reached through a derived type
+    /// copied per argument (`Derived<T>.Who(x)`, Who Base<T>'s): a function
+    /// taking the declared arguments that hands the canonical copy's body
+    /// this instantiation's context (ContextStatic), as a call naming it
+    /// directly does (CallDirect). Null for one handed more than that -- a
+    /// result buffer, a struct's context, a struct by value, type arguments.
+    /// </summary>
+    private string? ContextThunk(MethodSymbol m)
+    {
+        MethodSymbol canonical = Canonical(m);
+        if (!m.Static || !ContextStatic(canonical) || StructContext(canonical) || Buffered(m) || Monomorphiser.SharedMethodCopy(m.Name) > 0
+            || m.Owner.Decl?.Canon is null || _b.PackedNatives.Contains(m) || m.Params.Any(p => !p.ByRef && HomedStruct(p.Type)))
+        {
+            return null;
+        }
+        string label = "__static_thunk$" + TypeKey(m.Owner) + "$" + CallLabel(m);
+        if (!_structHelpers.Add(label))
+        {
+            return label;
+        }
+        Require(m);
+        IrType returns = ReturnIr(m);
+        Function made = new(label, returns) { Coalescible = true, FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner) };
+        InFunction(made, () =>
+        {
+            List<Operand> args = new() { R(_e.Address(ContextToken(m.Owner))) };
+            foreach (ParamSymbol p in m.Params)
+            {
+                VReg given = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
+                _f.Params.Add(given);
+                args.Add(R(given));
+            }
+            VReg? answered = _e.Call(BodyLabel(canonical), returns, args.ToArray());
+            _e.Ret(answered is null ? null : R(answered));
+        });
+        return label;
+    }
+
+    /// <summary>
+    /// A class's static, non-generic methods by a name, its bases' among them
+    /// (FindMethods), in the order of the template each is declared in and
+    /// its place there -- the same in every instantiation, whatever order
+    /// binding asked for them in.
     /// </summary>
     private static List<MethodSymbol> StaticsByName(TypeSymbol holder, string name)
         => holder.FindMethods(name).Where(x => x.Static && x.Decl is MethodDecl { TypeParams.Count: 0 })
-            .OrderBy(x => x.Decl!.Line).ThenBy(x => x.Decl!.Col).ToList();
+            .OrderBy(x => x.Owner.Decl?.Template ?? x.Owner.Name, StringComparer.Ordinal).ThenBy(x => x.Decl!.Line).ThenBy(x => x.Decl!.Col).ToList();
 
     /// <summary>
-    /// AN INSTANTIATION'S TABLE OF ITS STATIC METHODS BY A NAME (CallExpr.
-    /// StaticCallSlot): the type's touch (StaticTouch), then a word for each,
-    /// in declaration order (StaticsByName), the function, or 0 for one
-    /// shared code cannot call through a word (CallableThroughEntry). The
-    /// call touches the type and takes the word at its overload's place.
+    /// AN INSTANTIATION'S TABLE OF ITS STATIC METHODS BY A NAME ("call:Name"):
+    /// its head, then a word for each (StaticsByName), the function, or 0 for
+    /// one shared code cannot call through a word (CallableThroughEntry).
     /// </summary>
     private string? StaticOverloads(TypeSymbol holder, string name)
     {
         List<MethodSymbol> all = StaticsByName(holder, name);
-        if (!all.Any(CallableThroughEntry))
+        List<string?> words = all.Select(m => CallableThroughEntry(m) ? CallLabel(m) : ContextThunk(m)).ToList();
+        if (words.All(x => x is null))
         {
             return null;
         }
@@ -301,13 +370,13 @@ public sealed partial class Lowering
             return label;
         }
         int w = _t.WordSize;
-        DataItem table = new(label, new byte[(1 + all.Count) * w]) { ReadOnly = true, Exported = false, Align = w };
-        table.Relocs.Add(new DataReloc(0, StaticTouch(holder), 0));
+        DataItem table = new(label, new byte[(StaticHeaderWords + all.Count) * w]) { ReadOnly = true, Exported = false, Align = w };
+        StaticHeader(table, holder);
         for (int i = 0; i < all.Count; i++)
         {
-            if (!CallableThroughEntry(all[i])) continue;
+            if (words[i] is not string word) continue;
             Require(all[i]);
-            table.Relocs.Add(new DataReloc((1 + i) * w, CallLabel(all[i]), 0));
+            table.Relocs.Add(new DataReloc((StaticHeaderWords + i) * w, word, 0));
         }
         _m.Data.Add(table);
         return label;
@@ -317,7 +386,7 @@ public sealed partial class Lowering
     /// The entry shared code reads for another instantiation's static
     /// (MemberExpr.StaticSlot, CallExpr.StaticCallSlot): from its type
     /// context through `self`, or from its dictionary; null where it has
-    /// neither.
+    /// neither. 0 at run time where the entry holds no table.
     /// </summary>
     private VReg? StaticEntry(Expr? self, int slot, int need)
         => slot >= 0
@@ -328,18 +397,114 @@ public sealed partial class Lowering
     private (MethodSymbol Method, VReg Entry, int Place)? _pendingStatic;
 
     /// <summary>
-    /// The function an entry gives a call (StaticEntry): the word at `place`
-    /// of the table it names, after the type's touch -- 0 where there is no
-    /// entry or no word.
+    /// A table's touch (StaticHeader), where the table is not 0: its type's
+    /// initialiser run unless its ready word says it has.
     /// </summary>
-    private VReg StaticWord(VReg entry, int place)
+    private void StaticTableTouch(VReg table)
     {
+        int w = _t.WordSize;
+        Block has = _f.NewBlock("statichas"), check = _f.NewBlock("staticcheck"), run = _f.NewBlock("staticrun"), done = _f.NewBlock("statictouched");
+        _e.Branch(table, has, done);
+        _e.SetBlock(has);
+        VReg touch = _e.Load(IrTypes.Word, table, w);
+        _e.Branch(touch, check, done);
+        _e.SetBlock(check);
+        VReg ready = _e.Load(IrTypes.Word, table, 0);
+        VReg state = _e.Load(IrTypes.Word, ready, 0, _t.WordSize, false);
+        _e.Emit(Opcode.CompilerFence, null);
+        _e.Branch(_e.Binary(Opcode.Eq, state, 1), done, run);
+        _e.SetBlock(run);
+        _e.CallIndirect(R(touch), IrType.Void, Array.Empty<Operand>());
+        _e.Jump(done);
+        _e.SetBlock(done);
+    }
+
+    /// <summary>
+    /// The word at `place` after a table's head (StaticHeader), its type
+    /// touched first -- 0 where there is no table or no word.
+    /// </summary>
+    private VReg StaticWord(VReg table, int place)
+    {
+        StaticTableTouch(table);
         VReg result = _f.NewReg(IrTypes.Word, "staticword");
         Block read = _f.NewBlock("staticread"), end = _f.NewBlock("staticend");
         _e.CopyTo(result, Imm(0, IrTypes.Word));
-        _e.Branch(entry, read, end);
+        _e.Branch(table, read, end);
         _e.SetBlock(read);
-        _e.CopyTo(result, R(_e.Load(IrTypes.Word, entry, (long)(1 + place) * _t.WordSize)));
+        _e.CopyTo(result, R(_e.Load(IrTypes.Word, table, (long)(StaticHeaderWords + place) * _t.WordSize)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>A word of a table, read only where the table is not 0 (else 0), with no touch.</summary>
+    private VReg TableWord(VReg table, int place)
+    {
+        VReg result = _f.NewReg(IrTypes.Word, "tableword");
+        Block read = _f.NewBlock("tableread"), end = _f.NewBlock("tableend");
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.Branch(table, read, end);
+        _e.SetBlock(read);
+        _e.CopyTo(result, R(_e.Load(IrTypes.Word, table, (long)(StaticHeaderWords + place) * _t.WordSize)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>
+    /// A static property's accessor called from shared code over another
+    /// instantiation (MemberExpr.StaticSlot): read from the entry's table at
+    /// `place` -- PropertyGetter or PropertySetter (StaticProperty) -- by the
+    /// next call of it (CallDirect).
+    /// </summary>
+    private void PendStaticAccessor(Expr target, MethodSymbol accessor, int place)
+    {
+        if (accessor.Static && target is MemberExpr { } m && (m.StaticSlot >= 0 || m.StaticNeed >= 0)
+            && StaticEntry(m.StaticSelf, m.StaticSlot, m.StaticNeed) is VReg entry)
+            _pendingStatic = (accessor, entry, place);
+    }
+
+    /// <summary>
+    /// WHERE ANOTHER INSTANTIATION'S STATIC FIELD IS, read from shared code
+    /// (MemberExpr.StaticSlot): its table's address -- or this thread's cell
+    /// of one per thread -- its type touched; where the entry holds none, the
+    /// field this code names, touched as any static's read touches it. Null
+    /// where the read has no entry at all.
+    /// </summary>
+    private VReg? OtherStaticAddress(FieldSymbol f, FieldSymbol store, MemberExpr read, Node at)
+    {
+        if (StaticEntry(read.StaticSelf, read.StaticSlot, read.StaticNeed) is not VReg entry)
+        {
+            return null;
+        }
+        // An auto property's backing field read in its place: the field's
+        // table its property's table holds (StaticProperty).
+        VReg table = read.Name != f.Name ? TableWord(entry, PropertyBacking) : entry;
+        StaticTableTouch(table);
+        VReg found;
+        if (store.ThreadStatic)
+        {
+            VReg cellOf = TableWord(table, 1);
+            found = _f.NewReg(IrTypes.Word, "staticcell");
+            Block call = _f.NewBlock("staticcellcall"), called = _f.NewBlock("staticcelldone");
+            _e.CopyTo(found, Imm(0, IrTypes.Word));
+            _e.Branch(cellOf, call, called);
+            _e.SetBlock(call);
+            _e.CopyTo(found, R(_e.CallIndirect(R(cellOf), IrTypes.Word, Array.Empty<Operand>())!));
+            _e.Jump(called);
+            _e.SetBlock(called);
+        }
+        else
+        {
+            found = TableWord(table, 0);
+        }
+        VReg result = _f.NewReg(IrTypes.Word, "staticat");
+        Block own = _f.NewBlock("staticownat"), end = _f.NewBlock("staticatend");
+        _e.CopyTo(result, R(found));
+        _e.Branch(found, end, own);
+        _e.SetBlock(own);
+        TouchType(f.Owner);
+        _e.CopyTo(result, R(store.ThreadStatic ? ThreadStaticCell(store, at) : _e.Address(StaticSymbol(store))));
         _e.Jump(end);
         _e.SetBlock(end);
         return result;

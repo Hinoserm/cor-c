@@ -1,0 +1,57 @@
+// test: generic_statics_from_shared_code_inherited_per_thread_and_structs
+// expect-exit: 0
+// expect-output:
+// base Cond/derived int | base String/derived int
+// handler Cond handler String handler Cond
+// 5 10 5 10
+// 27 47 27 4
+// Cond2 String2 2
+// 1
+//
+// MORE OF ANOTHER INSTANTIATION'S STATICS FROM SHARED CODE (2730): a static
+// inherited from a base that shares its code, called through the derived
+// type's name, overloaded beside the derived type's own (placed by the
+// named type, and handed the base instantiation's context); a delegate
+// field invoked directly; a [ThreadStatic] field (this thread's cell of the
+// instantiation's); a struct of numbers held in the static's own bytes, a
+// struct with a reference made by the initialiser, written a field at a
+// time; a static event added to from shared code. Checked against .NET 10.
+
+using System;
+sealed class Cond { }
+struct Pair { public int A, B; }
+struct Named { public string S; public int N; }
+class Base<T> {
+    public static string Who(T x) => "base " + typeof(T).Name;
+}
+class Derived<T> : Base<T> {
+    public static string Who(int n) => "derived int";
+    public static Func<string>? Handler;
+    [ThreadStatic] public static int PerThread;
+    public static Pair Numbers;
+    public static Named Label = new Named { S = typeof(T).Name, N = 1 };
+    public static event Action? Changed;
+    public static void Raise() { Changed?.Invoke(); }
+}
+class G<T> {
+    public string Call(T x) => Derived<T>.Who(x) + "/" + Derived<T>.Who(3);
+    public void SetHandler() { Derived<T>.Handler = () => "handler " + typeof(T).Name; }
+    public string RunHandler() => Derived<T>.Handler!();
+    public int Bump() { Derived<T>.PerThread += 5; return Derived<T>.PerThread; }
+    public int Pairs() { Derived<T>.Numbers.A += 2; Derived<T>.Numbers.B = 7; return Derived<T>.Numbers.A * 10 + Derived<T>.Numbers.B; }
+    public string Lab() { Derived<T>.Label.N++; return Derived<T>.Label.S + Derived<T>.Label.N; }
+    public void Hook(Action a) { Derived<T>.Changed += a; }
+}
+static class P {
+    static void Main() {
+        G<Cond> g = new(); G<string> h = new();
+        Console.WriteLine(g.Call(new Cond()) + " | " + h.Call("s"));
+        g.SetHandler(); h.SetHandler();
+        Console.WriteLine(g.RunHandler() + " " + h.RunHandler() + " " + Derived<Cond>.Handler!());
+        Console.WriteLine(g.Bump() + " " + g.Bump() + " " + h.Bump() + " " + Derived<Cond>.PerThread);
+        Console.WriteLine(g.Pairs() + " " + g.Pairs() + " " + h.Pairs() + " " + Derived<Cond>.Numbers.A);
+        Console.WriteLine(g.Lab() + " " + h.Lab() + " " + Derived<Cond>.Label.N);
+        int fired = 0; g.Hook(() => fired += 1); h.Hook(() => fired += 100);
+        Derived<Cond>.Raise(); Console.WriteLine(fired);
+    }
+}

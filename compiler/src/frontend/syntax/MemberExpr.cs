@@ -65,8 +65,8 @@ public sealed class MemberExpr : Expr
     /// shared class's copy, or in a shared method copy called with its T
     /// (Monomorphiser.CanonStaticField): each instantiation has its own, and
     /// the copy over object's is not the caller's. The entry of the shared
-    /// class's type context that holds the address of the function answering
-    /// where that instantiation's field is (Lowering.StaticAccessor), or -1.
+    /// class's type context that holds that instantiation's table for the
+    /// field or property (Lowering.StaticFieldTable, StaticProperty), or -1.
     /// </summary>
     public int StaticSlot { get; set; } = -1;
     /// <summary>The `this` or context the entry is read through (StaticSlot).</summary>

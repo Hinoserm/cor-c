@@ -1256,7 +1256,11 @@ public sealed partial class Lowering
     /// the bytes there ARE the struct, so its value is their address and a
     /// store copies bytes in.
     /// </summary>
-    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false, VReg? CovariantArray = null, FieldSymbol? Field = null) : Place(Type);
+    private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false, VReg? CovariantArray = null, FieldSymbol? Field = null) : Place(Type)
+    {
+        /// <summary>Its loads and stores name no field (Instr.Field): another instantiation's static, reached through a table (OtherStaticAddress).</summary>
+        public bool Untagged { get; init; }
+    }
 
     /// <summary>
     /// A field's name as the IR carries it on the loads and stores of it
@@ -1366,8 +1370,8 @@ public sealed partial class Lowering
             {
                 IrType it = IrTypes.Of(m.Type);
                 VReg v = _e.Load(it, m.Address, m.Offset, LoadSize(m.Type), !m.Type.IsUnsigned && m.Type.Prim != Prim.Bool);
-                if (m.Field is FieldSymbol read && TagsField(read)) _e.Block.Instrs[^1].Field = FieldKey(read);
-                if (m.Field is FieldSymbol readFamily && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(readFamily, m.Offset);
+                if (m.Field is FieldSymbol read && !m.Untagged && TagsField(read)) _e.Block.Instrs[^1].Field = FieldKey(read);
+                if (m.Field is FieldSymbol readFamily && !m.Untagged && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(readFamily, m.Offset);
                 if (NeverAddress(m.Type)) _e.Block.Instrs[^1].Number = true;
                 // A VOLATILE READ IS AN ACQUIRE, and a volatile write a release
                 // (ECMA-335 I.12.6.7), which x86's ordering gives every load
@@ -1384,7 +1388,7 @@ public sealed partial class Lowering
                     _e.Emit(Opcode.CompilerFence, null);
                 }
                 // A readonly static table's value: its length known (BoundsCheck).
-                if (m.Field is FieldSymbol { Static: true } table && TableLength(table) is int tableLength) _knownLengths[v] = tableLength;
+                if (m.Field is FieldSymbol { Static: true } table && !m.Untagged && TableLength(table) is int tableLength) _knownLengths[v] = tableLength;
                 return v;
             }
             default:
@@ -1527,8 +1531,8 @@ public sealed partial class Lowering
                 ReferenceBarrier(m, value);
                 CardMarkAhead(m, value);
                 _e.Store(m.Address, RegOperand.Of(value), m.Offset, LoadSize(m.Type));
-                if (m.Field is FieldSymbol written && TagsField(written)) _e.Block.Instrs[^1].Field = FieldKey(written);
-                if (m.Field is FieldSymbol writtenFamily && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(writtenFamily, m.Offset);
+                if (m.Field is FieldSymbol written && !m.Untagged && TagsField(written)) _e.Block.Instrs[^1].Field = FieldKey(written);
+                if (m.Field is FieldSymbol writtenFamily && !m.Untagged && m.Address is RegOperand) _e.Block.Instrs[^1].Family = FieldFamily(writtenFamily, m.Offset);
                 CardMark(m, value);
                 break;
         }
@@ -2168,36 +2172,32 @@ public sealed partial class Lowering
     {
         if (f.Static)
         {
+            FieldSymbol store = SharedStatic(f);
             // ANOTHER INSTANTIATION'S, READ FROM SHARED CODE (MemberExpr.StaticSlot):
-            // the function this code's type context or dictionary holds for
-            // it, which touches that type and answers where its field is; the
-            // field named here where neither holds one.
-            if (at is MemberExpr { StaticSlot: >= 0 } or MemberExpr { StaticNeed: >= 0 } && StaticAccessor(f) is string own
-                && StaticEntry(((MemberExpr)at).StaticSelf, ((MemberExpr)at).StaticSlot, ((MemberExpr)at).StaticNeed) is VReg entry)
-            {
-                // An auto property's backing field read in its place: the
-                // accessor its property's table holds (StaticProperty).
-                if (((MemberExpr)at).Name != f.Name) entry = StaticWord(entry, 2);
-                VReg accessor = EntryOr(entry, own);
-                VReg where = _e.CallIndirect(R(accessor), IrTypes.Word, Array.Empty<Operand>())!;
-                return new MemPlace(RegOperand.Of(where), 0, f.Type, f.Volatile);
-            }
+            // where its field is, from the table this code's type context or
+            // dictionary holds for it, its type touched (OtherStaticAddress).
+            VReg? other = at is MemberExpr { StaticSlot: >= 0 } or MemberExpr { StaticNeed: >= 0 } ? OtherStaticAddress(f, store, (MemberExpr)at, at) : null;
             // READING OR WRITING A STATIC TOUCHES THE TYPE, which is one of
             // the three things C# says runs its initialisers.
-            TouchType(f.Owner);
-            FieldSymbol store = SharedStatic(f);
+            if (other is null) TouchType(f.Owner);
             _statics.Add(store);
             // [ThreadStatic]: this thread's cell for the field, made the first
             // time this thread touches it. No field tag: the cell is no static's
             // storage, and nothing shares it with another thread.
-            VReg? cell = store.ThreadStatic ? ThreadStaticCell(store, at) : null;
+            VReg? cell = other ?? (store.ThreadStatic ? ThreadStaticCell(store, at) : null);
             // A STRUCT OF NUMBERS IS ITS STATIC'S OWN BYTES (StaticHeldInline):
             // no block made the first time anything touches it, no test of
             // the word for null, no compare-and-swap -- and nothing the heap
             // must be there for, which a kernel's first writes to its statics
-            // are not.
-            bool inLine = cell is null && StaticHeldInline(store);
-            MemPlace place = cell is not null
+            // are not. Another instantiation's too, at its address.
+            bool another = other is not null && !store.ThreadStatic;
+            bool inLine = (cell is null || another) && StaticHeldInline(store);
+            // Another instantiation's carries the field for what a struct held
+            // by pointer is written by (StorePlace) but names no field to the
+            // analyses (Untagged): its storage is not the one this code names.
+            MemPlace place = another
+                ? new MemPlace(RegOperand.Of(cell!), 0, f.Type, f.Volatile, Inline: inLine, Field: store) { Untagged = true }
+                : cell is not null
                 ? new MemPlace(RegOperand.Of(cell), 0, f.Type, f.Volatile)
                 : new MemPlace(new SymOperand(StaticSymbol(store)), 0, f.Type, f.Volatile, Inline: inLine, Field: store);
 

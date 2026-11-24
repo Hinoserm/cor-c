@@ -1683,10 +1683,13 @@ public sealed class Monomorphiser
     /// time instead, as .NET's shared code asks its generic dictionary for a
     /// type's statics: an entry of this copy's type context, or of the shared
     /// method copy's dictionary, marked "static:Name", which each
-    /// instantiation fills with the function answering where its own field
-    /// is (Lowering.StaticAccessor).
+    /// instantiation fills with its table for the field or the property --
+    /// its ready word and touch, then its address or its accessors
+    /// (Lowering.StaticFieldTable, StaticProperty). Read as a call's target
+    /// too, where the template shows a field or a property by the name: a
+    /// delegate field invoked directly.
     /// </summary>
-    private void CanonStaticField(MemberExpr made, MemberExpr source)
+    private void CanonStaticField(MemberExpr made, MemberExpr source, bool called)
     {
         if (source.StaticSlot >= 0)
         {
@@ -1714,7 +1717,7 @@ public sealed class Monomorphiser
             ? template.Kind is not (TypeKind.Class or TypeKind.Struct)
               || !template.Members.Any(x => x is FieldDecl f && f.Name == source.Name && f.Mods.HasFlag(Mods.Static) && !f.Mods.HasFlag(Mods.Const)
                   || x is PropertyDecl p && p.Name == source.Name && p.Mods.HasFlag(Mods.Static))
-            : !inCopy)
+            : !inCopy || called)
             return;
         TypeRef written = new() { Name = named.Name, Arguments = named.TypeArgs.ToList(), Line = named.Line, Col = named.Col, MadeFor = "static:" + source.Name };
         if (inCopy)
@@ -4194,7 +4197,7 @@ public sealed class Monomorphiser
                     Line = m.Line, Col = m.Col,
                 };
                 if (m.TypeArgs.Count > 0) SubInto(made.WritableTypeArgs, m.TypeArgs, map);
-                if (!ReferenceEquals(m, _callTarget)) CanonStaticField(made, m);
+                CanonStaticField(made, m, called: ReferenceEquals(m, _callTarget));
                 return made;
             }
 

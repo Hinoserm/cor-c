@@ -130,6 +130,10 @@ public enum Opcode : byte
     /// barrier to the optimiser, which moves no memory access across it,
     /// and no instruction on a machine whose loads and stores are already
     /// ordered so (x86, x86-64: TSO). What a static initialiser's ready test
-    /// needs; Fence stays the full barrier Sys.Fence asks for.</summary>
+    /// and every volatile read and write need; Fence stays the full barrier
+    /// Sys.Fence asks for -- and the one that orders stores to
+    /// write-combining memory (a card's command FIFO), which TSO does not:
+    /// a driver that writes such memory and then a doorbell fences between
+    /// them itself.</summary>
     CompilerFence,
 }
