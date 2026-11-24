@@ -153,6 +153,10 @@ public sealed class Pipeline
         p.Passes.Add(new LoadReuse());
         p.Passes.Add(new DeadCodeElimination());
         p.Passes.Add(new LoopInvariant());
+        // A loop's test of what it never changes, out of it (LoopUnswitch):
+        // after the invariant work is out, so a test computed in the loop
+        // from values that do not change is already one register outside.
+        p.Passes.Add(new LoopUnswitch { OptimizeSize = optimizeSize });
         // A loop's counter plus what the loop never changes, kept as it goes
         // (StrengthReduce): after the invariant is out of the loop.
         p.Passes.Add(new StrengthReduce());

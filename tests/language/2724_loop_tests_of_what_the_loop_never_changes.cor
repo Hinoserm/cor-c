@@ -1,0 +1,68 @@
+// test: loop_tests_of_what_the_loop_never_changes
+// expect-exit: 0
+// expect-output:
+// sum 4950 0 4950 0
+// stop 0 45
+// mixed 2450 2500 98 100
+//
+// A LOOP'S TEST OF SOMETHING IT NEVER CHANGES (LoopUnswitch): decided once
+// before the loop where one way leaves it (the trivial kind: `if (quit)
+// break;` first in the body), or the loop made again for each way (the copy:
+// `if (evens) a += i; else b += i;`). Each answer is the loop's as written,
+// both ways of every test.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Sum(int n, bool quit)
+    {
+        int s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (quit) break;
+            s += i;
+        }
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Split(int n, bool evens, out int other)
+    {
+        int a = 0, b = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (evens) a += i; else b += i;
+        }
+        other = b;
+        return a;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Mixed(int[] values, bool odd, ref int seen)
+    {
+        int total = 0;
+        for (int i = 0; i < values.Length; i++)
+        {
+            int v = values[i];
+            if (odd) { if ((v & 1) != 0) { total += v; seen++; } }
+            else { if ((v & 1) == 0) { total += v; seen++; } }
+        }
+        return total;
+    }
+
+    static int Main()
+    {
+        int b1, b2;
+        int a1 = Split(100, true, out b1), a2 = Split(100, false, out b2);
+        Console.WriteLine("sum " + Sum(100, false) + " " + Sum(100, true) + " " + a1 + " " + a2);
+        Console.WriteLine("stop " + Sum(0, false) + " " + Sum(10, false));
+        int[] values = new int[100];
+        for (int i = 0; i < 100; i++) values[i] = i;
+        int seenEven = 0, seenOdd = 0;
+        int evens = Mixed(values, false, ref seenEven), odds = Mixed(values, true, ref seenOdd);
+        Console.WriteLine("mixed " + evens + " " + odds + " " + (seenEven + seenOdd - 2) + " " + (seenEven + seenOdd));
+        return b1 + b2 == 4950 ? 0 : 1;
+    }
+}
