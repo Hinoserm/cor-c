@@ -1,0 +1,75 @@
+// test: a_field_read_again_after_a_join_where_nothing_between_writes_it
+// expect-exit: 0
+// expect-output:
+// 11
+// 2
+// 101
+// 55
+// 64
+// 18
+// 9 7
+//
+// A FIELD READ AGAIN AFTER A JOIN (LoadReuse.WalkDominators): the read
+// before an if/else is reused after it where neither arm writes the field
+// -- an element store in an arm, a write of another field -- and read again
+// where an arm writes it, calls something that may, or a loop's lap writes
+// it. Checked against .NET 10.
+using System;
+using System.Runtime.CompilerServices;
+sealed class Box
+{
+    public int[] A;
+    public int N;
+    public Box(int[] a) { A = a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int ArmWrites(bool flip, int[] other)
+    {
+        int first = A[0];
+        if (flip) A = other; else N++;
+        return first + A[0];
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    void Swap(int[] other) => A = other;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int ArmCalls(bool flip, int[] other)
+    {
+        int first = A[0];
+        if (flip) Swap(other); else N += 2;
+        return first + A[0];
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int ArmStoresElement(bool flip)
+    {
+        int first = A.Length;
+        if (flip) A[0] = 50; else A[1] = 60;
+        return first + A[0] + A[1];
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int LoopWrites(int[] other)
+    {
+        int sum = 0;
+        int[] seen = A;
+        for (int k = 0; k < 3; k++) { sum += A[k]; if (k == 0) A = other; }
+        return sum + (seen == A ? 1000 : 0);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Unchanged(bool flip)
+    {
+        int a = A[0];
+        int b = flip ? N + 1 : N - 1;
+        return a + b + A[0];
+    }
+}
+static class P
+{
+    static void Main()
+    {
+        Console.WriteLine(new Box(new[] { 1, 2, 3 }).ArmWrites(true, new[] { 10, 20, 30 }));
+        Console.WriteLine(new Box(new[] { 1, 2, 3 }).ArmWrites(false, new[] { 10, 20, 30 }));
+        Console.WriteLine(new Box(new[] { 1, 2, 3 }).ArmCalls(true, new[] { 100, 200, 300 }));
+        Console.WriteLine(new Box(new[] { 1, 2, 3 }).ArmStoresElement(true));
+        Console.WriteLine(new Box(new[] { 1, 2, 3 }).ArmStoresElement(false));
+        Console.WriteLine(new Box(new[] { 1, 2, 3 }).LoopWrites(new[] { 7, 8, 9 }));
+        Console.WriteLine(new Box(new[] { 4, 5, 6 }).Unchanged(true) + " " + new Box(new[] { 4, 5, 6 }).Unchanged(false));
+    }
+}

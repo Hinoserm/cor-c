@@ -5,12 +5,12 @@ namespace Corsac.Lang.Opt;
 using Block = Corsac.Lang.Ir.Block;
 
 /// <summary>Reuse successful ordinary reads on a single-predecessor dominated
-/// path. Unlike SSA GVN, both the address and captured result must still name
+/// path, and across a join from its dominator where nothing between writes
+/// it (WalkDominators). Unlike SSA GVN, both the address and captured result must still name
 /// the same values at the consumer. Calls and synchronization forget all
 /// memory, and so does a write, but where the write and a read are told
 /// apart (Managed below): a static's own cell and an object's field or an
-/// array's element are never the same word. Joins and loop headers do not
-/// inherit memory facts.</summary>
+/// array's element are never the same word.</summary>
 public sealed class LoadReuse : IPass
 {
     public string Name => "load-reuse";
@@ -100,9 +100,45 @@ public sealed class LoadReuse : IPass
         scope.Stable = Stable;
         scope.Managed = i => i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var r } && !SymbolBased(r, 6)
             && (i.Field is not null || ArrayBased(r, 6));
-        cfg.WalkSolePredecessors(scope, dominating: true);
+        WalkDominators(cfg, scope);
         scope.Stable = null!;
         scope.Managed = null!;
+    }
+
+    /// <summary>The most blocks between a join and its dominator whose writes are summed for it (Between): past it, the join starts from nothing.</summary>
+    private const int Region = 8;
+
+    /// <summary>
+    /// DOWN THE DOMINATOR TREE, a block with one predecessor that dominates
+    /// it starting from what that predecessor ended with, as the sole
+    /// predecessor walk did (Cfg.WalkSolePredecessors); and now a join or a
+    /// loop's header too, from what its immediate dominator ended with less
+    /// what any block on a way from there to it may write (Between) -- LLVM's
+    /// non-local load answers and Go's memory state carried through a diamond
+    /// that stores nothing, without SSA: `this._items` read at a method's
+    /// start, an if/else that never writes it, and read again after it, was
+    /// read twice. A reused read's register is checked on every path as
+    /// before (Defs.CanForward).
+    /// </summary>
+    private static void WalkDominators(Cfg cfg, Scope scope)
+    {
+        Liveness? live = null;
+        Stack<(Block Block, int Mark, bool Entered)> work = new();
+        work.Push((cfg.Function.Blocks[0], 0, false));
+        while (work.Count > 0)
+        {
+            (Block block, int mark, bool entered) = work.Pop();
+            if (entered) { scope.Undo(mark); continue; }
+            mark = scope.Mark;
+            Edges preds = cfg.Preds(block);
+            if (cfg.IsRoot(block)) scope.ForgetEverything();
+            else if (preds.Count != 1 || !cfg.Dominates(preds[0], block))
+                scope.Between(cfg, block, cfg.Idom(block), ref live);
+            scope.Visit(block);
+            work.Push((block, mark, true));
+            Edges children = cfg.DomChildren(block);
+            for (int k = children.Count - 1; k >= 0; k--) work.Push((children[k], 0, false));
+        }
     }
 
     [ThreadStatic] private static Scope? _scope;
@@ -171,6 +207,72 @@ public sealed class LoadReuse : IPass
                 _memory.Remove(key);
             }
             _all.Clear();
+        }
+
+        /// <summary>Everything, an array's length too: a root starts from nothing.</summary>
+        public void ForgetEverything()
+        {
+            if (_memory.Count == 0) return;
+            foreach (var pair in _memory) _all.Add(pair.Key);
+            foreach (Key key in _all)
+            {
+                _undo.Add((key, _memory[key], true));
+                _memory.Remove(key);
+            }
+            _all.Clear();
+        }
+
+        /// <summary>
+        /// A JOIN, entered with what its immediate dominator ended with: what
+        /// any block on a way from there to it may write forgotten, as Visit
+        /// forgets it -- the blocks found walking back from the join's
+        /// predecessors to the dominator, the join itself among them where a
+        /// way comes round to it (a loop's header). More than Region of them,
+        /// or none to come from, and it starts from nothing. A loop's header
+        /// keeps a read only where its register is live into it already: one
+        /// held round the loop for it is a register the loop's body lacks on
+        /// 32-bit x86, and a spill reread costs what the read did.
+        /// </summary>
+        public void Between(Cfg cfg, Block join, Block? dominator, ref Liveness? live)
+        {
+            if (_memory.Count == 0) return;
+            if (dominator is null) { ForgetEverything(); return; }
+            HashSet<Block> region = new();
+            Stack<Block> todo = new();
+            foreach (Block p in cfg.Preds(join)) todo.Push(p);
+            bool loop = false;
+            while (todo.TryPop(out Block? b))
+            {
+                if (ReferenceEquals(b, dominator)) continue;
+                if (cfg.IsRoot(b) || region.Count >= Region) { ForgetEverything(); return; }
+                if (!region.Add(b)) continue;
+                if (ReferenceEquals(b, join)) { loop = true; continue; }
+                foreach (Block p in cfg.Preds(b)) todo.Push(p);
+            }
+            foreach (Block b in region)
+                foreach (Instr i in b.Instrs) Kill(i);
+            if (ReferenceEquals(dominator, join)) loop = true;
+            if (loop && _memory.Count > 0)
+            {
+                live ??= new Liveness(cfg);
+                foreach (var pair in _memory)
+                    if (pair.Key.Size != Length && !live.IsLiveIn(join, pair.Value.Load.Dest!)) _all.Add(pair.Key);
+                foreach (Key key in _all)
+                {
+                    _undo.Add((key, _memory[key], true));
+                    _memory.Remove(key);
+                }
+                _all.Clear();
+            }
+        }
+
+        /// <summary>What an instruction may write forgotten, as Visit forgets it, its reads not remembered.</summary>
+        private void Kill(Instr i)
+        {
+            if (i.Op is Opcode.ArrayLength or Opcode.Branch or Opcode.Jump) return;
+            if (i.Op == Opcode.Load && !i.Device && i.Dest is { } result && result.Type.IsInt() && Address(i, out _)) return;
+            if (i.Op == Opcode.Store && !i.Device) { Written(i); return; }
+            if (!IrInfo.IsPure(i)) ForgetAll();
         }
 
         private void ForgetAll()
