@@ -108,7 +108,7 @@ public sealed partial class Lowering
     /// <summary>
     /// THE BOX'S FIRST WORD OF A SHARED STRUCT THIS SHARED CODE HOLDS OVER ITS
     /// PARAMETERS (StructContext): its own instantiation's, from the context
-    /// it was handed; another's -- Pair<B, A> in Pair's code, KeyValuePair<K, V>
+    /// it was handed; another's -- Pair<B, A> in Pair's code, KeyValuePair<TKey, TValue>
     /// in a Dictionary's -- from its token in this code's type context. Null
     /// for any other type, whose box is named.
     /// </summary>
@@ -1046,7 +1046,7 @@ public sealed partial class Lowering
         Function savedF = _f;
         Builder savedE = _e;
         // Built as nobody's (EnterHelper): no failure block, rule or `checked` of the asker's.
-        Block? savedFail = _boundsFail; _boundsFail = null; HelperContext context = EnterHelper();
+        Dictionary<int, Block>? savedFail = _boundsFail; _boundsFail = null; HelperContext context = EnterHelper();
         _f = f;
         _e = e;
 

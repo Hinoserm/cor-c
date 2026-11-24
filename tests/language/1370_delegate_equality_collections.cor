@@ -8,7 +8,7 @@
 // set 1
 //
 // A DELEGATE IS FOUND IN A COLLECTION BY AN EQUAL ONE, as .NET's are:
-// List<T>, Dictionary<K, V> and HashSet<T> ask EqualityComparer<T>.Default,
+// List<T>, Dictionary<TKey, TValue> and HashSet<T> ask EqualityComparer<T>.Default,
 // which asks the delegate's own Equals and GetHashCode -- the same method on
 // the same target. `b1.Click` converted again is found; another button's
 // Click is not; a static method converted twice is one entry.

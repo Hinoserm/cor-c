@@ -595,69 +595,69 @@ class SortedPairsEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
 /// .NET's array-backed ordered map: a lookup is a binary search, and the
 /// position of a key is part of the API -- IndexOfKey, GetKeyAtIndex,
 /// RemoveAt. That is the whole difference from SortedDictionary.
-public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+public class SortedList<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDictionary<TKey, TValue>, IEnumerable<KeyValuePair<TKey, TValue>> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
-    IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
-    IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
+    IEnumerable<TKey> IReadOnlyDictionary<TKey, TValue>.Keys => Keys;
+    IEnumerable<TValue> IReadOnlyDictionary<TKey, TValue>.Values => Values;
 
-    ICollection<K> IDictionary<K, V>.Keys => Keys;
-    ICollection<V> IDictionary<K, V>.Values => Values;
-    bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
+    ICollection<TKey> IDictionary<TKey, TValue>.Keys => Keys;
+    ICollection<TValue> IDictionary<TKey, TValue>.Values => Values;
+    bool ICollection<KeyValuePair<TKey, TValue>>.IsReadOnly => false;
 
-    void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) { Add(item.Key, item.Value); }
+    void ICollection<KeyValuePair<TKey, TValue>>.Add(KeyValuePair<TKey, TValue> item) { Add(item.Key, item.Value); }
 
-    bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item) {
-        return TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value);
+    bool ICollection<KeyValuePair<TKey, TValue>>.Contains(KeyValuePair<TKey, TValue> item) {
+        return TryGetValue(item.Key, out TValue found) && EqualityComparer<TValue>.Default.Equals(found, item.Value);
     }
 
-    void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex) {
+    void ICollection<KeyValuePair<TKey, TValue>>.CopyTo(KeyValuePair<TKey, TValue>[] array, int arrayIndex) {
         if (array == null) { throw new ArgumentNullException("array"); }
         if (arrayIndex < 0 || arrayIndex > array.Length) { throw new ArgumentOutOfRangeException("arrayIndex", arrayIndex, "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
         if (array.Length - arrayIndex < Count) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
         for (int i = 0; i < pairs.keys.Count; i++) {
-            array[arrayIndex + i] = new KeyValuePair<K, V>(pairs.keys[i], pairs.values[i]);
+            array[arrayIndex + i] = new KeyValuePair<TKey, TValue>(pairs.keys[i], pairs.values[i]);
         }
     }
 
-    bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item) {
-        if (TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value)) { return Remove(item.Key); }
+    bool ICollection<KeyValuePair<TKey, TValue>>.Remove(KeyValuePair<TKey, TValue> item) {
+        if (TryGetValue(item.Key, out TValue found) && EqualityComparer<TValue>.Default.Equals(found, item.Value)) { return Remove(item.Key); }
         return false;
     }
-    private SortedPairs<K, V> pairs;
+    private SortedPairs<TKey, TValue> pairs;
 
-    public SortedList() { pairs = new SortedPairs<K, V>(Comparer<K>.Default); }
+    public SortedList() { pairs = new SortedPairs<TKey, TValue>(Comparer<TKey>.Default); }
     /// Keys ordered by `comparer`, or by their own order given null, as .NET's.
-    public SortedList(IComparer<K>? comparer) { pairs = new SortedPairs<K, V>(comparer ?? Comparer<K>.Default); }
+    public SortedList(IComparer<TKey>? comparer) { pairs = new SortedPairs<TKey, TValue>(comparer ?? Comparer<TKey>.Default); }
 
     /// Room for `capacity` before the first growth.
     public SortedList(int capacity) {
         ArgumentOutOfRangeException.ThrowIfNegative(capacity, "capacity");
-        pairs = new SortedPairs<K, V>(Comparer<K>.Default);
+        pairs = new SortedPairs<TKey, TValue>(Comparer<TKey>.Default);
         pairs.Capacity = capacity;
     }
 
     /// As .NET's, the room set through Capacity, whose refusal a negative
     /// one meets ("capacity was less than the current size").
-    public SortedList(int capacity, IComparer<K>? comparer) : this(comparer) { Capacity = capacity; }
+    public SortedList(int capacity, IComparer<TKey>? comparer) : this(comparer) { Capacity = capacity; }
 
-    public SortedList(IDictionary<K, V> dictionary) : this(dictionary, null) { }
+    public SortedList(IDictionary<TKey, TValue> dictionary) : this(dictionary, null) { }
 
     /// A dictionary's pairs, sorted together by key as .NET sorts them
     /// (Array.Sort of the keys and their values), then refused if two keys
     /// are one under `comparer`: the later of them named.
-    public SortedList(IDictionary<K, V> dictionary, IComparer<K>? comparer) : this(dictionary != null ? dictionary.Count : 0, comparer) {
+    public SortedList(IDictionary<TKey, TValue> dictionary, IComparer<TKey>? comparer) : this(dictionary != null ? dictionary.Count : 0, comparer) {
         if (dictionary == null) { throw new ArgumentNullException("dictionary"); }
         int count = dictionary.Count;
         if (count == 0) { return; }
-        K[] keys = new K[count];
-        V[] values = new V[count];
+        TKey[] keys = new TKey[count];
+        TValue[] values = new TValue[count];
         dictionary.Keys.CopyTo(keys, 0);
         dictionary.Values.CopyTo(values, 0);
         if (count > 1) {
-            IComparer<K> order = pairs.order;
-            Array.Sort<K, V>(keys, values, order);
+            IComparer<TKey> order = pairs.order;
+            Array.Sort<TKey, TValue>(keys, values, order);
             for (int i = 1; i != keys.Length; i++) {
                 if (order.Compare(keys[i - 1], keys[i]) == 0) { throw new ArgumentException("An item with the same key has already been added. Key: " + keys[i]); }
             }
@@ -666,7 +666,7 @@ public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IE
     }
 
     public int Count => pairs.keys.Count;
-    public IComparer<K> Comparer => pairs.order;
+    public IComparer<TKey> Comparer => pairs.order;
 
     /// The room its keys and values have, as .NET's arrays: never below the
     /// count, and set without a change a walk would see.
@@ -687,8 +687,8 @@ public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IE
     /// The keys in order, and the values in the order of their keys: views
     /// of the list, as .NET's KeyList and ValueList, never written through,
     /// whose walks are refused once the list has changed.
-    public IList<K> Keys => keyView ??= new KeyList(pairs);
-    public IList<V> Values => valueView ??= new ValueList(pairs);
+    public IList<TKey> Keys => keyView ??= new KeyList(pairs);
+    public IList<TValue> Values => valueView ??= new ValueList(pairs);
     private KeyList? keyView;
     private ValueList? valueView;
 
@@ -703,78 +703,78 @@ public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IE
     /// .NET's KeyList: the list's keys in order, a list (not a read-only one)
     /// never written through. A key set at a place is refused in the key
     /// collection's words, anything else in the nested types'.
-    private sealed class KeyList : IList<K> {
+    private sealed class KeyList : IList<TKey> {
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
-        private readonly SortedPairs<K, V> over;
+        private readonly SortedPairs<TKey, TValue> over;
 
-        internal KeyList(SortedPairs<K, V> pairs) { over = pairs; }
+        internal KeyList(SortedPairs<TKey, TValue> pairs) { over = pairs; }
 
         public int Count => over.keys.Count;
         public bool IsReadOnly => true;
-        public K this[int index] {
+        public TKey this[int index] {
             get { Place(index, over.keys.Count); return over.keys[index]; }
             set { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
         }
-        public bool Contains(K item) { return over.Search(item) >= 0; }
-        public int IndexOf(K item) {
+        public bool Contains(TKey item) { return over.Search(item) >= 0; }
+        public int IndexOf(TKey item) {
             int at = over.Search(item);
             return at >= 0 ? at : -1;
         }
         // Array.Copy's, as .NET copies its keys.
-        public void CopyTo(K[] array, int arrayIndex) { over.keys.CopyTo(array, arrayIndex); }
-        public IEnumerator<K> GetEnumerator() { return new SortedListKeyEnumerator(over); }
+        public void CopyTo(TKey[] array, int arrayIndex) { over.keys.CopyTo(array, arrayIndex); }
+        public IEnumerator<TKey> GetEnumerator() { return new SortedListKeyEnumerator(over); }
 
-        public void Add(K item) { throw new NotSupportedException(NestedWrite); }
+        public void Add(TKey item) { throw new NotSupportedException(NestedWrite); }
         public void Clear() { throw new NotSupportedException(NestedWrite); }
-        public bool Remove(K item) { throw new NotSupportedException(NestedWrite); }
-        public void Insert(int index, K item) { throw new NotSupportedException(NestedWrite); }
+        public bool Remove(TKey item) { throw new NotSupportedException(NestedWrite); }
+        public void Insert(int index, TKey item) { throw new NotSupportedException(NestedWrite); }
         public void RemoveAt(int index) { throw new NotSupportedException(NestedWrite); }
     }
 
     /// .NET's ValueList: as KeyList, the values in the order of their keys.
-    private sealed class ValueList : IList<V> {
+    private sealed class ValueList : IList<TValue> {
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
-        private readonly SortedPairs<K, V> over;
+        private readonly SortedPairs<TKey, TValue> over;
 
-        internal ValueList(SortedPairs<K, V> pairs) { over = pairs; }
+        internal ValueList(SortedPairs<TKey, TValue> pairs) { over = pairs; }
 
         public int Count => over.values.Count;
         public bool IsReadOnly => true;
-        public V this[int index] {
+        public TValue this[int index] {
             get { Place(index, over.values.Count); return over.values[index]; }
             set { throw new NotSupportedException(NestedWrite); }
         }
-        public bool Contains(V item) { return IndexOf(item) >= 0; }
-        public int IndexOf(V item) {
-            IEqualityComparer<V> same = EqualityComparer<V>.Default;
+        public bool Contains(TValue item) { return IndexOf(item) >= 0; }
+        public int IndexOf(TValue item) {
+            IEqualityComparer<TValue> same = EqualityComparer<TValue>.Default;
             for (int i = 0; i < over.values.Count; i++) {
                 if (same.Equals(over.values[i], item)) { return i; }
             }
             return -1;
         }
-        public void CopyTo(V[] array, int arrayIndex) { over.values.CopyTo(array, arrayIndex); }
-        public IEnumerator<V> GetEnumerator() { return new SortedListValueEnumerator(over); }
+        public void CopyTo(TValue[] array, int arrayIndex) { over.values.CopyTo(array, arrayIndex); }
+        public IEnumerator<TValue> GetEnumerator() { return new SortedListValueEnumerator(over); }
 
-        public void Add(V item) { throw new NotSupportedException(NestedWrite); }
+        public void Add(TValue item) { throw new NotSupportedException(NestedWrite); }
         public void Clear() { throw new NotSupportedException(NestedWrite); }
-        public bool Remove(V item) { throw new NotSupportedException(NestedWrite); }
-        public void Insert(int index, V item) { throw new NotSupportedException(NestedWrite); }
+        public bool Remove(TValue item) { throw new NotSupportedException(NestedWrite); }
+        public void Insert(int index, TValue item) { throw new NotSupportedException(NestedWrite); }
         public void RemoveAt(int index) { throw new NotSupportedException(NestedWrite); }
     }
 
     /// .NET's walk of the keys: on nothing until the first MoveNext and after
     /// the last, refused once the list has changed, set back by Dispose.
-    private sealed class SortedListKeyEnumerator : IEnumerator<K> {
-        private readonly SortedPairs<K, V> over;
+    private sealed class SortedListKeyEnumerator : IEnumerator<TKey> {
+        private readonly SortedPairs<TKey, TValue> over;
         private readonly int version;
         private int at;
-        private K current;
+        private TKey current;
 
-        internal SortedListKeyEnumerator(SortedPairs<K, V> pairs) { over = pairs; version = pairs.version; at = 0; current = default(K)!; }
+        internal SortedListKeyEnumerator(SortedPairs<TKey, TValue> pairs) { over = pairs; version = pairs.version; at = 0; current = default(TKey)!; }
 
-        public K Current => current;
+        public TKey Current => current;
         object? IEnumerator.Current {
             get {
                 if (at == 0 || at == over.keys.Count + 1) { ThrowHelper.EnumerationNotRunning(); }
@@ -789,30 +789,30 @@ public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IE
                 return true;
             }
             at = over.keys.Count + 1;
-            current = default(K)!;
+            current = default(TKey)!;
             return false;
         }
         public void Reset() {
             if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
             at = 0;
-            current = default(K)!;
+            current = default(TKey)!;
         }
         public void Dispose() {
             at = 0;
-            current = default(K)!;
+            current = default(TKey)!;
         }
     }
 
     /// As SortedListKeyEnumerator, the values.
-    private sealed class SortedListValueEnumerator : IEnumerator<V> {
-        private readonly SortedPairs<K, V> over;
+    private sealed class SortedListValueEnumerator : IEnumerator<TValue> {
+        private readonly SortedPairs<TKey, TValue> over;
         private readonly int version;
         private int at;
-        private V current;
+        private TValue current;
 
-        internal SortedListValueEnumerator(SortedPairs<K, V> pairs) { over = pairs; version = pairs.version; at = 0; current = default(V)!; }
+        internal SortedListValueEnumerator(SortedPairs<TKey, TValue> pairs) { over = pairs; version = pairs.version; at = 0; current = default(TValue)!; }
 
-        public V Current => current;
+        public TValue Current => current;
         object? IEnumerator.Current {
             get {
                 if (at == 0 || at == over.values.Count + 1) { ThrowHelper.EnumerationNotRunning(); }
@@ -827,29 +827,29 @@ public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IE
                 return true;
             }
             at = over.values.Count + 1;
-            current = default(V)!;
+            current = default(TValue)!;
             return false;
         }
         public void Reset() {
             if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
             at = 0;
-            current = default(V)!;
+            current = default(TValue)!;
         }
         public void Dispose() {
             at = 0;
-            current = default(V)!;
+            current = default(TValue)!;
         }
     }
 
     /// A DUPLICATE KEY THROWS, which is Add's contract and the difference from
     /// the indexer's setter -- that one replaces.
-    public void Add(K key, V value) {
+    public void Add(TKey key, TValue value) {
         int at = pairs.Search(key);
         if (at >= 0) { throw new ArgumentException("An item with the same key has already been added. Key: " + key, "key"); }
         pairs.Insert(~at, key, value);
     }
 
-    public V this[K key] {
+    public TValue this[TKey key] {
         get {
             int at = pairs.Search(key);
             if (at < 0) { throw new KeyNotFoundException("The given key '" + key + "' was not present in the dictionary."); }
@@ -861,38 +861,38 @@ public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IE
         }
     }
 
-    public bool ContainsKey(K key) { return pairs.Search(key) >= 0; }
+    public bool ContainsKey(TKey key) { return pairs.Search(key) >= 0; }
 
-    public bool ContainsValue(V value) { return IndexOfValue(value) >= 0; }
+    public bool ContainsValue(TValue value) { return IndexOfValue(value) >= 0; }
 
-    public bool TryGetValue(K key, out V value) {
+    public bool TryGetValue(TKey key, out TValue value) {
         int at = pairs.Search(key);
-        if (at < 0) { value = default(V); return false; }
+        if (at < 0) { value = default(TValue); return false; }
         value = pairs.values[at];
         return true;
     }
 
     /// NEGATIVE WHEN ABSENT, and .NET promises only "negative" rather than the
     /// complement, so a caller reads it as a not-found flag.
-    public int IndexOfKey(K key) {
+    public int IndexOfKey(TKey key) {
         int at = pairs.Search(key);
         if (at < 0) { return -1; }
         return at;
     }
 
-    public int IndexOfValue(V value) {
-        IEqualityComparer<V> same = EqualityComparer<V>.Default;
+    public int IndexOfValue(TValue value) {
+        IEqualityComparer<TValue> same = EqualityComparer<TValue>.Default;
         for (int i = 0; i < pairs.values.Count; i++) {
             if (same.Equals(pairs.values[i], value)) { return i; }
         }
         return -1;
     }
 
-    public K GetKeyAtIndex(int index) { Place(index, pairs.keys.Count); return pairs.keys[index]; }
-    public V GetValueAtIndex(int index) { Place(index, pairs.keys.Count); return pairs.values[index]; }
-    public void SetValueAtIndex(int index, V value) { Place(index, pairs.keys.Count); pairs.SetValue(index, value); }
+    public TKey GetKeyAtIndex(int index) { Place(index, pairs.keys.Count); return pairs.keys[index]; }
+    public TValue GetValueAtIndex(int index) { Place(index, pairs.keys.Count); return pairs.values[index]; }
+    public void SetValueAtIndex(int index, TValue value) { Place(index, pairs.keys.Count); pairs.SetValue(index, value); }
 
-    public bool Remove(K key) {
+    public bool Remove(TKey key) {
         int at = pairs.Search(key);
         if (at < 0) { return false; }
         pairs.RemoveAt(at);
@@ -906,30 +906,30 @@ public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IE
 
     public void Clear() { pairs.Clear(); }
 
-    public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return new SortedPairsEnumerator<K, V>(pairs); }
+    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator() { return new SortedPairsEnumerator<TKey, TValue>(pairs); }
 }
 
 /// The ordered map without the positions: a Dictionary whose enumeration is in
 /// key order. As .NET's, a tree set of its pairs ordered by key alone
 /// (SortedSet's red-black tree, PairsByKey): an insert, a removal and a
 /// lookup walk the tree's depth.
-public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+public class SortedDictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDictionary<TKey, TValue>, IEnumerable<KeyValuePair<TKey, TValue>> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
 
-    ICollection<K> IDictionary<K, V>.Keys => Keys;
-    ICollection<V> IDictionary<K, V>.Values => Values;
-    bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
+    ICollection<TKey> IDictionary<TKey, TValue>.Keys => Keys;
+    ICollection<TValue> IDictionary<TKey, TValue>.Values => Values;
+    bool ICollection<KeyValuePair<TKey, TValue>>.IsReadOnly => false;
 
-    void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) { Add(item.Key, item.Value); }
+    void ICollection<KeyValuePair<TKey, TValue>>.Add(KeyValuePair<TKey, TValue> item) { Add(item.Key, item.Value); }
 
-    bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item) {
-        return TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value);
+    bool ICollection<KeyValuePair<TKey, TValue>>.Contains(KeyValuePair<TKey, TValue> item) {
+        return TryGetValue(item.Key, out TValue found) && EqualityComparer<TValue>.Default.Equals(found, item.Value);
     }
 
     /// Its pairs in key order, as .NET's (public, as its tree's CopyTo is).
-    public void CopyTo(KeyValuePair<K, V>[] array, int index) {
+    public void CopyTo(KeyValuePair<TKey, TValue>[] array, int index) {
         CopyRoom(array, index, tree.Count);
         for (int n = tree.FirstNode(); n != 0; n = tree.NextNode(n)) {
             array[index] = tree.ItemAt(n);
@@ -937,32 +937,32 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
         }
     }
 
-    bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item) {
-        if (TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value)) { return Remove(item.Key); }
+    bool ICollection<KeyValuePair<TKey, TValue>>.Remove(KeyValuePair<TKey, TValue> item) {
+        if (TryGetValue(item.Key, out TValue found) && EqualityComparer<TValue>.Default.Equals(found, item.Value)) { return Remove(item.Key); }
         return false;
     }
 
     // THE PAIRS, a set ordered by their keys; and the key order itself.
-    private readonly SortedSet<KeyValuePair<K, V>> tree;
-    private readonly IComparer<K> order;
+    private readonly SortedSet<KeyValuePair<TKey, TValue>> tree;
+    private readonly IComparer<TKey> order;
 
     public SortedDictionary() {
-        order = Comparer<K>.Default;
-        tree = new SortedSet<KeyValuePair<K, V>>(new PairsByKey<K, V>(order));
+        order = Comparer<TKey>.Default;
+        tree = new SortedSet<KeyValuePair<TKey, TValue>>(new PairsByKey<TKey, TValue>(order));
     }
     /// Keys ordered by `comparer`, or by their own order given null, as .NET's.
-    public SortedDictionary(IComparer<K>? comparer) {
-        order = comparer ?? Comparer<K>.Default;
-        tree = new SortedSet<KeyValuePair<K, V>>(new PairsByKey<K, V>(order));
+    public SortedDictionary(IComparer<TKey>? comparer) {
+        order = comparer ?? Comparer<TKey>.Default;
+        tree = new SortedSet<KeyValuePair<TKey, TValue>>(new PairsByKey<TKey, TValue>(order));
     }
 
-    public SortedDictionary(IDictionary<K, V> dictionary) : this(dictionary, null) { }
+    public SortedDictionary(IDictionary<TKey, TValue> dictionary) : this(dictionary, null) { }
 
     /// A dictionary's pairs added in its order, as .NET's tree adds them: a
     /// key one with an earlier under `comparer` refused, the pair named.
-    public SortedDictionary(IDictionary<K, V> dictionary, IComparer<K>? comparer) : this(comparer) {
+    public SortedDictionary(IDictionary<TKey, TValue> dictionary, IComparer<TKey>? comparer) : this(comparer) {
         if (dictionary == null) { throw new ArgumentNullException("dictionary"); }
-        foreach (KeyValuePair<K, V> pair in dictionary) {
+        foreach (KeyValuePair<TKey, TValue> pair in dictionary) {
             if (pair.Key == null) { ThrowHelper.KeyNull(); }
             if (!tree.Add(pair)) { throw new ArgumentException("An item with the same key has already been added. Key: " + pair); }
         }
@@ -970,13 +970,13 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
 
     // The node of a key's pair, 0 for none. NO NULL KEY, as .NET's takes
     // none, asked or added.
-    private int NodeOf(K key) {
+    private int NodeOf(TKey key) {
         if (key == null) { ThrowHelper.KeyNull(); }
-        return tree.FindNode(new KeyValuePair<K, V>(key, default(V)!));
+        return tree.FindNode(new KeyValuePair<TKey, TValue>(key, default(TValue)!));
     }
 
     public int Count => tree.Count;
-    public IComparer<K> Comparer => order;
+    public IComparer<TKey> Comparer => order;
     /// Its keys and its values, as .NET's KeyCollection and ValueCollection:
     /// views of the map in key order, never written through, whose walks are
     /// refused once the map has changed. Collections, not lists: no index,
@@ -995,21 +995,21 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
         }
     }
 
-    public sealed class KeyCollection : ICollection<K>, IReadOnlyCollection<K> {
+    public sealed class KeyCollection : ICollection<TKey>, IReadOnlyCollection<TKey> {
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
-        IEnumerator<K> IEnumerable<K>.GetEnumerator() { return GetEnumerator(); }
+        IEnumerator<TKey> IEnumerable<TKey>.GetEnumerator() { return GetEnumerator(); }
 
-        private readonly SortedDictionary<K, V> map;
+        private readonly SortedDictionary<TKey, TValue> map;
 
-        public KeyCollection(SortedDictionary<K, V> dictionary) {
+        public KeyCollection(SortedDictionary<TKey, TValue> dictionary) {
             if (dictionary == null) { throw new ArgumentNullException("dictionary"); }
             map = dictionary;
         }
 
         public int Count => map.tree.Count;
-        public bool Contains(K item) { return map.NodeOf(item) != 0; }
-        public void CopyTo(K[] array, int index) {
-            SortedSet<KeyValuePair<K, V>> tree = map.tree;
+        public bool Contains(TKey item) { return map.NodeOf(item) != 0; }
+        public void CopyTo(TKey[] array, int index) {
+            SortedSet<KeyValuePair<TKey, TValue>> tree = map.tree;
             CopyRoom(array, index, tree.Count);
             for (int n = tree.FirstNode(); n != 0; n = tree.NextNode(n)) {
                 array[index] = tree.ItemAt(n).Key;
@@ -1018,21 +1018,21 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
         }
         public Enumerator GetEnumerator() { return new Enumerator(map.tree); }
 
-        bool ICollection<K>.IsReadOnly => true;
-        void ICollection<K>.Add(K item) { throw Refused(); }
-        void ICollection<K>.Clear() { throw Refused(); }
-        bool ICollection<K>.Remove(K item) { throw Refused(); }
+        bool ICollection<TKey>.IsReadOnly => true;
+        void ICollection<TKey>.Add(TKey item) { throw Refused(); }
+        void ICollection<TKey>.Clear() { throw Refused(); }
+        bool ICollection<TKey>.Remove(TKey item) { throw Refused(); }
         private static NotSupportedException Refused() { return new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
 
         /// As the map's Enumerator, the key alone.
-        public struct Enumerator : IEnumerator<K>, IDisposable {
-            private readonly SortedSet<KeyValuePair<K, V>> over;
+        public struct Enumerator : IEnumerator<TKey>, IDisposable {
+            private readonly SortedSet<KeyValuePair<TKey, TValue>> over;
             private readonly int version;
             private int next;
             private bool taken;
-            private K current;
-            internal Enumerator(SortedSet<KeyValuePair<K, V>> tree) { over = tree; version = tree.Stamp; next = tree.FirstNode(); taken = false; current = default(K)!; }
-            public K Current => current;
+            private TKey current;
+            internal Enumerator(SortedSet<KeyValuePair<TKey, TValue>> tree) { over = tree; version = tree.Stamp; next = tree.FirstNode(); taken = false; current = default(TKey)!; }
+            public TKey Current => current;
             object? IEnumerator.Current {
                 get {
                     if (!taken) { ThrowHelper.EnumerationNotRunning(); }
@@ -1048,14 +1048,14 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
                     return true;
                 }
                 taken = false;
-                current = default(K)!;
+                current = default(TKey)!;
                 return false;
             }
             public void Reset() {
                 if (version != over.Stamp) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
                 next = over.FirstNode();
                 taken = false;
-                current = default(K)!;
+                current = default(TKey)!;
             }
             public void Dispose() { }
         }
@@ -1063,20 +1063,20 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
 
     /// As KeyCollection, the values in the order of their keys; Contains
     /// only through the interface, as .NET's.
-    public sealed class ValueCollection : ICollection<V>, IReadOnlyCollection<V> {
+    public sealed class ValueCollection : ICollection<TValue>, IReadOnlyCollection<TValue> {
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
-        IEnumerator<V> IEnumerable<V>.GetEnumerator() { return GetEnumerator(); }
+        IEnumerator<TValue> IEnumerable<TValue>.GetEnumerator() { return GetEnumerator(); }
 
-        private readonly SortedDictionary<K, V> map;
+        private readonly SortedDictionary<TKey, TValue> map;
 
-        public ValueCollection(SortedDictionary<K, V> dictionary) {
+        public ValueCollection(SortedDictionary<TKey, TValue> dictionary) {
             if (dictionary == null) { throw new ArgumentNullException("dictionary"); }
             map = dictionary;
         }
 
         public int Count => map.tree.Count;
-        public void CopyTo(V[] array, int index) {
-            SortedSet<KeyValuePair<K, V>> tree = map.tree;
+        public void CopyTo(TValue[] array, int index) {
+            SortedSet<KeyValuePair<TKey, TValue>> tree = map.tree;
             CopyRoom(array, index, tree.Count);
             for (int n = tree.FirstNode(); n != 0; n = tree.NextNode(n)) {
                 array[index] = tree.ItemAt(n).Value;
@@ -1085,22 +1085,22 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
         }
         public Enumerator GetEnumerator() { return new Enumerator(map.tree); }
 
-        bool ICollection<V>.IsReadOnly => true;
-        bool ICollection<V>.Contains(V item) { return map.ContainsValue(item); }
-        void ICollection<V>.Add(V item) { throw Refused(); }
-        void ICollection<V>.Clear() { throw Refused(); }
-        bool ICollection<V>.Remove(V item) { throw Refused(); }
+        bool ICollection<TValue>.IsReadOnly => true;
+        bool ICollection<TValue>.Contains(TValue item) { return map.ContainsValue(item); }
+        void ICollection<TValue>.Add(TValue item) { throw Refused(); }
+        void ICollection<TValue>.Clear() { throw Refused(); }
+        bool ICollection<TValue>.Remove(TValue item) { throw Refused(); }
         private static NotSupportedException Refused() { return new NotSupportedException("Mutating a value collection derived from a dictionary is not allowed."); }
 
         /// As the map's Enumerator, the value alone.
-        public struct Enumerator : IEnumerator<V>, IDisposable {
-            private readonly SortedSet<KeyValuePair<K, V>> over;
+        public struct Enumerator : IEnumerator<TValue>, IDisposable {
+            private readonly SortedSet<KeyValuePair<TKey, TValue>> over;
             private readonly int version;
             private int next;
             private bool taken;
-            private V current;
-            internal Enumerator(SortedSet<KeyValuePair<K, V>> tree) { over = tree; version = tree.Stamp; next = tree.FirstNode(); taken = false; current = default(V)!; }
-            public V Current => current;
+            private TValue current;
+            internal Enumerator(SortedSet<KeyValuePair<TKey, TValue>> tree) { over = tree; version = tree.Stamp; next = tree.FirstNode(); taken = false; current = default(TValue)!; }
+            public TValue Current => current;
             object? IEnumerator.Current {
                 get {
                     if (!taken) { ThrowHelper.EnumerationNotRunning(); }
@@ -1116,32 +1116,32 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
                     return true;
                 }
                 taken = false;
-                current = default(V)!;
+                current = default(TValue)!;
                 return false;
             }
             public void Reset() {
                 if (version != over.Stamp) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
                 next = over.FirstNode();
                 taken = false;
-                current = default(V)!;
+                current = default(TValue)!;
             }
             public void Dispose() { }
         }
     }
-    IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
-    IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
+    IEnumerable<TKey> IReadOnlyDictionary<TKey, TValue>.Keys => Keys;
+    IEnumerable<TValue> IReadOnlyDictionary<TKey, TValue>.Values => Values;
 
     /// A DUPLICATE KEY THROWS, and is a change all the same, as .NET's tree
     /// counts it: its insertion turns the tree over on the way down before
     /// it finds the key there (SortedSet.Add moves the version on always).
-    public void Add(K key, V value) {
+    public void Add(TKey key, TValue value) {
         if (key == null) { ThrowHelper.KeyNull(); }
-        KeyValuePair<K, V> pair = new KeyValuePair<K, V>(key, value);
+        KeyValuePair<TKey, TValue> pair = new KeyValuePair<TKey, TValue>(key, value);
         // The pair named, as .NET's tree names the item it refused.
         if (!tree.Add(pair)) { throw new ArgumentException("An item with the same key has already been added. Key: " + pair); }
     }
 
-    public V this[K key] {
+    public TValue this[TKey key] {
         get {
             int n = NodeOf(key);
             if (n == 0) { throw new KeyNotFoundException("The given key '" + key + "' was not present in the dictionary."); }
@@ -1150,38 +1150,38 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
         set {
             int n = NodeOf(key);
             if (n == 0) {
-                tree.Add(new KeyValuePair<K, V>(key, value));
+                tree.Add(new KeyValuePair<TKey, TValue>(key, value));
                 return;
             }
             // A value replaced where it is, under the key it was found by,
             // and a change, as .NET's.
-            tree.SetItem(n, new KeyValuePair<K, V>(tree.ItemAt(n).Key, value));
+            tree.SetItem(n, new KeyValuePair<TKey, TValue>(tree.ItemAt(n).Key, value));
             tree.Touch();
         }
     }
 
-    public bool ContainsKey(K key) { return NodeOf(key) != 0; }
+    public bool ContainsKey(TKey key) { return NodeOf(key) != 0; }
 
-    public bool ContainsValue(V value) {
-        IEqualityComparer<V> same = EqualityComparer<V>.Default;
+    public bool ContainsValue(TValue value) {
+        IEqualityComparer<TValue> same = EqualityComparer<TValue>.Default;
         for (int n = tree.FirstNode(); n != 0; n = tree.NextNode(n)) {
             if (same.Equals(tree.ItemAt(n).Value, value)) { return true; }
         }
         return false;
     }
 
-    public bool TryGetValue(K key, out V value) {
+    public bool TryGetValue(TKey key, out TValue value) {
         int n = NodeOf(key);
-        if (n == 0) { value = default(V); return false; }
+        if (n == 0) { value = default(TValue); return false; }
         value = tree.ItemAt(n).Value;
         return true;
     }
 
     /// A removal asked of a map that holds anything is a change, found or
     /// not, as .NET's tree counts it (SortedSet.Remove).
-    public bool Remove(K key) {
+    public bool Remove(TKey key) {
         if (key == null) { ThrowHelper.KeyNull(); }
-        return tree.Remove(new KeyValuePair<K, V>(key, default(V)!));
+        return tree.Remove(new KeyValuePair<TKey, TValue>(key, default(TValue)!));
     }
 
     public void Clear() { tree.Clear(); }
@@ -1190,14 +1190,14 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
     /// MoveNext took, default before the first and after the last, and a map
     /// changed since the walk began an InvalidOperationException at the next
     /// MoveNext or Reset.
-    public struct Enumerator : IEnumerator<KeyValuePair<K, V>>, IDisposable {
-        private readonly SortedSet<KeyValuePair<K, V>> over;
+    public struct Enumerator : IEnumerator<KeyValuePair<TKey, TValue>>, IDisposable {
+        private readonly SortedSet<KeyValuePair<TKey, TValue>> over;
         private readonly int version;
         private int next;
         private bool taken;
-        private KeyValuePair<K, V> current;
-        internal Enumerator(SortedSet<KeyValuePair<K, V>> tree) { over = tree; version = tree.Stamp; next = tree.FirstNode(); taken = false; current = default; }
-        public KeyValuePair<K, V> Current => current;
+        private KeyValuePair<TKey, TValue> current;
+        internal Enumerator(SortedSet<KeyValuePair<TKey, TValue>> tree) { over = tree; version = tree.Stamp; next = tree.FirstNode(); taken = false; current = default; }
+        public KeyValuePair<TKey, TValue> Current => current;
         object? IEnumerator.Current {
             get {
                 if (!taken) { ThrowHelper.EnumerationNotRunning(); }
@@ -1226,7 +1226,7 @@ public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, 
     }
 
     public Enumerator GetEnumerator() { return new Enumerator(tree); }
-    IEnumerator<KeyValuePair<K, V>> IEnumerable<KeyValuePair<K, V>>.GetEnumerator() { return GetEnumerator(); }
+    IEnumerator<KeyValuePair<TKey, TValue>> IEnumerable<KeyValuePair<TKey, TValue>>.GetEnumerator() { return GetEnumerator(); }
 }
 
 /// SortedDictionary's pairs ordered by their keys alone, as .NET's
@@ -2016,51 +2016,51 @@ public class BitArray {
 // interface with no way to change it. What they promise is that the CALLER
 // cannot add or remove -- the owner still can, and the view shows it.
 
-public class ReadOnlyDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+public class ReadOnlyDictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDictionary<TKey, TValue>, IEnumerable<KeyValuePair<TKey, TValue>> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
-    private IDictionary<K, V> inner;
+    private IDictionary<TKey, TValue> inner;
 
     /// A read-only view of `dictionary`, reading through to it.
-    public ReadOnlyDictionary(IDictionary<K, V> dictionary) {
+    public ReadOnlyDictionary(IDictionary<TKey, TValue> dictionary) {
         if (dictionary == null) { throw new ArgumentNullException("dictionary"); }
         inner = dictionary;
     }
 
     public int Count => inner.Count;
-    public V this[K key] => inner[key];
+    public TValue this[TKey key] => inner[key];
 
     /// The dictionary it wraps.
-    protected IDictionary<K, V> Dictionary => inner;
+    protected IDictionary<TKey, TValue> Dictionary => inner;
 
-    public ReadOnlyCollection<K> Keys => new ReadOnlyCollection<K>(new List<K>(inner.Keys));
-    public ReadOnlyCollection<V> Values => new ReadOnlyCollection<V>(new List<V>(inner.Values));
-    IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
-    IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
-    ICollection<K> IDictionary<K, V>.Keys => Keys;
-    ICollection<V> IDictionary<K, V>.Values => Values;
+    public ReadOnlyCollection<TKey> Keys => new ReadOnlyCollection<TKey>(new List<TKey>(inner.Keys));
+    public ReadOnlyCollection<TValue> Values => new ReadOnlyCollection<TValue>(new List<TValue>(inner.Values));
+    IEnumerable<TKey> IReadOnlyDictionary<TKey, TValue>.Keys => Keys;
+    IEnumerable<TValue> IReadOnlyDictionary<TKey, TValue>.Values => Values;
+    ICollection<TKey> IDictionary<TKey, TValue>.Keys => Keys;
+    ICollection<TValue> IDictionary<TKey, TValue>.Values => Values;
 
-    public bool ContainsKey(K key) { return inner.ContainsKey(key); }
+    public bool ContainsKey(TKey key) { return inner.ContainsKey(key); }
 
-    public bool TryGetValue(K key, out V value) { return inner.TryGetValue(key, out value); }
+    public bool TryGetValue(TKey key, out TValue value) { return inner.TryGetValue(key, out value); }
 
-    public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return inner.GetEnumerator(); }
+    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator() { return inner.GetEnumerator(); }
 
-    bool ICollection<KeyValuePair<K, V>>.IsReadOnly => true;
-    bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item) { return inner.Contains(item); }
-    void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex) { inner.CopyTo(array, arrayIndex); }
+    bool ICollection<KeyValuePair<TKey, TValue>>.IsReadOnly => true;
+    bool ICollection<KeyValuePair<TKey, TValue>>.Contains(KeyValuePair<TKey, TValue> item) { return inner.Contains(item); }
+    void ICollection<KeyValuePair<TKey, TValue>>.CopyTo(KeyValuePair<TKey, TValue>[] array, int arrayIndex) { inner.CopyTo(array, arrayIndex); }
 
-    V IDictionary<K, V>.this[K key] {
+    TValue IDictionary<TKey, TValue>.this[TKey key] {
         get { return inner[key]; }
         set { throw ReadOnly(); }
     }
 
-    void IDictionary<K, V>.Add(K key, V value) { throw ReadOnly(); }
-    bool IDictionary<K, V>.Remove(K key) { throw ReadOnly(); }
-    void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) { throw ReadOnly(); }
-    void ICollection<KeyValuePair<K, V>>.Clear() { throw ReadOnly(); }
-    bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item) { throw ReadOnly(); }
+    void IDictionary<TKey, TValue>.Add(TKey key, TValue value) { throw ReadOnly(); }
+    bool IDictionary<TKey, TValue>.Remove(TKey key) { throw ReadOnly(); }
+    void ICollection<KeyValuePair<TKey, TValue>>.Add(KeyValuePair<TKey, TValue> item) { throw ReadOnly(); }
+    void ICollection<KeyValuePair<TKey, TValue>>.Clear() { throw ReadOnly(); }
+    bool ICollection<KeyValuePair<TKey, TValue>>.Remove(KeyValuePair<TKey, TValue> item) { throw ReadOnly(); }
 
     static NotSupportedException ReadOnly() { return new NotSupportedException("Collection is read-only."); }
 }
@@ -2722,7 +2722,7 @@ namespace System.Collections.Concurrent
     ///
     /// A value factory runs outside the locks, as .NET's does -- so it may
     /// run more than once for a key when threads race, and one result is kept.
-    public class ConcurrentDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>
+    public class ConcurrentDictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDictionary<TKey, TValue>, IEnumerable<KeyValuePair<TKey, TValue>>
     {
         // The non-generic IEnumerable's, as .NET's collections have it.
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -2732,11 +2732,11 @@ namespace System.Collections.Concurrent
 
         private sealed class Node
         {
-            internal readonly K Key;
-            internal V Value;
+            internal readonly TKey Key;
+            internal TValue Value;
             internal readonly int Hash;
             internal Node? Next;
-            internal Node(K key, V value, int hash, Node? next) { Key = key; Value = value; Hash = hash; Next = next; }
+            internal Node(TKey key, TValue value, int hash, Node? next) { Key = key; Value = value; Hash = hash; Next = next; }
         }
 
         // ONE TABLE, replaced whole when it grows or is cleared: a reader
@@ -2750,7 +2750,7 @@ namespace System.Collections.Concurrent
         }
 
         private Tables _tables;
-        private readonly IEqualityComparer<K> _comparer;
+        private readonly IEqualityComparer<TKey> _comparer;
         // How a key is hashed: by the comparer (0), or .NET's non-randomised
         // hash of a string, ordinal (1) or ignoring case (2).
         private readonly int _hashing;
@@ -2764,21 +2764,21 @@ namespace System.Collections.Concurrent
 
         private static bool WritesWhole()
         {
-            if (!typeof(V).IsValueType) { return true; }
-            return typeof(V) == typeof(bool) || typeof(V) == typeof(char) || typeof(V) == typeof(byte) || typeof(V) == typeof(sbyte)
-                || typeof(V) == typeof(short) || typeof(V) == typeof(ushort) || typeof(V) == typeof(int) || typeof(V) == typeof(uint)
-                || typeof(V) == typeof(float);
+            if (!typeof(TValue).IsValueType) { return true; }
+            return typeof(TValue) == typeof(bool) || typeof(TValue) == typeof(char) || typeof(TValue) == typeof(byte) || typeof(TValue) == typeof(sbyte)
+                || typeof(TValue) == typeof(short) || typeof(TValue) == typeof(ushort) || typeof(TValue) == typeof(int) || typeof(TValue) == typeof(uint)
+                || typeof(TValue) == typeof(float);
         }
 
         public ConcurrentDictionary() : this(-1, DefaultCapacity, true, null) { }
 
-        public ConcurrentDictionary(IEqualityComparer<K>? comparer) : this(-1, DefaultCapacity, true, comparer) { }
+        public ConcurrentDictionary(IEqualityComparer<TKey>? comparer) : this(-1, DefaultCapacity, true, comparer) { }
 
-        public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection) : this(collection, null) { }
+        public ConcurrentDictionary(IEnumerable<KeyValuePair<TKey, TValue>> collection) : this(collection, null) { }
 
         // FROM A COLLECTION, the locks fixed, as .NET's: only the two forms
         // above grow their lock array.
-        public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection, IEqualityComparer<K>? comparer)
+        public ConcurrentDictionary(IEnumerable<KeyValuePair<TKey, TValue>> collection, IEqualityComparer<TKey>? comparer)
             : this(-1, CapacityFor(collection), false, comparer)
         {
             Fill(collection);
@@ -2786,16 +2786,16 @@ namespace System.Collections.Concurrent
 
         public ConcurrentDictionary(int concurrencyLevel, int capacity) : this(concurrencyLevel, capacity, false, null) { }
 
-        public ConcurrentDictionary(int concurrencyLevel, int capacity, IEqualityComparer<K>? comparer)
+        public ConcurrentDictionary(int concurrencyLevel, int capacity, IEqualityComparer<TKey>? comparer)
             : this(concurrencyLevel, capacity, false, comparer) { }
 
-        public ConcurrentDictionary(int concurrencyLevel, IEnumerable<KeyValuePair<K, V>> collection, IEqualityComparer<K>? comparer)
+        public ConcurrentDictionary(int concurrencyLevel, IEnumerable<KeyValuePair<TKey, TValue>> collection, IEqualityComparer<TKey>? comparer)
             : this(concurrencyLevel, CapacityFor(collection), false, comparer)
         {
             Fill(collection);
         }
 
-        private ConcurrentDictionary(int concurrencyLevel, int capacity, bool growLockArray, IEqualityComparer<K>? comparer)
+        private ConcurrentDictionary(int concurrencyLevel, int capacity, bool growLockArray, IEqualityComparer<TKey>? comparer)
         {
             if (concurrencyLevel <= 0)
             {
@@ -2810,9 +2810,9 @@ namespace System.Collections.Concurrent
             object[] locks = new object[concurrencyLevel];
             for (int i = 0; i < locks.Length; i++) { locks[i] = new object(); }
             _tables = new Tables(new Node?[capacity], locks, new int[locks.Length]);
-            _comparer = comparer ?? EqualityComparer<K>.Default;
-            _hashing = typeof(K) == typeof(string)
-                ? ((object)_comparer == (object)EqualityComparer<K>.Default || StringComparer.IsOrdinal(_comparer) ? 1
+            _comparer = comparer ?? EqualityComparer<TKey>.Default;
+            _hashing = typeof(TKey) == typeof(string)
+                ? ((object)_comparer == (object)EqualityComparer<TKey>.Default || StringComparer.IsOrdinal(_comparer) ? 1
                    : (object)_comparer == (object)StringComparer.OrdinalIgnoreCase ? 2 : 0)
                 : 0;
             _growLockArray = growLockArray;
@@ -2820,26 +2820,26 @@ namespace System.Collections.Concurrent
             _budget = capacity / locks.Length;
         }
 
-        private static int CapacityFor(IEnumerable<KeyValuePair<K, V>> collection)
+        private static int CapacityFor(IEnumerable<KeyValuePair<TKey, TValue>> collection)
         {
             if (collection == null) { throw new ArgumentNullException("collection"); }
-            if (collection is ICollection<KeyValuePair<K, V>> sized) { return Math.Max(DefaultCapacity, sized.Count); }
-            if (collection is IReadOnlyCollection<KeyValuePair<K, V>> read) { return Math.Max(DefaultCapacity, read.Count); }
+            if (collection is ICollection<KeyValuePair<TKey, TValue>> sized) { return Math.Max(DefaultCapacity, sized.Count); }
+            if (collection is IReadOnlyCollection<KeyValuePair<TKey, TValue>> read) { return Math.Max(DefaultCapacity, read.Count); }
             return DefaultCapacity;
         }
 
         // A collection's pairs, in its order, before any other thread can see the table.
-        private void Fill(IEnumerable<KeyValuePair<K, V>> collection)
+        private void Fill(IEnumerable<KeyValuePair<TKey, TValue>> collection)
         {
-            foreach (KeyValuePair<K, V> pair in collection)
+            foreach (KeyValuePair<TKey, TValue> pair in collection)
             {
                 if (pair.Key == null) { throw new ArgumentNullException("key"); }
-                if (!TryAddInternal(pair.Key, pair.Value, false, out V _)) { throw new ArgumentException("The source argument contains duplicate keys."); }
+                if (!TryAddInternal(pair.Key, pair.Value, false, out TValue _)) { throw new ArgumentException("The source argument contains duplicate keys."); }
             }
             if (_budget == 0) { _budget = _tables.Buckets.Length / _tables.Locks.Length; }
         }
 
-        private int HashOf(K key)
+        private int HashOf(TKey key)
         {
             if (_hashing != 0) { return ConcurrentHashing.NonRandomizedHash((string)(object)key!, _hashing == 2); }
             return _comparer.GetHashCode(key);
@@ -2877,7 +2877,7 @@ namespace System.Collections.Concurrent
 
         // ---- the operations ----
 
-        public IEqualityComparer<K> Comparer => _comparer;
+        public IEqualityComparer<TKey> Comparer => _comparer;
 
         public int Count
         {
@@ -2907,25 +2907,25 @@ namespace System.Collections.Concurrent
             return true;
         }
 
-        public V this[K key]
+        public TValue this[TKey key]
         {
             get
             {
-                if (TryGetValue(key, out V value)) { return value; }
+                if (TryGetValue(key, out TValue value)) { return value; }
                 throw new KeyNotFoundException("The given key '" + key + "' was not present in the dictionary.");
             }
             set
             {
                 if (key == null) { throw new ArgumentNullException("key"); }
-                TryAddInternal(key, value, true, out V _);
+                TryAddInternal(key, value, true, out TValue _);
             }
         }
 
-        public bool ContainsKey(K key) { return TryGetValue(key, out V _); }
+        public bool ContainsKey(TKey key) { return TryGetValue(key, out TValue _); }
 
         /// WITH NO LOCK: the table as it is now, a chain followed as it was
         /// published.
-        public bool TryGetValue(K key, out V value)
+        public bool TryGetValue(TKey key, out TValue value)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
             Tables tables = System.Threading.Volatile.Read(ref _tables);
@@ -2938,20 +2938,20 @@ namespace System.Collections.Concurrent
                     return true;
                 }
             }
-            value = default(V)!;
+            value = default(TValue)!;
             return false;
         }
 
-        public bool TryAdd(K key, V value)
+        public bool TryAdd(TKey key, TValue value)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
-            return TryAddInternal(key, value, false, out V _);
+            return TryAddInternal(key, value, false, out TValue _);
         }
 
         /// A key added at its bucket's head, or found there and, where
         /// `update` says, given the value: false when it was there. What the
         /// key holds after is `resulting`.
-        private bool TryAddInternal(K key, V value, bool update, out V resulting)
+        private bool TryAddInternal(TKey key, TValue value, bool update, out TValue resulting)
         {
             int hash = HashOf(key);
             while (true)
@@ -3066,20 +3066,20 @@ namespace System.Collections.Concurrent
             }
         }
 
-        public bool TryRemove(K key, out V value)
+        public bool TryRemove(TKey key, out TValue value)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
-            return TryRemoveInternal(key, out value, false, default(V)!);
+            return TryRemoveInternal(key, out value, false, default(TValue)!);
         }
 
         /// Removes the pair only when the key still holds that value.
-        public bool TryRemove(KeyValuePair<K, V> item)
+        public bool TryRemove(KeyValuePair<TKey, TValue> item)
         {
             if (item.Key == null) { throw new ArgumentNullException("item", "TKey is a reference type and item.Key is null."); }
-            return TryRemoveInternal(item.Key, out V _, true, item.Value);
+            return TryRemoveInternal(item.Key, out TValue _, true, item.Value);
         }
 
-        private bool TryRemoveInternal(K key, out V value, bool matchValue, V oldValue)
+        private bool TryRemoveInternal(TKey key, out TValue value, bool matchValue, TValue oldValue)
         {
             int hash = HashOf(key);
             while (true)
@@ -3095,9 +3095,9 @@ namespace System.Collections.Concurrent
                     {
                         if (hash == n.Hash && _comparer.Equals(n.Key, key))
                         {
-                            if (matchValue && !EqualityComparer<V>.Default.Equals(oldValue, n.Value))
+                            if (matchValue && !EqualityComparer<TValue>.Default.Equals(oldValue, n.Value))
                             {
-                                value = default(V)!;
+                                value = default(TValue)!;
                                 return false;
                             }
                             if (prev == null) { System.Threading.Interlocked.Exchange(ref tables.Buckets[bucket], n.Next); }
@@ -3109,17 +3109,17 @@ namespace System.Collections.Concurrent
                         prev = n;
                     }
                 }
-                value = default(V)!;
+                value = default(TValue)!;
                 return false;
             }
         }
 
         /// Replaces the value only when it is still `comparisonValue`.
-        public bool TryUpdate(K key, V newValue, V comparisonValue)
+        public bool TryUpdate(TKey key, TValue newValue, TValue comparisonValue)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
             int hash = HashOf(key);
-            IEqualityComparer<V> same = EqualityComparer<V>.Default;
+            IEqualityComparer<TValue> same = EqualityComparer<TValue>.Default;
             while (true)
             {
                 Tables tables = _tables;
@@ -3150,82 +3150,82 @@ namespace System.Collections.Concurrent
             }
         }
 
-        public V GetOrAdd(K key, V value)
+        public TValue GetOrAdd(TKey key, TValue value)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
-            if (TryGetValue(key, out V held)) { return held; }
-            TryAddInternal(key, value, false, out V resulting);
+            if (TryGetValue(key, out TValue held)) { return held; }
+            TryAddInternal(key, value, false, out TValue resulting);
             return resulting;
         }
 
-        public V GetOrAdd(K key, Func<K, V> valueFactory)
-        {
-            if (key == null) { throw new ArgumentNullException("key"); }
-            if (valueFactory == null) { throw new ArgumentNullException("valueFactory"); }
-            if (TryGetValue(key, out V held)) { return held; }
-            TryAddInternal(key, valueFactory(key), false, out V resulting);
-            return resulting;
-        }
-
-        public V GetOrAdd<TArg>(K key, Func<K, TArg, V> valueFactory, TArg factoryArgument)
+        public TValue GetOrAdd(TKey key, Func<TKey, TValue> valueFactory)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
             if (valueFactory == null) { throw new ArgumentNullException("valueFactory"); }
-            if (TryGetValue(key, out V held)) { return held; }
-            TryAddInternal(key, valueFactory(key, factoryArgument), false, out V resulting);
+            if (TryGetValue(key, out TValue held)) { return held; }
+            TryAddInternal(key, valueFactory(key), false, out TValue resulting);
             return resulting;
         }
 
-        public V AddOrUpdate(K key, V addValue, Func<K, V, V> updateValueFactory)
+        public TValue GetOrAdd<TArg>(TKey key, Func<TKey, TArg, TValue> valueFactory, TArg factoryArgument)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (valueFactory == null) { throw new ArgumentNullException("valueFactory"); }
+            if (TryGetValue(key, out TValue held)) { return held; }
+            TryAddInternal(key, valueFactory(key, factoryArgument), false, out TValue resulting);
+            return resulting;
+        }
+
+        public TValue AddOrUpdate(TKey key, TValue addValue, Func<TKey, TValue, TValue> updateValueFactory)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
             if (updateValueFactory == null) { throw new ArgumentNullException("updateValueFactory"); }
             while (true)
             {
-                if (TryGetValue(key, out V held))
+                if (TryGetValue(key, out TValue held))
                 {
-                    V updated = updateValueFactory(key, held);
+                    TValue updated = updateValueFactory(key, held);
                     if (TryUpdate(key, updated, held)) { return updated; }
                 }
-                else if (TryAddInternal(key, addValue, false, out V resulting))
+                else if (TryAddInternal(key, addValue, false, out TValue resulting))
                 {
                     return resulting;
                 }
             }
         }
 
-        public V AddOrUpdate(K key, Func<K, V> addValueFactory, Func<K, V, V> updateValueFactory)
+        public TValue AddOrUpdate(TKey key, Func<TKey, TValue> addValueFactory, Func<TKey, TValue, TValue> updateValueFactory)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
             if (addValueFactory == null) { throw new ArgumentNullException("addValueFactory"); }
             if (updateValueFactory == null) { throw new ArgumentNullException("updateValueFactory"); }
             while (true)
             {
-                if (TryGetValue(key, out V held))
+                if (TryGetValue(key, out TValue held))
                 {
-                    V updated = updateValueFactory(key, held);
+                    TValue updated = updateValueFactory(key, held);
                     if (TryUpdate(key, updated, held)) { return updated; }
                 }
-                else if (TryAddInternal(key, addValueFactory(key), false, out V resulting))
+                else if (TryAddInternal(key, addValueFactory(key), false, out TValue resulting))
                 {
                     return resulting;
                 }
             }
         }
 
-        public V AddOrUpdate<TArg>(K key, Func<K, TArg, V> addValueFactory, Func<K, V, TArg, V> updateValueFactory, TArg factoryArgument)
+        public TValue AddOrUpdate<TArg>(TKey key, Func<TKey, TArg, TValue> addValueFactory, Func<TKey, TValue, TArg, TValue> updateValueFactory, TArg factoryArgument)
         {
             if (key == null) { throw new ArgumentNullException("key"); }
             if (addValueFactory == null) { throw new ArgumentNullException("addValueFactory"); }
             if (updateValueFactory == null) { throw new ArgumentNullException("updateValueFactory"); }
             while (true)
             {
-                if (TryGetValue(key, out V held))
+                if (TryGetValue(key, out TValue held))
                 {
-                    V updated = updateValueFactory(key, held, factoryArgument);
+                    TValue updated = updateValueFactory(key, held, factoryArgument);
                     if (TryUpdate(key, updated, held)) { return updated; }
                 }
-                else if (TryAddInternal(key, addValueFactory(key, factoryArgument), false, out V resulting))
+                else if (TryAddInternal(key, addValueFactory(key, factoryArgument), false, out TValue resulting))
                 {
                     return resulting;
                 }
@@ -3249,32 +3249,32 @@ namespace System.Collections.Concurrent
         }
 
         /// Bucket by bucket, each chain head first, under every lock.
-        public KeyValuePair<K, V>[] ToArray()
+        public KeyValuePair<TKey, TValue>[] ToArray()
         {
             int acquired = 0;
             try
             {
                 AcquireAllLocks(ref acquired);
-                KeyValuePair<K, V>[] array = new KeyValuePair<K, V>[CountNoLocks()];
+                KeyValuePair<TKey, TValue>[] array = new KeyValuePair<TKey, TValue>[CountNoLocks()];
                 CopyToPairs(array, 0);
                 return array;
             }
             finally { ReleaseLocks(acquired); }
         }
 
-        private void CopyToPairs(KeyValuePair<K, V>[] array, int index)
+        private void CopyToPairs(KeyValuePair<TKey, TValue>[] array, int index)
         {
             foreach (Node? head in _tables.Buckets)
             {
                 for (Node? n = head; n != null; n = n.Next)
                 {
-                    array[index] = new KeyValuePair<K, V>(n.Key, n.Value);
+                    array[index] = new KeyValuePair<TKey, TValue>(n.Key, n.Value);
                     index = index + 1;
                 }
             }
         }
 
-        public ICollection<K> Keys
+        public ICollection<TKey> Keys
         {
             get
             {
@@ -3282,18 +3282,18 @@ namespace System.Collections.Concurrent
                 try
                 {
                     AcquireAllLocks(ref acquired);
-                    List<K> keys = new List<K>(CountNoLocks());
+                    List<TKey> keys = new List<TKey>(CountNoLocks());
                     foreach (Node? head in _tables.Buckets)
                     {
                         for (Node? n = head; n != null; n = n.Next) { keys.Add(n.Key); }
                     }
-                    return new ReadOnlyCollection<K>(keys);
+                    return new ReadOnlyCollection<TKey>(keys);
                 }
                 finally { ReleaseLocks(acquired); }
             }
         }
 
-        public ICollection<V> Values
+        public ICollection<TValue> Values
         {
             get
             {
@@ -3301,59 +3301,59 @@ namespace System.Collections.Concurrent
                 try
                 {
                     AcquireAllLocks(ref acquired);
-                    List<V> values = new List<V>(CountNoLocks());
+                    List<TValue> values = new List<TValue>(CountNoLocks());
                     foreach (Node? head in _tables.Buckets)
                     {
                         for (Node? n = head; n != null; n = n.Next) { values.Add(n.Value); }
                     }
-                    return new ReadOnlyCollection<V>(values);
+                    return new ReadOnlyCollection<TValue>(values);
                 }
                 finally { ReleaseLocks(acquired); }
             }
         }
 
-        IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
-        IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
+        IEnumerable<TKey> IReadOnlyDictionary<TKey, TValue>.Keys => Keys;
+        IEnumerable<TValue> IReadOnlyDictionary<TKey, TValue>.Values => Values;
 
         /// WITH NO LOCK, as .NET's: the table as it was when the walk began,
         /// bucket by bucket, each chain as it is when it is reached -- a walk
         /// may see what other threads add or remove meanwhile, and is never
         /// refused for it.
-        public IEnumerator<KeyValuePair<K, V>> GetEnumerator()
+        public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator()
         {
             Node?[] buckets = System.Threading.Volatile.Read(ref _tables).Buckets;
             for (int i = 0; i < buckets.Length; i++)
             {
                 for (Node? n = System.Threading.Volatile.Read(ref buckets[i]); n != null; n = System.Threading.Volatile.Read(ref n.Next))
                 {
-                    yield return new KeyValuePair<K, V>(n.Key, n.Value);
+                    yield return new KeyValuePair<TKey, TValue>(n.Key, n.Value);
                 }
             }
         }
 
-        void IDictionary<K, V>.Add(K key, V value)
+        void IDictionary<TKey, TValue>.Add(TKey key, TValue value)
         {
             if (!TryAdd(key, value)) { throw new ArgumentException("The key already existed in the dictionary."); }
         }
 
-        bool IDictionary<K, V>.Remove(K key)
+        bool IDictionary<TKey, TValue>.Remove(TKey key)
         {
-            return TryRemove(key, out V _);
+            return TryRemove(key, out TValue _);
         }
 
-        bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
+        bool ICollection<KeyValuePair<TKey, TValue>>.IsReadOnly => false;
 
-        void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item)
+        void ICollection<KeyValuePair<TKey, TValue>>.Add(KeyValuePair<TKey, TValue> item)
         {
-            ((IDictionary<K, V>)this).Add(item.Key, item.Value);
+            ((IDictionary<TKey, TValue>)this).Add(item.Key, item.Value);
         }
 
-        bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item)
+        bool ICollection<KeyValuePair<TKey, TValue>>.Contains(KeyValuePair<TKey, TValue> item)
         {
-            return TryGetValue(item.Key, out V held) && EqualityComparer<V>.Default.Equals(held, item.Value);
+            return TryGetValue(item.Key, out TValue held) && EqualityComparer<TValue>.Default.Equals(held, item.Value);
         }
 
-        void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex)
+        void ICollection<KeyValuePair<TKey, TValue>>.CopyTo(KeyValuePair<TKey, TValue>[] array, int arrayIndex)
         {
             if (array == null) { throw new ArgumentNullException("array"); }
             ArgumentOutOfRangeException.ThrowIfNegative(arrayIndex, "index");
@@ -3370,7 +3370,7 @@ namespace System.Collections.Concurrent
             finally { ReleaseLocks(acquired); }
         }
 
-        bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item)
+        bool ICollection<KeyValuePair<TKey, TValue>>.Remove(KeyValuePair<TKey, TValue> item)
         {
             return TryRemove(item);
         }

@@ -5,7 +5,7 @@
 // Int32 1 2 | String v | Int64 9 | Object w
 //
 // A generic method infers its type arguments from a template declared in a
-// namespace or inside a type -- ConcurrentDictionary<K, V>,
+// namespace or inside a type -- ConcurrentDictionary<TKey, TValue>,
 // ConcurrentQueue<T>, a program's Shop.Bag<T> and variant Shop.IShelf<out T>,
 // a nested Outer.Inner<T> and Outer.IFoo<out T>, and a list of them as an
 // IEnumerable of the interface -- as from one declared at the top: the

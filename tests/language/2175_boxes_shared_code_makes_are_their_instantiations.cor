@@ -10,7 +10,7 @@
 // InvalidCastException
 // True True False
 //
-// Structs boxed inside shared code -- a Dictionary's KeyValuePair<K, V> and
+// Structs boxed inside shared code -- a Dictionary's KeyValuePair<TKey, TValue> and
 // enumerators, SortedDictionary's, SortedList's, a class's KeyValuePair<A,
 // B> and <B, A> -- are boxes of their instantiations, found through the
 // shared code's type context.

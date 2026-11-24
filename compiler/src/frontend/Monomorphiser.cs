@@ -737,7 +737,7 @@ public sealed class Monomorphiser
 
     private CompilationUnit Run(CompilationUnit unit)
     {
-        // KEYED BY NAME AND ARITY, because `Func<A, R>` and `Func<A, B, R>` are
+        // KEYED BY NAME AND ARITY, because `Func<T, TResult>` and `Func<T1, T2, TResult>` are
         // two types that share a name -- which is how .NET spells them, and
         // therefore how anything hoping to compile C# has to spell them too.
         //
@@ -2452,8 +2452,8 @@ public sealed class Monomorphiser
         if (!_generic.TryGetValue(Arity(name, args.Count), out TypeDecl? template))
         {
             // NAMED, BUT NOT AT THIS ARITY. Worth telling apart from a name
-            // nobody declared: `Func<long>` on a machine that has Func<A,R> and
-            // Func<A,B,R> is a real mistake with a specific answer, and
+            // nobody declared: `Func<long>` on a machine that has Func<T,TResult> and
+            // Func<T1,T2,TResult> is a real mistake with a specific answer, and
             // "no such type" would send the author looking for a missing file.
             if (_generic.Keys.Any(k => k[..k.LastIndexOf('`')] == name))
             {
@@ -2801,10 +2801,10 @@ public sealed class Monomorphiser
         }
 
         // AN ARRAY'S SEQUENCES OVER THE ARGUMENTS IT HAS NOW. The reference as
-        // written names the template's own parameters: `KeyValuePair<K, V>[]`
-        // in Dictionary<K, V>, copied for int and long, is an array of
+        // written names the template's own parameters: `KeyValuePair<TKey, TValue>[]`
+        // in Dictionary<TKey, TValue>, copied for int and long, is an array of
         // KeyValuePair<int, long> -- asked with the written K and V, it made
-        // IEnumerable<KeyValuePair<K, V>> for parameters no scope has.
+        // IEnumerable<KeyValuePair<TKey, TValue>> for parameters no scope has.
         if (!open)
         {
             ArrayIsASequence(r, args);

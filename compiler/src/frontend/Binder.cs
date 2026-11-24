@@ -2711,7 +2711,7 @@ public sealed partial class Binder
 
     /// <summary>
     /// A SHARED STRUCT HELD BY SHARED CODE OVER ITS OWN PARAMETERS --
-    /// Memory<T>'s Span<T>, a Dictionary's KeyValuePair<K, V> -- whose members
+    /// Memory<T>'s Span<T>, a Dictionary's KeyValuePair<TKey, TValue> -- whose members
     /// are handed that instantiation's context: an entry of this code's type
     /// context, marked "context", which each instantiation fills with the
     /// struct's token (TypeDecl.NeedContexts, Lowering.StructContextEntry).
@@ -3669,7 +3669,7 @@ public sealed partial class Binder
             // A TEMPLATE IS KEYED BY ITS NAME AND ARITY, never by its name
             // alone.
             //
-            // `Func<A,R>` and `Func<A,B,R>` are two types sharing a name --
+            // `Func<T,TResult>` and `Func<T1,T2,TResult>` are two types sharing a name --
             // which is how .NET spells them and therefore how anything hoping
             // to compile C# has to -- so one key would make the second a
             // duplicate declaration. The monomorphiser has always keyed them
@@ -3884,7 +3884,7 @@ public sealed partial class Binder
         //
         // Keyed by the template's name and how many type arguments it takes --
         // which is exactly how the monomorphiser keys a template -- so
-        // Func<A,R> and Func<A,B,R> stay apart while their instantiations come
+        // Func<T,TResult> and Func<T1,T2,TResult> stay apart while their instantiations come
         // together.
         Dictionary<(string, int, int), int> shared = _familySlots;
 
@@ -7438,7 +7438,7 @@ public sealed partial class Binder
         // AN OPEN TEMPLATE APPLICATION -- `List<T>` where T is a method's own
         // type parameter, which the monomorphiser could not specialise because
         // only the checker learns what T is. Keyed by name and arity, because
-        // Func<A,R> and Func<A,B,R> are two types sharing a name.
+        // Func<T,TResult> and Func<T1,T2,TResult> are two types sharing a name.
         if (r.Args.Count > 0 && FindType(Arity(bare, r.Args.Count), out TypeSymbol? open)
             && open is not null)
         {
@@ -15637,9 +15637,10 @@ public sealed partial class Binder
         }
 
         // THROUGH THE APPLICATION FIRST. Invoke's parameters are the
-        // TEMPLATE's -- `Func<A,R>` says A -- and the parameter here is
-        // `Func<T,R>`, so A means T before T means Node. Two substitutions, in
-        // that order.
+        // TEMPLATE's -- `Func<T,TResult>` says T -- and the parameter here is
+        // `Func<TSource,TResult>`, so the template's T means TSource before
+        // TSource means Node. Two substitutions, in that order: the names may
+        // be the same ones (the template's TResult is the method's TResult).
         Dictionary<string, Type> applied = Applied(want);
         List<Type> taken = new();
 
