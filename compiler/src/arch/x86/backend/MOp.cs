@@ -334,8 +334,8 @@ public enum MOp : byte
     /// around its cold path instead of being kept clear of the three a call
     /// takes; it is still a call with a stack map (AInstr.IsSafepoint), and
     /// the three words pushed below it are read whole by the collector, as a
-    /// call's pushed arguments are -- HotSpot's and NativeAOT's register-
-    /// saving poll stubs, inlined at the site (Gc.ScanStack). The XMM
+    /// call's pushed arguments are (Gc.ScanOwnStack's KeepRange, read whole) --
+    /// HotSpot's and NativeAOT's register-saving poll stubs, inlined at the site. The XMM
     /// registers and the x87 are a call's as ever.
     /// </summary>
     CallSafe,

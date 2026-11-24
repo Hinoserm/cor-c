@@ -25,11 +25,11 @@ namespace Corsac.Lang.X86;
 /// the aligned ESP. A throw reaches one by the handler chain alone
 /// (SelectUnwind), which sets ESP from the record, and the record's ESP is
 /// read inline where the try opens (Lowering.PushHandler, an iterator's or
-/// async body's on each resume), after the prologue aligned it -- and nothing
-/// moves ESP in such a function. A fault that becomes an exception (the
+/// async body's on each resume), after the prologue aligned it and at depth 0
+/// -- Depths refuses a function that reads ESP anywhere else. A fault that becomes an exception (the
 /// CORSAC kernel's UserAccessFault) is thrown and goes by the chain the same
 /// way; a fault the kernel answers itself (Arch.Recover, a page mapped)
-/// resumes the instruction with its own ESP. Refused before, as a precaution.
+/// resumes the instruction with its own ESP.
 /// Last but FrameCompact, which then packs the EBP frame without them, and
 /// FramePointerFree. A leaf that gives EBP a value is left alone; any other
 /// leaf given aligned slots has a frame again (MFunction.Frameless off): its
@@ -48,10 +48,6 @@ internal static class AlignedSlots
             mem = x;
             return true;
         }
-        // WHERE ESP IS, as bytes below where the prologue left it, before
-        // each instruction (Depths): what a slot's offset off ESP adds there.
-        Dictionary<MInstr, int>? depth = Depths(m);
-        if (depth is null) return;
         SortedSet<int> slots = new();
         foreach (MBlock b in m.Blocks)
             foreach (MInstr i in b.Instrs)
@@ -71,6 +67,16 @@ internal static class AlignedSlots
         // and a frame of a page or more could step over a guard page. Counted
         // with the slots still in Frame.Size, so twice: on the safe side.
         if (m.Frame.Size + 4 * m.SavedRegs.Count + 16 * slots.Count + 15 >= 4096 && m.Frame.Size + 4 * m.SavedRegs.Count < 4096) return;
+        // WHERE ESP IS, as bytes below where the prologue left it, before
+        // each instruction (Depths): what a slot's offset off ESP adds there.
+        // Every instruction naming a slot has one, or nothing moves: an
+        // optimisation refuses, it never fails the compile.
+        Dictionary<MInstr, int>? depth = Depths(m);
+        if (depth is null) return;
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                foreach (MOperand o in i.Operands)
+                    if (Spill(o, out MMem mem) && slots.Contains(mem.Disp) && !depth.ContainsKey(i)) return;
         Dictionary<int, int> at = new();
         foreach (int disp in slots) at[disp] = 16 * at.Count;
         foreach (MBlock b in m.Blocks)
@@ -78,14 +84,12 @@ internal static class AlignedSlots
                 for (int k = 0; k < i.Operands.Count; k++)
                     if (Spill(i.Operands[k], out MMem mem) && at.TryGetValue(mem.Disp, out int to))
                     {
-                        // Only an instruction Depths reached names a slot: one it did not is never run.
-                        if (!depth.TryGetValue(i, out int below)) throw new InvalidOperationException($"{m.Source.Name}: an aligned slot named where ESP is not known");
-                        i.Operands[k] = new MMem(MReg.Of(Gpr.Esp), to + below) { IsSpill = true, Aligned = true };
+                        i.Operands[k] = new MMem(MReg.Of(Gpr.Esp), to + depth[i]) { IsSpill = true, Aligned = true };
                     }
         m.AlignedArea = 16 * at.Count;
         m.Frameless = false;
         m.Frame.Release(slots);
-        foreach (MBlock b in m.Blocks) FoldReloads(b.Instrs);
+        foreach (MBlock b in m.Blocks) FoldReloads(b.Instrs, depth);
     }
 
     /// <summary>
@@ -119,30 +123,66 @@ internal static class AlignedSlots
         if (m.Blocks.Count > 0) Enter(m.Blocks[0], 0, ref bad);
         foreach (MBlock b in m.Blocks)
             if (b.Source?.IsLandingPad == true) Enter(b, 0, ref bad);
-        List<MBlock> next = new();
+        bool pads = m.Blocks.Any(b => b.Source?.IsLandingPad == true);
         while (work.Count > 0 && !bad)
         {
             MBlock b = work.Pop();
             int d = into[b];
+            // ESP SET FROM A HANDLER RECORD on the way to a handler -- an
+            // inlined throw's `mov esp, [rec+8] ; mov ebp, [rec+12] ; jmp
+            // [rec+4]` -- leaves by the indirect jump for a landing pad, which
+            // is entered at depth 0 (rooted above): nothing after it in the
+            // block may name ESP or a slot, and the block goes nowhere else.
+            bool leaving = false;
             foreach (MInstr i in b.Instrs)
             {
+                if (leaving)
+                {
+                    if (i.Op == MOp.JmpInd) break;
+                    foreach (MOperand o in i.Operands)
+                        if (o is MReg { IsPhys: true, Phys: Gpr.Esp } || o is MMem mem && (mem.Base is { IsPhys: true, Phys: Gpr.Esp } || mem.IsSpill)) return null;
+                    if (i.Op is MOp.Jmp or MOp.Jcc or MOp.JmpTable or MOp.Push or MOp.Pop or MOp.Call or MOp.CallInd or MOp.Ret) return null;
+                    continue;
+                }
                 depth[i] = d;
+                if (i.Op == MOp.Mov && i.Operands is [MReg { IsPhys: true, Phys: Gpr.Esp }, MMem])
+                {
+                    leaving = true;
+                    continue;
+                }
+                // EACH JUMP AT ITS OWN DEPTH: a jump mid-block leaves at the
+                // depth there, not the block's last.
+                if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel label) Enter(label.Target, d, ref bad);
+                else if (i.Op == MOp.JmpTable) foreach (MBlock t in i.Table!) Enter(t, d, ref bad);
+                else if (i.Op == MOp.JmpInd) return null;
                 switch (i.Op)
                 {
                     case MOp.Push or MOp.Pushfd: d += 4; continue;
-                    case MOp.Pop or MOp.Popfd: d -= 4; continue;
+                    case MOp.Pop or MOp.Popfd: d -= 4; if (d < 0) return null; continue;
                     case MOp.Ret: return null;
                     case MOp.InlineAsm when i.Asm!.NeedsFrame: return null;
                     case MOp.Call or MOp.CallInd when i.Native: return null;
                     case MOp.Sub or MOp.Add when i.Operands is [MReg { IsPhys: true, Phys: Gpr.Esp }, MImm { Symbol: null } n]:
                         d += i.Op == MOp.Sub ? (int)n.Value : -(int)n.Value;
+                        if (d < 0) return null;
                         continue;
                 }
                 for (int k = 0; k < i.Operands.Count; k++)
-                    if (i.Operands[k] is MReg { IsPhys: true, Phys: Gpr.Esp } && (Roles.Of(i.Op, k) & Roles.Role.Def) != 0) return null;
+                {
+                    if (i.Operands[k] is not MReg { IsPhys: true, Phys: Gpr.Esp }) continue;
+                    if ((Roles.Of(i.Op, k) & Roles.Role.Def) != 0) return null;
+                    // ESP READ AS A VALUE where a handler record keeps it
+                    // (Lowering.PushHandler's StackPointer): at depth 0, the
+                    // aligned ESP a landing pad is entered with, or not at all.
+                    if (pads && d != 0) return null;
+                }
             }
-            m.SuccessorsInto(index[b], next);
-            foreach (MBlock s in next) Enter(s, d, ref bad);
+            if (leaving)
+            {
+                if (b.Instrs.Count == 0 || b.Instrs[^1].Op != MOp.JmpInd) return null;
+                continue;
+            }
+            if (!b.EndsUnconditionally && index[b] + 1 < m.Blocks.Count) Enter(m.Blocks[index[b] + 1], d, ref bad);
         }
         return bad ? null : depth;
     }
@@ -166,7 +206,7 @@ internal static class AlignedSlots
     /// write counts as all of the register: nothing reads a scalar's top
     /// lanes (as ForwardXmmSpillLoads).
     /// </summary>
-    private static void FoldReloads(List<MInstr> instrs)
+    private static void FoldReloads(List<MInstr> instrs, Dictionary<MInstr, int> depth)
     {
         static bool Names(MInstr i, int reg)
         {
@@ -188,7 +228,10 @@ internal static class AlignedSlots
                 || load.Operands[0] is not MReg { IsXmm: true } x || load.Operands[1] is not MMem { Aligned: true } slot)
                 continue;
             int n = k + 1;
-            while (n < instrs.Count && !Names(instrs[n], x.Id) && !Jumps(instrs[n]) && !NamesSlot(instrs[n], slot.Disp)) n++;
+            // Not across a move of ESP: the operand's displacement is the load's depth's.
+            while (n < instrs.Count && !Names(instrs[n], x.Id) && !Jumps(instrs[n]) && !NamesSlot(instrs[n], slot.Disp)
+                   && depth.GetValueOrDefault(instrs[n], -1) == depth.GetValueOrDefault(instrs[k], -2)) n++;
+            if (n < instrs.Count && depth.GetValueOrDefault(instrs[n], -1) != depth.GetValueOrDefault(instrs[k], -2)) continue;
             if (n >= instrs.Count) continue;
             MInstr user = instrs[n];
             if (user.Op is not (MOp.XmmOpV or MOp.XmmOpVDef) || user.Operands[3] is not MReg { } source || source.Id != x.Id

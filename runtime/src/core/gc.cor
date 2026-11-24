@@ -1792,7 +1792,11 @@ public static class Gc
                 if ((regs & (LiveEbx << 16)) != 0) { slot = slot - w; atEbx = slot; }
                 if ((regs & (LiveEsi << 16)) != 0) { slot = slot - w; atEsi = slot; }
                 if ((regs & (LiveEdi << 16)) != 0) { slot = slot - w; atEdi = slot; }
-                // The arguments it is pushing, under its saved registers.
+                // The arguments it is pushing, under its saved registers --
+                // READ WHOLE, never by an argument count: a safepoint call
+                // that keeps the registers (the compiler's MOp.CallSafe, a
+                // loop's back-edge poll) pushes EAX, ECX and EDX here, and a
+                // reference held only in one of them is found nowhere else.
                 nuint lowest = start > from ? start : from;
                 if (slot > lowest)
                 {

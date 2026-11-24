@@ -116,6 +116,15 @@ internal static class Pic
             return;
         }
 
+        // A SAFEPOINT CALL TO THIS OBJECT'S OWN POLL stays a relative call, as a
+        // plain one does: through a loaded address the GOT pointer would be
+        // live across the loop, the pressure CallSafe is there to spare.
+        if (i.Op == MOp.CallSafe && i.Operands[0] is MImm { Symbol: not null } safe && isDefined(safe.Symbol!))
+        {
+            outList.Add(new MInstr(MOp.CallSafe, safe) { Width = i.Width, CallReloc = RelocKind.Rel32, Line = i.Line });
+            return;
+        }
+
         if (i.Op == MOp.Call && i.Operands.Count > 0 && i.Operands[0] is MImm { Symbol: not null } callee)
         {
             if (isDefined(callee.Symbol!))

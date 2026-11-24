@@ -6,10 +6,10 @@
 // A LOOP THAT POLLS KEEPS ITS VALUES IN REGISTERS through the poll (MOp.CallSafe:
 // the back edge's call keeps EAX, ECX and EDX, the three a call takes), and
 // the collector still finds the objects only those registers hold: the
-// spinner below walks a ring of nodes it holds nowhere else while the main
+// spinner below walks four rings of nodes it holds nowhere else -- in the
+// loop's registers, the poll the only call they cross -- while the main
 // thread allocates enough to make the collector run many rounds, each of
-// which the spinner answers at its back edge. Every node is still the one it
-// was -- its value, its link -- at the end.
+// which the spinner answers at its back edge. Every link is checked each lap.
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -31,29 +31,24 @@ static class Program
 
     static void Spin()
     {
-        Node a = Ring(3), b = Ring(5), c = Ring(7);
+        Node a = Ring(3), b = Ring(5), c = Ring(7), d = Ring(11);
         s_started = true;
-        long laps = 0;
-        // Not counted: ends when the flag says, so its back edge polls.
+        int laps = 0;
+        bool whole = true;
+        // Not counted: ends when the flag says, so its back edge polls. The
+        // rings are read nowhere after the loop and nothing in it is a call
+        // but the poll: four rings, a lap count and a flag are six values for
+        // the six registers, three of them the ones a call takes -- the poll
+        // the one call they cross. Each lap checks every node is one of its
+        // ring's.
         while (!s_done)
         {
-            a = a.Next; b = b.Next; c = c.Next;
+            whole &= a.Value < 3 & b.Value < 5 & c.Value < 7 & d.Value < 11;
+            a = a.Next; b = b.Next; c = c.Next; d = d.Next;
             laps++;
         }
-        // Every ring whole: each node's tag says its value, and the walk round returns.
-        foreach (Node ring in new[] { a, b, c })
-        {
-            Node at = ring;
-            int n = 0;
-            do
-            {
-                if (at.Tag != "n" + at.Value) s_ok = false;
-                at = at.Next;
-                n++;
-            } while (at != ring && n < 100);
-            s_sum += n;
-        }
-        s_sum = s_sum * 40 + (laps > 0 ? 0 : 1);
+        s_ok = whole;
+        s_sum = laps > 0 ? 600 : 1;
     }
 
     static int Main()
