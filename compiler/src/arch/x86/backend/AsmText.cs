@@ -294,16 +294,16 @@ internal static class AsmText
             case MOp.UcomiF:
             {
                 string name = i.Op switch { MOp.AddF => "add", MOp.SubF => "sub", MOp.MulF => "mul", MOp.DivF => "div", MOp.SqrtF => "sqrt", _ => "ucomi" };
-                if (Zeroes(i)) yield return $"pxor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
+                if (Zeroes(i)) yield return $"{(CpuModel.ZeroByPxor ? "pxor" : "xorps")} {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
                 yield return $"{name}{(i.Width == 8 ? "sd" : "ss")} {Op(i.Operands[0], i.Width, false)}, {Op(i.Operands[1], i.Width, true)}";
                 yield break;
             }
             case MOp.CvtFToF:
-                if (Zeroes(i)) yield return $"pxor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
+                if (Zeroes(i)) yield return $"{(CpuModel.ZeroByPxor ? "pxor" : "xorps")} {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
                 yield return $"{(i.Width == 8 ? "cvtss2sd" : "cvtsd2ss")} {Op(i.Operands[0], 8, false)}, {Op(i.Operands[1], i.Width == 8 ? 4 : 8, true)}";
                 yield break;
             case MOp.CvtIntToF:
-                if (Zeroes(i)) yield return $"pxor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
+                if (Zeroes(i)) yield return $"{(CpuModel.ZeroByPxor ? "pxor" : "xorps")} {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
                 yield return $"{(i.Width == 8 ? "cvtsi2sd" : "cvtsi2ss")} {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, true)}";
                 yield break;
             case MOp.XorPs:

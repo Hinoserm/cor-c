@@ -311,10 +311,10 @@ internal sealed class Encoder
     private static int Reg(MOperand o) => ((MReg)o).Id is var id && id < 8 ? id
         : throw new InvalidOperationException($"register v{id} left unallocated (EBP's value is made EBP by FramePointerFree)");
 
-    /// <summary>An XMM register's hardware number.</summary>
     /// <summary>
-    /// PXOR of the instruction's register with itself first, where that
-    /// breaks the wait on its old value (MInstr.ZeroFirst) -- and never where
+    /// PXOR (the Pentium 4) or XORPS (elsewhere) of the instruction's register
+    /// with itself first, where that breaks the wait on its old value
+    /// (MInstr.ZeroFirst, CpuModel.BreaksMerge) -- and never where
     /// the register is also what it reads, which a zeroing would destroy (a
     /// conversion or root of a register into itself merges into itself, a
     /// wait no zeroing removes).
@@ -322,10 +322,12 @@ internal sealed class Encoder
     private void ZeroFirst(MInstr i)
     {
         if (!i.ZeroFirst || i.Operands[1] is MReg { IsXmm: true } from && Xmm(from) == Xmm(i.Operands[0])) return;
-        B(0x66, 0x0F, 0xEF);
+        if (CpuModel.ZeroByPxor) B(0x66, 0x0F, 0xEF);
+        else B(0x0F, 0x57);
         XmmRM(Xmm(i.Operands[0]), i.Operands[0]);
     }
 
+    /// <summary>An XMM register's hardware number.</summary>
     private static int Xmm(MOperand o) => o is MReg { IsXmm: true } r ? r.XmmNumber
         : throw new InvalidOperationException($"{o} is not an XMM register (one left unallocated?)");
 

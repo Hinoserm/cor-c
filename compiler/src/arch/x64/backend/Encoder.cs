@@ -286,30 +286,27 @@ internal sealed class Encoder
     }
 
     /// <summary>
-    /// An SSE instruction: its mandatory prefix (66, F2 or F3) BEFORE the REX,
-    /// then 0F and the opcode.
-    /// </summary>
-    /// <summary>
-    /// A SCALAR WRITE OF 32 BITS WAITS ON THE REGISTER'S OLD VALUE --
-    /// CVTSI2SS, CVTSD2SS, SQRTSS keep the rest of it -- and the K8 keeps each
-    /// XMM register as two independent 64-bit halves, so the 64-bit writes
-    /// (CVTSI2SD, CVTSS2SD, SQRTSD) wait on nothing already (Agner Fog,
-    /// microarchitecture, chapter 20). PXOR of the register with itself first
-    /// is a value of its own there ("A false dependence can be broken by ...
-    /// PXOR, XORPS, XORPD", same chapter), so the 32-bit ones start at once
-    /// -- what LLVM's BreakFalseDeps does on every x86-64 target. Not where
-    /// the register is also the source: the zeroing would destroy it.
+    /// A SCALAR WRITE OF PART OF A REGISTER WAITS ON ITS OLD VALUE -- CVTSI2SS/SD,
+    /// CVTSS2SD/CVTSD2SS, SQRTSS/SD keep the rest of it. Zeroed first where the
+    /// processor takes the zeroing for a value of its own (CpuModel.BreaksMerge,
+    /// which gives the books): on the K8, x86-64's baseline, the 32-bit writes,
+    /// by XORPS; on a Pentium 4 named by --cpu, every one, by PXOR. Not where
+    /// the register is also the source: the zeroing would destroy it -- for a
+    /// conversion from an integer the source is a general register, another
+    /// file whatever its number.
     /// </summary>
     private void BreakMerge(MInstr i, int width)
     {
-        if (width != 4 || i.Operands[0] is not MReg to) return;
-        if (i.Operands[1] is MReg from && from.Hw == to.Hw && !IsGpr(i, from)) return;
-        Sse(0x66, false, to.Hw, to, 0xEF);
+        if (i.Operands[0] is not MReg to || !Corsac.Lang.X86.CpuModel.BreaksMerge(width)) return;
+        if (i.Op != MOp.CvtIntToF && i.Operands[1] is MReg from && from.Hw == to.Hw) return;
+        if (Corsac.Lang.X86.CpuModel.ZeroByPxor) Sse(0x66, false, to.Hw, to, 0xEF);
+        else Sse(0, false, to.Hw, to, 0x57);
     }
 
-    /// <summary>Whether the source register of a conversion from an integer is a general one (another register file from the XMM destination).</summary>
-    private static bool IsGpr(MInstr i, MReg from) => i.Op == MOp.CvtIntToF;
-
+    /// <summary>
+    /// An SSE instruction: its mandatory prefix (66, F2 or F3) BEFORE the REX,
+    /// then 0F and the opcode.
+    /// </summary>
     private void Sse(int prefix, bool w, int reg, MOperand rm, int opcode)
     {
         Segment(rm);
