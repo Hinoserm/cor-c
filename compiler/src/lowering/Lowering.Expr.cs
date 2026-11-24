@@ -3237,9 +3237,9 @@ public sealed partial class Lowering
         TypeSymbol shared = _b.TypeOf(at.CanonSelf!).Symbol ?? throw new InvalidOperationException("a shared copy's `this` has no class");
         VReg self = Eval(at.CanonSelf!);
         VReg vt = _e.Load(IrTypes.Word, self, 0);
-        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(shared) * w);
-        return _e.Load(IrTypes.Word, table, (long)(at.CanonSlot + 1) * w);
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes, immutable: true);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(shared) * w, immutable: true);
+        return _e.Load(IrTypes.Word, table, (long)(at.CanonSlot + 1) * w, immutable: true);
     }
 
     /// <summary>
@@ -3253,9 +3253,9 @@ public sealed partial class Lowering
         TypeSymbol self = _b.TypeOf(at.CanonSelf!).Symbol ?? throw new InvalidOperationException("a shared copy's `this` has no class");
         VReg obj = Eval(at.CanonSelf!);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(self) * w);
-        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes, immutable: true);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(self) * w, immutable: true);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0, immutable: true));
         VReg result = _f.NewReg(IrTypes.Word, "madevt");
         Block read = _f.NewBlock("maderead");
         Block own = _f.NewBlock("madeown");
@@ -3331,9 +3331,9 @@ public sealed partial class Lowering
         TypeSymbol self = _b.TypeOf(at.CanonSelf!).Symbol ?? throw new InvalidOperationException("a shared copy's `this` has no class");
         VReg obj = Eval(at.CanonSelf!);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(self) * w);
-        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes, immutable: true);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(self) * w, immutable: true);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0, immutable: true));
         VReg result = _f.NewReg(IrTypes.Word, "canonty");
         Block read = _f.NewBlock("canontyread");
         Block end = _f.NewBlock("canontyend");
@@ -3415,9 +3415,9 @@ public sealed partial class Lowering
     {
         int w = _t.WordSize;
         VReg vt = _e.Load(IrTypes.Word, self, 0);
-        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w);
-        return _e.Load(IrTypes.Word, table, (long)(entry + 1) * w);
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes, immutable: true);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w, immutable: true);
+        return _e.Load(IrTypes.Word, table, (long)(entry + 1) * w, immutable: true);
     }
 
     /// <summary>
@@ -3472,9 +3472,9 @@ public sealed partial class Lowering
         int w = _t.WordSize;
         int start = 2 * parameters + call.HiddenNeedBase;
         VReg vt = _e.Load(IrTypes.Word, from, 0);
-        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w);
-        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes, immutable: true);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w, immutable: true);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0, immutable: true));
         VReg result = _f.NewReg(IrTypes.Word, "tdictarg");
         result.Number = true;
         Block holds = _f.NewBlock("tdicthas");
@@ -3570,9 +3570,9 @@ public sealed partial class Lowering
             }
             int w = _t.WordSize;
             VReg vt = _e.Load(IrTypes.Word, contextSelf, 0);
-            VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-            VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(running.Owner) * w);
-            return R(_e.Load(IrTypes.Word, table, (long)(2 * t.CanonParam + 1) * w));
+            VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes, immutable: true);
+            VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(running.Owner) * w, immutable: true);
+            return R(_e.Load(IrTypes.Word, table, (long)(2 * t.CanonParam + 1) * w, immutable: true));
         }
         return statics && ShapeDescriptor(t) is string named ? R(_e.Address(named)) : Imm(0, IrTypes.Word);
     }

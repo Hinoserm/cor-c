@@ -54,8 +54,9 @@ public static class IrInfo
             case Opcode.ArrayLength:
                 // A load through a register may fault on a bad address, and
                 // the program is entitled to that fault; one from a static
-                // or a frame slot addresses memory the program owns.
-                return i.Operands[0] is SymOperand or SlotOperand;
+                // or a frame slot addresses memory the program owns, and an
+                // immutable one data the link made (Instr.Immutable).
+                return i.Operands[0] is SymOperand or SlotOperand || i.Immutable && !i.Device;
             case Opcode.Copy:
             case Opcode.Add:
             case Opcode.Sub:

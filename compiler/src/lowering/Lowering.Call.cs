@@ -116,9 +116,9 @@ public sealed partial class Lowering
     {
         int w = _t.WordSize;
         VReg vt = _e.Load(IrTypes.Word, self, 0);
-        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w);
-        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes, immutable: true);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w, immutable: true);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0, immutable: true));
         VReg result = _f.NewReg(IrTypes.Word, "ctxentry");
         Block read = _f.NewBlock("ctxread"), end = _f.NewBlock("ctxend");
         _e.CopyTo(result, Imm(0, IrTypes.Word));

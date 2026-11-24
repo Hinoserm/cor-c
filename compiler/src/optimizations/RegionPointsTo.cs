@@ -1085,7 +1085,7 @@ public sealed class RegionPointsTo : IModulePass
                 {
                     Op = i.Op, Dest = i.Dest is null ? null : Reg(i.Dest), Size = i.Size, Signed = i.Signed, Offset = i.Offset,
                     Callee = i.Callee, DispatchType = i.DispatchType, Field = i.Field, Number = i.Number, Family = i.Family, Line = i.Line,
-                    RegionSite = i.RegionSite, Device = i.Device,
+                    RegionSite = i.RegionSite, Device = i.Device, Immutable = i.Immutable,
                     Default = i.Default is null ? null : blocks[i.Default],
                 };
                 foreach (Operand o in i.Operands)

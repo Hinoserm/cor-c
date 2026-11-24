@@ -181,6 +181,11 @@ public sealed class Gvn : IPass
                 // answers it, and it answers nothing after it.
                 case Opcode.Load when i.Device:
                     continue;
+                // WHAT NEVER CHANGES (Instr.Immutable): numbered as a value,
+                // its address, offset and width, kept across every store and
+                // call -- a type context read twice in a shared copy is one.
+                case Opcode.Load when i.Immutable:
+                    break;
                 case Opcode.Load:
                     {
                         string key = AddressKey(i.Operands[0], i.Offset);
@@ -359,6 +364,8 @@ public sealed class Gvn : IPass
         }
         // A pure call (IrInfo.IsPure: Sys.CallerRegister) is its callee's.
         if (i.Op == Opcode.Call) sb.Append(i.Callee).Append(':');
+        // An immutable read's word: its offset, width and sign.
+        if (i.Op == Opcode.Load) sb.Append(i.Offset).Append('/').Append(i.Size).Append(i.Signed ? 's' : 'u').Append(':');
         List<string> keys = i.Operands.Select(OperandKey).ToList();
         if (Commutative(i.Op) && keys.Count == 2 && string.CompareOrdinal(keys[0], keys[1]) > 0)
         {

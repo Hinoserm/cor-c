@@ -29,6 +29,8 @@ public sealed class NullCheckFold : IPass
     public void Run(Function function)
     {
         HashSet<VReg>? used = null;
+        Cfg? cfg = null;
+        Defs? defs = null;
         foreach (Block block in function.Blocks)
         {
             for (int k = 0; k < block.Instrs.Count; k++)
@@ -48,6 +50,11 @@ public sealed class NullCheckFold : IPass
                     if (before.Dest == receiver) break;
                     made = Accesses(before, receiver);
                 }
+                // Or an access in a block every way here passes through first,
+                // through the receiver written once: a type context's chain
+                // read off `this` in a cold arm, after the method's first
+                // line read a field of it.
+                if (!made) made = MadeBefore(function, block, receiver, ref cfg, ref defs);
                 if (made)
                 {
                     block.Instrs.RemoveAt(k);
@@ -69,6 +76,28 @@ public sealed class NullCheckFold : IPass
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Whether a block strictly dominating `block` reads or writes through
+    /// `receiver`, written once (or a parameter), after it is written: it
+    /// faulted there if it was null, and holds the same value here.
+    /// </summary>
+    private static bool MadeBefore(Function function, Block block, VReg receiver, ref Cfg? cfg, ref Defs? defs)
+    {
+        cfg ??= PipelineAnalyses.CfgOf(function);
+        if (cfg.Roots.Count != 1) return false;
+        defs ??= PipelineAnalyses.DefsOf(function);
+        if (!defs.IsSingle(receiver)) return false;
+        (Block Block, int Index)? site = defs.Site(receiver) is { } s ? (s.Block, s.Index) : null;
+        for (Block? up = cfg.Idom(block); up is not null; up = cfg.Idom(up))
+        {
+            int from = site is { } d && ReferenceEquals(d.Block, up) ? d.Index + 1 : 0;
+            for (int j = from; j < up.Instrs.Count; j++)
+                if (Accesses(up.Instrs[j], receiver)) return true;
+            if (site is { } w && ReferenceEquals(w.Block, up)) return false;
+        }
+        return false;
     }
 
     /// <summary>Whether an instruction reads or writes through `receiver` within the page a null fault covers.</summary>

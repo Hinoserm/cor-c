@@ -31,7 +31,7 @@ public sealed class Instr : OperandList
     private int _offset;
     private int _line;
 
-    private const byte SignedFlag = 1, NumberFlag = 2, RegionSiteFlag = 4, BigOffsetFlag = 8, BigSizeFlag = 16, DeviceFlag = 32;
+    private const byte SignedFlag = 1, NumberFlag = 2, RegionSiteFlag = 4, BigOffsetFlag = 8, BigSizeFlag = 16, DeviceFlag = 32, ImmutableFlag = 64;
 
     /// <summary>
     /// A number no other instruction or block of the process ever has: what
@@ -198,6 +198,18 @@ public sealed class Instr : OperandList
     public bool Device { get => (_flags & DeviceFlag) != 0; set => SetFlag(DeviceFlag, value); }
 
     /// <summary>
+    /// Load: A READ OF WHAT NEVER CHANGES AND IS ALWAYS THERE -- a word of a
+    /// type's descriptor, of the type context it names, of a context table:
+    /// data the link made, read from an address an earlier read of the same
+    /// chain gave (Lowering's type context reads). It cannot fault and no
+    /// write changes it, so it is pure (IrInfo.IsPure): one nobody reads goes
+    /// (DeadCodeElimination), and two of the same word are one across stores
+    /// and calls (Gvn). An object's own first word is not one: the object may
+    /// be null.
+    /// </summary>
+    public bool Immutable { get => (_flags & ImmutableFlag) != 0; set => SetFlag(ImmutableFlag, value); }
+
+    /// <summary>
     /// What a call's Field says when its result is a struct its callee made
     /// for it: a struct value is returned as a block nobody else holds (every
     /// `return` copies what it did not just make), whoever the callee is, so
@@ -264,7 +276,7 @@ public sealed class Instr : OperandList
         {
             Op = Op, Dest = Dest, Size = Size, Signed = Signed, Offset = Offset, Callee = Callee,
             DispatchType = DispatchType, Field = Field, Number = Number, Family = Family,
-            RegionSite = RegionSite, Device = Device, Line = Line, Default = Default,
+            RegionSite = RegionSite, Device = Device, Immutable = Immutable, Line = Line, Default = Default,
         };
         foreach (Operand o in Operands) made.Operands.Add(o);
         made.PassedByValue = PassedByValue;

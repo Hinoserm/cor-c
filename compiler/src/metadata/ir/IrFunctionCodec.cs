@@ -26,7 +26,7 @@ public static class IrFunctionCodec
     private const int Version = 0;
 
     // An instruction's marks (Instr): one byte.
-    private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4, DeviceMark = 8, PassedMark = 16;
+    private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4, DeviceMark = 8, PassedMark = 16, ImmutableMark = 32;
 
     /// <summary>
     /// What Read charges for the function's record, `payloadBytes` long:
@@ -210,7 +210,7 @@ public static class IrFunctionCodec
                 writer.Write(instruction.Size); writer.Write(instruction.Signed); writer.Write(instruction.Offset);
                 IrBinary.Text(writer, instruction.Callee); IrBinary.Text(writer, instruction.DispatchType); IrBinary.Text(writer, instruction.Field); writer.Write(placeless ? 0 : instruction.Line);
                 writer.Write((byte)((instruction.Number ? NumberMark : 0) | (instruction.RegionSite ? RegionSiteMark : 0) | (instruction.Family is not null ? FamilyMark : 0)
-                    | (instruction.Device ? DeviceMark : 0) | (instruction.PassedByValue != 0 ? PassedMark : 0)));
+                    | (instruction.Device ? DeviceMark : 0) | (instruction.PassedByValue != 0 ? PassedMark : 0) | (instruction.Immutable ? ImmutableMark : 0)));
                 if (instruction.Family is not null) IrBinary.Text(writer, instruction.Family);
                 if (instruction.PassedByValue != 0) writer.Write(instruction.PassedByValue);
                 writer.Write(instruction.Operands.Count);
@@ -360,10 +360,11 @@ public static class IrFunctionCodec
                         Callee = callee, DispatchType = dispatchType, Field = field, Line = reader.ReadInt32(),
                     };
                     byte marks = reader.ReadByte();
-                    if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark | DeviceMark | PassedMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
+                    if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark | DeviceMark | PassedMark | ImmutableMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
                     instruction.Number = (marks & NumberMark) != 0;
                     instruction.RegionSite = (marks & RegionSiteMark) != 0;
                     instruction.Device = (marks & DeviceMark) != 0;
+                    instruction.Immutable = (marks & ImmutableMark) != 0;
                     if ((marks & FamilyMark) != 0)
                         instruction.Family = IrBinary.NameOrNull(reader, budget) ?? throw new InvalidDataException("Invalid IR instruction field");
                     ulong passed = (marks & PassedMark) != 0 ? reader.ReadUInt64() : 0;
