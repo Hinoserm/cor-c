@@ -64,12 +64,15 @@ public sealed class LoopLoads : IPass
 
     private static System.Runtime.CompilerServices.StrongBox<int> HeldBy(Block way) => Held.GetValue(way, _ => new(0));
 
+    /// <summary>The reads a way in holds, with no entry made for one that holds none.</summary>
+    private static int HeldAt(Block way) => Held.TryGetValue(way, out var held) ? held.Value : 0;
+
     public void Run(Function function)
     {
         if (function.Async is not null || function.Blocks.Count < 2) return;
-        // NO LOOP, NO TABLES: a block jumping back to one before it in
-        // the function's order is the cheap sign of one (a loop the order
-        // does not show is found by the Cfg the next time round).
+        // NO LOOP, NO TABLES: every loop has an edge from a block to one
+        // no later than it in the function's order -- a switch's default
+        // among the edges -- and a function with none has no loop.
         bool back = false;
         for (int k = 0; k < function.Blocks.Count; k++) function.Blocks[k].Order = k;
         foreach (Block b in function.Blocks)
@@ -78,7 +81,9 @@ public sealed class LoopLoads : IPass
             foreach (Instr i in b.Instrs)
             {
                 if (i.Op is Opcode.Phi or Opcode.LabelAddr) return;
-                if (i.IsTerminator) for (int t = 0; t < i.TargetCount; t++) back |= i.TargetAt(t).Order <= b.Order;
+                if (!i.IsTerminator) continue;
+                for (int t = 0; t < i.TargetCount; t++) back |= i.TargetAt(t).Order <= b.Order;
+                if (i.Default is { } fallback) back |= fallback.Order <= b.Order;
             }
         }
         if (!back) return;
@@ -134,9 +139,9 @@ public sealed class LoopLoads : IPass
     /// </summary>
     private static bool Hoist(Block first, Block into, Summary summary, Func<VReg, bool> invariant, Defs defs, Block?[] sites)
     {
-        System.Runtime.CompilerServices.StrongBox<int> held = HeldBy(into);
+        int held = HeldAt(into);
         bool moved = false;
-        for (int k = 0; k < first.Instrs.Count && held.Value < Budget; k++)
+        for (int k = 0; k < first.Instrs.Count && held < Budget; k++)
         {
             Instr i = first.Instrs[k];
             if (ReferenceEquals(i, first.Terminator)) break;
@@ -145,7 +150,7 @@ public sealed class LoopLoads : IPass
                 first.Instrs.RemoveAt(k--);
                 into.Instrs.Insert(into.Instrs.Count - 1, i);
                 if (i.Dest!.Id < sites.Length) sites[i.Dest.Id] = into;
-                held.Value++;
+                HeldBy(into).Value = ++held;
                 moved = true;
                 continue;
             }
@@ -172,7 +177,19 @@ public sealed class LoopLoads : IPass
     /// never a sum.
     /// </summary>
     private static bool Interior(VReg address, Defs defs)
-        => !defs.IsSingle(address) || defs.Site(address) is { } site && site.Block.Instrs[site.Index].Op is Opcode.Add or Opcode.Sub;
+    {
+        // Through copies of it, as LoadReuse's ArrayBased follows them.
+        for (int depth = 0; depth < 6; depth++)
+        {
+            if (!defs.IsSingle(address)) return true;
+            if (defs.Site(address) is not { } site) return false;
+            Instr d = site.Block.Instrs[site.Index];
+            if (d.Op is Opcode.Add or Opcode.Sub) return true;
+            if (d.Op != Opcode.Copy || d.Operands is not [RegOperand { Reg: var from }]) return false;
+            address = from;
+        }
+        return true;
+    }
 
     /// <summary>Nothing the program sees, and no fault but a read's: computing, and reads of memory -- never a device's, whose every read is seen.</summary>
     private static bool Quiet(Instr i)
@@ -189,6 +206,8 @@ public sealed class LoopLoads : IPass
     /// </summary>
     private static bool Guard(Function function, Cfg cfg, HashSet<Block> loop, Block header, Block preheader, Summary summary, Func<VReg, bool> invariant, Defs defs)
     {
+        // A loop whose budget is spent gets no way in it could move nothing to.
+        if (HeldAt(preheader) >= Budget) return false;
         if (header.Terminator is not { Op: Opcode.Branch } branch || branch.TargetCount != 2 || header.Instrs.Count > 9) return false;
         int stay = loop.Contains(branch.TargetAt(0)) ? 0 : 1;
         Block body = branch.TargetAt(stay), exit = branch.TargetAt(1 - stay);
@@ -205,7 +224,7 @@ public sealed class LoopLoads : IPass
         if (!any) return false;
         Block way = function.NewBlock(body.Label + ".in");
         // One budget for the loop: what its first way in holds already counts.
-        HeldBy(way).Value = HeldBy(preheader).Value;
+        if (HeldAt(preheader) is > 0 and var already) HeldBy(way).Value = already;
         Instr jump = new() { Op = Opcode.Jump, Line = branch.Line };
         jump.SetTargets(new[] { body });
         way.Instrs.Add(jump);

@@ -4,10 +4,11 @@ using Corsac.Lang.Ir;
 namespace Corsac.Lang.Opt;
 using Block = Corsac.Lang.Ir.Block;
 
-/// <summary>Reuse successful ordinary reads on a single-predecessor dominated
-/// path, and across a join from its dominator where nothing between writes
-/// it (WalkDominators). Unlike SSA GVN, both the address and captured result must still name
-/// the same values at the consumer. Calls and synchronization forget all
+/// <summary>Reuse successful ordinary reads down the dominator tree: along a
+/// single-predecessor path, and across a join from its dominator where
+/// nothing between writes them (WalkDominators). Unlike SSA GVN, both the
+/// address and captured result must still name the same values at the
+/// consumer. Calls and synchronization forget all
 /// memory, and so does a write, but where the write and a read are told
 /// apart (Managed below): a static's own cell and an object's field or an
 /// array's element are never the same word.</summary>
@@ -55,9 +56,10 @@ public sealed class LoadReuse : IPass
                 && (from != function.Entry || site.Index < fromIndex)
                 && cfg.Dominates(function.Entry, from) && cfg.Dominates(function.Entry, use);
         }
-        // ONE TABLE, SCOPED (Cfg.WalkSolePredecessors): a block whose sole
-        // predecessor dominates it starts from that predecessor's table as it
-        // ended, and what it adds is undone when the walk leaves it. A table
+        // ONE TABLE, SCOPED (WalkDominators): a block starts from its
+        // immediate dominator's table as it ended -- less, at a join, what
+        // the blocks between may write -- and what it adds is undone when the
+        // walk leaves it. A table
         // copied for every such block was this pass's whole allocation, and
         // the collector's.
         // ONE SCOPE A THREAD, kept: its tables are empty again when a walk
@@ -123,7 +125,8 @@ public sealed class LoadReuse : IPass
     private static void WalkDominators(Cfg cfg, Scope scope)
     {
         Liveness? live = null;
-        Stack<(Block Block, int Mark, bool Entered)> work = new();
+        Stack<(Block Block, int Mark, bool Entered)> work = scope.Work;
+        work.Clear();
         work.Push((cfg.Function.Blocks[0], 0, false));
         while (work.Count > 0)
         {
@@ -143,13 +146,18 @@ public sealed class LoadReuse : IPass
 
     [ThreadStatic] private static Scope? _scope;
 
-    private sealed class Scope : Cfg.IScopedWalk
+    private sealed class Scope
     {
         public Func<VReg, Block, int, Block, int, bool> Stable = null!;
         public Func<Instr, bool> Managed = null!;
         private readonly Dictionary<Key, Entry> _memory = new();
         private readonly List<(Key Key, Entry Was, bool Had)> _undo = new();
         private readonly List<Key> _all = new();
+
+        /// <summary>The walk's and the joins' scratch, kept with the thread's scope (WalkDominators, Between).</summary>
+        public readonly Stack<(Block Block, int Mark, bool Entered)> Work = new();
+        private readonly HashSet<Block> _region = new(ReferenceEqualityComparer.Instance);
+        private readonly Stack<Block> _todo = new();
 
         public int Mark => _undo.Count;
 
@@ -231,14 +239,19 @@ public sealed class LoadReuse : IPass
         /// or none to come from, and it starts from nothing. A loop's header
         /// keeps a read only where its register is live into it already: one
         /// held round the loop for it is a register the loop's body lacks on
-        /// 32-bit x86, and a spill reread costs what the read did.
+        /// 32-bit x86, and a spill reread costs what the read did. (Liveness
+        /// is made at the first header asked, after the reads this walk has
+        /// replaced before it: it only chooses which reads a header keeps,
+        /// never whether one is right.)
         /// </summary>
         public void Between(Cfg cfg, Block join, Block? dominator, ref Liveness? live)
         {
             if (_memory.Count == 0) return;
             if (dominator is null) { ForgetEverything(); return; }
-            HashSet<Block> region = new();
-            Stack<Block> todo = new();
+            HashSet<Block> region = _region;
+            Stack<Block> todo = _todo;
+            region.Clear();
+            todo.Clear();
             foreach (Block p in cfg.Preds(join)) todo.Push(p);
             bool loop = false;
             while (todo.TryPop(out Block? b))
@@ -251,7 +264,6 @@ public sealed class LoadReuse : IPass
             }
             foreach (Block b in region)
                 foreach (Instr i in b.Instrs) Kill(i);
-            if (ReferenceEquals(dominator, join)) loop = true;
             if (loop && _memory.Count > 0)
             {
                 live ??= new Liveness(cfg);
@@ -266,10 +278,20 @@ public sealed class LoadReuse : IPass
             }
         }
 
+        /// <summary>An array being made: its length forgotten (the one write of a length there is).</summary>
+        private void MadeAgain(Instr i)
+        {
+            if (i.Operands.Count == 0 || i.Operands[0] is not RegOperand { Reg: var made }) return;
+            foreach (var pair in _memory) if (pair.Key.Size == Length && pair.Key.Base == (object)made) _all.Add(pair.Key);
+            foreach (Key gone in _all) { _undo.Add((gone, _memory[gone], true)); _memory.Remove(gone); }
+            _all.Clear();
+        }
+
         /// <summary>What an instruction may write forgotten, as Visit forgets it, its reads not remembered.</summary>
         private void Kill(Instr i)
         {
             if (i.Op is Opcode.ArrayLength or Opcode.Branch or Opcode.Jump) return;
+            if (i.Op == Opcode.InitArrayLength) MadeAgain(i);
             if (i.Op == Opcode.Load && !i.Device && i.Dest is { } result && result.Type.IsInt() && Address(i, out _)) return;
             if (i.Op == Opcode.Store && !i.Device) { Written(i); return; }
             if (!IrInfo.IsPure(i)) ForgetAll();
@@ -315,12 +337,7 @@ public sealed class LoadReuse : IPass
                     Set(lengthKey, new(i, block, index, true));
                     continue;
                 }
-                if (i.Op == Opcode.InitArrayLength && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var made })
-                {
-                    foreach (var pair in _memory) if (pair.Key.Size == Length && pair.Key.Base == (object)made) _all.Add(pair.Key);
-                    foreach (Key gone in _all) { _undo.Add((gone, _memory[gone], true)); _memory.Remove(gone); }
-                    _all.Clear();
-                }
+                if (i.Op == Opcode.InitArrayLength) MadeAgain(i);
                 if (i.Op == Opcode.Load && !i.Device && i.Dest is { } result && result.Type.IsInt()
                     && Address(i, out Key key))
                 {
