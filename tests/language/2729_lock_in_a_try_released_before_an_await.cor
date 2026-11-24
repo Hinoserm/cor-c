@@ -1,0 +1,63 @@
+// test: lock_in_a_try_released_before_an_await
+// expect-exit: 0
+// expect-output:
+// taken 103
+// created True True
+//
+// A LOCK TAKEN AND LEFT INSIDE A TRY WITH CATCHES is not held after it: a
+// lock is Enter, then a try whose finally is Exit, and an exception from its
+// body reaches the outer catch only through that finally. The check that
+// refuses an await while a lock is held (Binder.AwaitChecks) counted the lock
+// at the throw, so a method like TryTake below was one that takes a lock and
+// keeps it, and the await after a call of it was refused -- the build tool's
+// worker pool (tools/build WorkerPool.TakeAsync). And .NET's
+// Directory.GetCreationTimeUtc and GetLastAccessTimeUtc. Checked against
+// .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
+
+class Pool
+{
+    private readonly object gate = new object();
+    private readonly List<int> held = new List<int>();
+    private int tries;
+
+    public bool TryTake()
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            try
+            {
+                tries++;
+                if (tries < 3) throw new IOException("busy");
+                lock (gate) held.Add(i);
+                return true;
+            }
+            catch (IOException) { }
+        }
+        return false;
+    }
+
+    public async Task<int> TakeAsync()
+    {
+        int waits = 0;
+        while (!TryTake())
+        {
+            await Task.Delay(1);
+            waits++;
+        }
+        lock (gate) return held.Count * 100 + waits * 10 + tries;
+    }
+}
+
+static class P
+{
+    static void Main()
+    {
+        Console.WriteLine("taken " + new Pool().TakeAsync().Result);
+        Console.WriteLine("created " + (Directory.GetCreationTimeUtc(".") <= DateTime.UtcNow) + " " + (Directory.GetLastAccessTimeUtc(".") <= DateTime.UtcNow));
+    }
+}

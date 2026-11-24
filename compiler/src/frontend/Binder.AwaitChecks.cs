@@ -531,9 +531,21 @@ public sealed partial class Binder
             }
             return h;
         }
-        for (int open = 0; open < w.Tries.Count; open++)
+        // Where a throw may come from, for every enclosing try's handlers:
+        // each statement's start -- but not a try's or a block's, which run
+        // nothing of their own there; what is in them says its own (a `lock`
+        // is Enter, then a try: entered holding the lock, it threw nothing
+        // yet; a finally is a block whose first statement is the Exit). Nor a
+        // release's (Monitor.Exit, a `lock`'s finally): it throws only where
+        // the lock was not held, so never with it counted -- recorded, the
+        // finally's way out of an exception took the lock to the outer
+        // handlers, and round a loop the count grew without end.
+        if (s is not (TryStmt or Block) && !(s is ExprStmt { Expr: CallExpr released } && LockEffectOf(released) == LockEffect.Give))
         {
-            w.Tries[open] = JoinLocks(w.Tries[open], h);
+            for (int open = 0; open < w.Tries.Count; open++)
+            {
+                w.Tries[open] = JoinLocks(w.Tries[open], h);
+            }
         }
 
         switch (s)
@@ -694,6 +706,10 @@ public sealed partial class Binder
                     w.Finallys.Add(ts.Finally);
                 }
                 int tryAt = w.Tries.Count - 1;
+                // What the enclosing tries' handlers had seen before this one:
+                // an exception from in here reaches them only through this
+                // finally (below).
+                HeldLocks[]? enclosing = ts.Finally is null ? null : w.Tries.GetRange(0, tryAt).ToArray();
                 HeldLocks body = WalkLockStmt(ts.Body, h, w);
                 HeldLocks observed = JoinLocks(w.Tries[tryAt], body);
                 HeldLocks ends = body;
@@ -715,7 +731,22 @@ public sealed partial class Binder
                 w.Finallys.RemoveAt(w.Finallys.Count - 1);
                 // The finally on the way out of an exception (it rethrows
                 // after), and on the normal way out.
-                WalkLockStmt(ts.Finally, JoinLocks(observed, ends), w);
+                // AN EXCEPTION LEAVES THROUGH THE FINALLY: an enclosing try's
+                // handlers see the locks as the finally left them (or as a
+                // throw inside the finally finds them), not as the throw in
+                // here found them -- a `lock` is Enter, then a try whose
+                // finally is Exit, and a throw inside its body reached an outer
+                // catch with the lock still counted, so `lock (gate) list.Add(x);`
+                // in a try was a lock taken and kept (tools/build's TryTake).
+                for (int k = 0; k < enclosing!.Length; k++)
+                {
+                    w.Tries[k] = enclosing[k];
+                }
+                HeldLocks thrownOut = WalkLockStmt(ts.Finally, JoinLocks(observed, ends), w);
+                for (int k = 0; k < enclosing.Length; k++)
+                {
+                    w.Tries[k] = JoinLocks(w.Tries[k], thrownOut);
+                }
                 return WalkLockStmt(ts.Finally, ends, w);
             }
 

@@ -3958,6 +3958,27 @@ public partial static class Directory
     {
         return GetLastWriteTimeUtc(path).ToLocalTime();
     }
+
+    // .NET's other two times of a directory, as a file's (FileSystemInfo).
+    public static DateTime GetLastAccessTimeUtc(string path)
+    {
+        return new DirectoryInfo(path).LastAccessTimeUtc;
+    }
+
+    public static DateTime GetLastAccessTime(string path)
+    {
+        return GetLastAccessTimeUtc(path).ToLocalTime();
+    }
+
+    public static DateTime GetCreationTimeUtc(string path)
+    {
+        return new DirectoryInfo(path).CreationTimeUtc;
+    }
+
+    public static DateTime GetCreationTime(string path)
+    {
+        return GetCreationTimeUtc(path).ToLocalTime();
+    }
 }
 
 namespace System.IO
