@@ -508,6 +508,12 @@ public sealed class PreinitMachine : Preinit.IMachine
             // to tell an overlap, which two objects never have: either answer
             // moves the same bytes (2460, an initialiser copying one array of
             // references into another).
+            // THE ORDER IS THIS RUN'S, NOT THE IMAGE'S: the link lays the kept
+            // regions out by symbol (Preinit), so a later run comparing the
+            // same two objects' real addresses can answer the other way. Safe
+            // C# never sees an object's address, and the library compares two
+            // objects' only to tell an overlap; unsafe code in an initialiser
+            // that kept an order of objects by address would keep this one.
             case (Ptr x, Ptr y) when unsigned:
                 order = x.Region.Serial.CompareTo(y.Region.Serial);
                 break;

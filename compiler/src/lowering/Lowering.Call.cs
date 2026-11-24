@@ -731,18 +731,25 @@ public sealed partial class Lowering
         // ITS PLACE AMONG THE TYPE'S AS THE CALL NAMES THE TYPE, its bases'
         // statics by the name among them -- `Derived<T>.F(x)` reaching
         // Base's F -- as the table of the named instantiation lists them.
-        if ((call.StaticCallSlot >= 0 || call.StaticCallNeed >= 0) && target.Static)
+        // A static every instantiation shares -- a non-generic base's -- or
+        // one named through a type sharing its code is the one this code
+        // names (ThroughTable): called directly, with its own type arguments
+        // or context as before.
+        if ((call.StaticCallSlot >= 0 || call.StaticCallNeed >= 0) && target.Static
+            && call.Target is MemberExpr { Target: var named } member && ThroughTable(named, target.Owner))
         {
-            TypeSymbol? listed = call.Target is MemberExpr { Target: var named } && _b.TypeOf(named).Symbol is { } namedType ? namedType : null;
+            TypeSymbol? listed = _b.TypeOf(named).Symbol;
             int place = listed is null ? -1 : StaticsByName(listed, target.Name).IndexOf(target);
-            // Where the template is known to copy per argument (StaticCallSlot),
-            // a call no table can serve -- a generic static method, one handed
-            // a result buffer or a struct by value -- is refused, never the
-            // copy over object's run in its place.
-            if (call.StaticCallSlot >= 0 && (place < 0 || !EntryCallable(target)))
+            // A call no table can serve -- a generic static method, one
+            // handed a result buffer or a struct by value -- is refused,
+            // never the copy over object's run in its place; and so is one
+            // whose entry this code cannot read.
+            if (place < 0 || !EntryCallable(target))
                 Error(call, $"'{target.Owner.Name}.{target.Name}' is called from code shared by every reference argument, and it is {(place < 0 ? "a generic or unlisted static" : "handed what a call through a table cannot hand it (a struct result or a struct by value)")}; C# runs each instantiation's own, which that code cannot find");
-            else if (place >= 0 && EntryCallable(target) && StaticEntry(call.CanonSelf, call.StaticCallSlot, call.StaticCallNeed) is VReg entry)
-                _pendingStatic = (target, entry, place, Inherits(((MemberExpr)call.Target).Target, target) is false);
+            else if (StaticEntry(call.CanonSelf, call.StaticCallSlot, call.StaticCallNeed) is VReg entry)
+                _pendingStatic = (target, entry, place, Inherits(member.Target, target) is not true);
+            else
+                Error(call, $"'{target.Owner.Name}.{target.Name}' is called from shared code with no type context or dictionary to find its instantiation's in (internal)");
         }
     }
 

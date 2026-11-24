@@ -1,0 +1,44 @@
+// test: shared_code_calls_a_non_generic_bases_statics_through_a_generic_types_name
+// expect-exit: 0
+// expect-output:
+// gen Int32 7 / 5 / plain / own String 1
+// gen Int32 7 / 5 / plain / own Fox 1
+// gen Int32 7 / 5 / plain / own String 2
+//
+// A STATIC OF A NON-GENERIC BASE, called from shared code through a generic
+// type's name (`Derived<T>.Gen<int>(7)`, `Derived<T>.Sum(p)` with a struct
+// by value): the same one for every instantiation, called directly -- not
+// asked of a statics table, which cannot hand type arguments or a struct,
+// and not refused for it. Derived<T>'s own static next to them is still
+// each instantiation's. Checked against .NET 10.
+using System;
+struct Pair { public int A, B; }
+class Fox { }
+class Root
+{
+    public static string Gen<U>(U value) => "gen " + typeof(U).Name + " " + value;
+    public static int Sum(Pair p) => p.A + p.B;
+    public static string Plain() => "plain";
+}
+class Derived<T> : Root
+{
+    public static int Count;
+    public static string Own() => "own " + typeof(T).Name + " " + (++Count);
+}
+class User<T> where T : class
+{
+    public string Go()
+    {
+        var p = new Pair { A = 2, B = 3 };
+        return Derived<T>.Gen<int>(7) + " / " + Derived<T>.Sum(p) + " / " + Derived<T>.Plain() + " / " + Derived<T>.Own();
+    }
+}
+static class P
+{
+    static void Main()
+    {
+        Console.WriteLine(new User<string>().Go());
+        Console.WriteLine(new User<Fox>().Go());
+        Console.WriteLine(new User<string>().Go());
+    }
+}

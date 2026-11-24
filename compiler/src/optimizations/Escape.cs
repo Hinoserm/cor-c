@@ -6876,17 +6876,13 @@ continue;
                         if (offset < 0 ? state.Any(word => Equals(word.Item1, root)) : state.Contains((root, offset))) return true;
                 if (wrote.TryGetValue(i, out var writing) && i.Operands.Count > 1 && ThisLap(i.Operands[1]))
                     foreach ((object root, long offset) in writing) state.Remove((root, offset));
-                // A copy of words between holders (MemCopy, Analyse): the words
-                // it lands in hold an earlier lap's object where the words it
-                // comes from may, and this lap's -- or none -- where they
-                // cannot.
+                // A copy of words between holders (MemCopy, Analyse): its
+                // source is read as any word of its root, so a copy from
+                // words that may hold an earlier lap's object has answered
+                // held above; one reaching here lands this lap's object or
+                // none, and the words it lands in hold no earlier lap's.
                 else if (writing is not null && i.Op == Opcode.MemCopy)
-                {
-                    bool old = read.TryGetValue(i, out var sources) && sources.Any(source => state.Any(word => Equals(word.Item1, source.Root)));
-                    foreach ((object root, long offset) in writing)
-                        if (old) state.Add((root, offset));
-                        else state.Remove((root, offset));
-                }
+                    foreach ((object root, long offset) in writing) state.Remove((root, offset));
             }
             if (round || state.Count == 0) continue;
             List<Block> next = new();

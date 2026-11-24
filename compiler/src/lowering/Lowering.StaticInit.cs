@@ -472,21 +472,37 @@ public sealed partial class Lowering
     /// </summary>
     private void PendStaticAccessor(Expr target, MethodSymbol accessor, int place)
     {
-        if (!accessor.Static || target is not MemberExpr { } m || m.StaticSlot < 0 && m.StaticNeed < 0) return;
-        // One no table can serve, where the template is known to copy per
-        // argument (StaticSlot): refused, never the copy over object's.
+        if (!accessor.Static || target is not MemberExpr { } m || m.StaticSlot < 0 && m.StaticNeed < 0 || !ThroughTable(m.Target, accessor.Owner)) return;
+        // One no table can serve: refused, never the copy over object's.
         if (!EntryCallable(accessor))
-        {
-            if (m.StaticSlot >= 0) Error(m, $"'{accessor.Owner.Name}.{m.Name}' is reached from code shared by every reference argument, and its accessor takes what a call through a table cannot hand it (a struct result or a struct by value); C# gives each instantiation its own, which that code cannot find");
-            return;
-        }
-        if (StaticEntry(m.StaticSelf, m.StaticSlot, m.StaticNeed) is VReg entry)
-            _pendingStatic = (accessor, entry, place, Inherits(m.Target, accessor) is false);
+            Error(m, $"'{accessor.Owner.Name}.{m.Name}' is reached from code shared by every reference argument, and its accessor takes what a call through a table cannot hand it (a struct result or a struct by value); C# gives each instantiation its own, which that code cannot find");
+        else if (StaticEntry(m.StaticSelf, m.StaticSlot, m.StaticNeed) is VReg entry)
+            _pendingStatic = (accessor, entry, place, Inherits(m.Target, accessor) is not true);
+        else
+            Error(m, $"'{accessor.Owner.Name}.{m.Name}' is reached from shared code with no type context or dictionary to find its instantiation's in (internal)");
     }
 
     /// <summary>
+    /// Whether a static named through `named` from shared code is found in a
+    /// statics table: each instantiation's own -- declared in a generic type,
+    /// copied per argument or sharing its code (StaticWordFor hands the
+    /// latter its context) -- named through a type copied per argument. One
+    /// of a non-generic type, a base's, is the same for every argument; and
+    /// one named through a class or struct sharing its code is called as
+    /// that code's own, its context handed as any call of it hands it
+    /// (`Span<T>.Move` from Array.Copy's shared copy) -- one with a canonical
+    /// copy (Decl.Canon), not the copy over object of a type copied per
+    /// argument, which SharedContext's shape test also answers for. Either is the one this
+    /// code names (PendHiddenArguments, PendStaticAccessor, OtherStaticAddress).
+    /// </summary>
+    private bool ThroughTable(Expr named, TypeSymbol owner)
+        => owner.Decl?.Template is not null && !(_b.TypeOf(named).Symbol is { Decl.Canon: not null });
+
+    /// <summary>
     /// Whether `m` is a static the type `named` names inherits from a base
-    /// (StaticWordFor); null where the binder gave the name no type.
+    /// (StaticWordFor), whose word touches its declaring type; null where
+    /// the binder gave the name no type, and false for a type no template
+    /// made. Only true leaves the named type's table untouched.
     /// </summary>
     private bool? Inherits(Expr named, MethodSymbol m)
         => _b.TypeOf(named).Symbol is { } type ? type.Decl?.Template is string written && m.Owner.Decl?.Template != written : null;
@@ -502,6 +518,10 @@ public sealed partial class Lowering
     {
         if (StaticEntry(read.StaticSelf, read.StaticSlot, read.StaticNeed) is not VReg entry)
         {
+            // Marked, and no context to read it in: never the copy over
+            // object's field read in its place.
+            if (ThroughTable(read.Target, store.Owner))
+                Error(at, $"'{store.Owner.Name}.{read.Name}' is read from shared code with no type context or dictionary to find its instantiation's in (internal)");
             return null;
         }
         // An auto property's backing field read in its place: the field's
