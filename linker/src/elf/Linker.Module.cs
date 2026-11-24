@@ -166,6 +166,14 @@ public static partial class Linker
         {
             if (s.Name.Length == 0 || s.Definition is not null || kernel.Names.Contains(s.Name)) continue;
             if (theirs.Values.Any(exports => exports.Contains(s.Name))) continue;
+            // A FIELD SITE is the module's own, defined by its link from the
+            // lifetime hints its units carry (IrLinkOptimizer.DefineFieldSites);
+            // one still imported here came from a unit written without them.
+            if (s.Name.StartsWith("__corsac_field$", StringComparison.Ordinal))
+            {
+                errors.Add("'" + s.Name + "' is a field site of this module, and no unit's lifetime hints define it: a unit names it and was written without its hints (compile it again)");
+                continue;
+            }
             errors.Add(LayoutNames.Describe(s.Name) is string layout
                 ? "compiled against " + layout + " as '" + s.Name + "', which neither " + kernel.Name + " nor a module this one depends on has now: compile the module again"
                 : "'" + s.Name + "' is imported, and neither " + kernel.Name + " nor a module this one depends on exports it"

@@ -1425,8 +1425,21 @@ public static class Driver
         // collector may run (BackEdgePolls); a kernel interrupts its
         // processors instead.
         module.SafepointPolls = !freestanding && !module.NoCollector;
+        // A KERNEL MODULE'S UNIT KEEPS THEM WHATEVER MODULES IT LINKS
+        // AGAINST (--link-shared usb.ko, virtio.ko, ac97.ko): its link defines
+        // its field sites in the module itself (IrLinkOptimizer.
+        // DefineFieldSites), takes only the kernel's offered bodies -- never
+        // the other module's, which offers none -- and calls into the other
+        // module stay calls out of the link, through the GOT, as an un-offered
+        // kernel call does. Without them ehci, xhci, the virtio drivers and
+        // every other module over another carried no IR and called the
+        // kernel's PhysicalAddress.get_Low32 through the GOT where every other
+        // module inlined it. The unit writer attaches the hints by this same
+        // word (keepsHintsOverShared, where the unit is written); a unit that names field sites
+        // with no hints beside them is the link failure 69d412e3 had.
+        bool keepsHintsOverShared = sharedLibs.Count == 0 || moduleUnit;
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
-            && sharedLibs.Count == 0 && (moduleUnit || !(shared || args.Contains("--pic")));
+            && keepsHintsOverShared && (moduleUnit || !(shared || args.Contains("--pic")));
         // WHAT THE IMAGES THIS ONE LINKS AGAINST EXPORT, read before the
         // passes (Module.ProvidedElsewhere): a library body one of them
         // supplies may not bring what its library withholds into code this
@@ -1945,7 +1958,7 @@ public static class Driver
             // whose settings say it is position-independent: regenerated
             // from an archive that does not say so, it would come back as a
             // kernel's code is, with absolute addresses in its text.
-            if (x86Backend.EmitLinkSummary && sharedLibs.Count == 0
+            if (x86Backend.EmitLinkSummary && keepsHintsOverShared
                 && (!x86Backend.PositionIndependent || moduleUnit && linkRecords is not null))
             {
                 // The lifetime hints first: the IR archive's integrity hash
