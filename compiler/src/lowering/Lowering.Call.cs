@@ -219,10 +219,10 @@ public sealed partial class Lowering
         if (_pendingStatic is { } through && ReferenceEquals(through.Method, m))
         {
             _pendingStatic = null;
-            if (Monomorphiser.SharedMethodCopy(m.Name) == 0 && !Buffered(m) && !_b.PackedNatives.Contains(m))
+            if (EntryCallable(m))
             {
                 // Its type touched first, as a call of a static touches it.
-                VReg word = StaticWord(through.Entry, through.Place);
+                VReg word = StaticWord(through.Entry, through.Place, through.Touch);
                 VReg? result = returns == IrType.Void ? null : _f.NewReg(returns, "staticcall");
                 // A NUMBER where the result is one, as CallMethod marks a
                 // direct call's (NeverAddress): on both ways and the join.
@@ -231,12 +231,13 @@ public sealed partial class Lowering
                 Block via = _f.NewBlock("staticvia"), mine = _f.NewBlock("staticmine"), end = _f.NewBlock("staticend");
                 _e.Branch(word, via, mine);
                 _e.SetBlock(via);
-                VReg? viaResult = _e.CallIndirect(R(word), returns, args.ToArray());
+                VReg? viaResult = _e.CallIndirect(R(word), returns, args.ToArray(), StaticTableCall.Marker);
                 if (ByValueOperands(m, args.Count) is ulong viaByValue and not 0) _e.Block.Instrs[^1].PassedByValue = viaByValue;
                 if (number) _e.Block.Instrs[^1].Number = true;
                 if (result is not null) _e.CopyTo(result, R(viaResult!));
                 _e.Jump(end);
                 _e.SetBlock(mine);
+                TouchType(m.Owner);
                 VReg? ownResult = CallDirect(m, returns, args);
                 if (number) for (int k = _e.Block.Instrs.Count - 1; k >= 0; k--) if (_e.Block.Instrs[k].Dest == ownResult) { _e.Block.Instrs[k].Number = true; break; }
                 if (result is not null) _e.CopyTo(result, R(ownResult!));
@@ -426,7 +427,10 @@ public sealed partial class Lowering
         // until something else had touched Cursors. EmitCall has already
         // asked for an ordinary call, before its arguments, and the optimiser
         // folds the repeat.
-        if (m.Static || m.Owner.Kind == TypeKind.Struct)
+        // Not one called through a table (CallDirect's StaticWord), which
+        // touches the type its word is for, and this one only where the
+        // table holds none.
+        if ((m.Static || m.Owner.Kind == TypeKind.Struct) && !(_pendingStatic is { } viaTable && ReferenceEquals(viaTable.Method, m)))
         {
             TouchType(m.Owner);
         }
@@ -727,11 +731,19 @@ public sealed partial class Lowering
         // ITS PLACE AMONG THE TYPE'S AS THE CALL NAMES THE TYPE, its bases'
         // statics by the name among them -- `Derived<T>.F(x)` reaching
         // Base's F -- as the table of the named instantiation lists them.
-        if ((call.StaticCallSlot >= 0 || call.StaticCallNeed >= 0) && target.Static
-            && (call.Target is MemberExpr { Target: var named } && _b.TypeOf(named).Symbol is { } namedType ? namedType : target.Owner) is { } listed
-            && StaticsByName(listed, target.Name).IndexOf(target) is int place and >= 0
-            && StaticEntry(call.CanonSelf, call.StaticCallSlot, call.StaticCallNeed) is VReg entry)
-            _pendingStatic = (target, entry, place);
+        if ((call.StaticCallSlot >= 0 || call.StaticCallNeed >= 0) && target.Static)
+        {
+            TypeSymbol? listed = call.Target is MemberExpr { Target: var named } && _b.TypeOf(named).Symbol is { } namedType ? namedType : null;
+            int place = listed is null ? -1 : StaticsByName(listed, target.Name).IndexOf(target);
+            // Where the template is known to copy per argument (StaticCallSlot),
+            // a call no table can serve -- a generic static method, one handed
+            // a result buffer or a struct by value -- is refused, never the
+            // copy over object's run in its place.
+            if (call.StaticCallSlot >= 0 && (place < 0 || !EntryCallable(target)))
+                Error(call, $"'{target.Owner.Name}.{target.Name}' is called from code shared by every reference argument, and it is {(place < 0 ? "a generic or unlisted static" : "handed what a call through a table cannot hand it (a struct result or a struct by value)")}; C# runs each instantiation's own, which that code cannot find");
+            else if (place >= 0 && EntryCallable(target) && StaticEntry(call.CanonSelf, call.StaticCallSlot, call.StaticCallNeed) is VReg entry)
+                _pendingStatic = (target, entry, place, Inherits(((MemberExpr)call.Target).Target, target) is false);
+        }
     }
 
     private VReg EmitCall(CallExpr call)
@@ -909,8 +921,10 @@ public sealed partial class Lowering
         {
             // CALLING A STATIC METHOD TOUCHES THE TYPE: before the arguments
             // are worked out, since the method is about to read whatever its
-            // initialisers set.
-            TouchType(target.Owner);
+            // initialisers set. One shared code reaches through a table
+            // (CallExpr.StaticCallSlot) touches the instantiation it means,
+            // after them (CallMethodCore, CallDirect).
+            if (call.StaticCallSlot < 0 && call.StaticCallNeed < 0) TouchType(target.Owner);
         }
         else
         {

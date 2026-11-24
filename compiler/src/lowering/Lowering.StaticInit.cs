@@ -159,8 +159,11 @@ public sealed partial class Lowering
             return;
         }
         ready = SharedStatic(ready);
+        // MADE BY THE KERNEL'S LINK: nothing to touch, and the module says
+        // it relied on that, as TouchType's own case does (KernelAssumptions).
         if (KernelInitialised is { } initialised && initialised.Contains(StaticSymbol(ready)))
         {
+            _m.KernelNeeds.Add(Corsac.Lang.Lto.KernelAssumptions.InitName(StaticSymbol(ready)));
             return;
         }
         _statics.Add(ready);
@@ -252,14 +255,14 @@ public sealed partial class Lowering
     /// <summary>
     /// A STATIC PROPERTY'S TABLE ("static:Name"): its head, its getter and
     /// its setter -- 0 for one it has not, or one handed anything hidden
-    /// (CallableThroughEntry) -- and an auto property's backing field's
+    /// (StaticWordFor) -- and an auto property's backing field's
     /// table (StaticFieldTable), which the binder reads in the property's
     /// place where it may (Binder.BackingReads). Null where it has none.
     /// </summary>
     private string? StaticProperty(TypeSymbol holder, string name)
     {
-        MethodSymbol? getter = holder.FindMethods("get_", name).FirstOrDefault(x => x.Static && x.Params.Count == 0 && CallableThroughEntry(x));
-        MethodSymbol? setter = holder.FindMethods("set_", name).FirstOrDefault(x => x.Static && x.Params.Count == 1 && CallableThroughEntry(x));
+        string? getter = holder.FindMethods("get_", name).FirstOrDefault(x => x.Static && x.Params.Count == 0) is MethodSymbol get ? StaticWordFor(get, holder) : null;
+        string? setter = holder.FindMethods("set_", name).FirstOrDefault(x => x.Static && x.Params.Count == 1) is MethodSymbol set ? StaticWordFor(set, holder) : null;
         FieldSymbol? backing = holder.FindBackingField(name) is { Static: true } field ? field : null;
         if (getter is null && setter is null && backing is null)
         {
@@ -273,16 +276,8 @@ public sealed partial class Lowering
         int w = _t.WordSize;
         DataItem table = new(label, new byte[(StaticHeaderWords + 3) * w]) { ReadOnly = true, Exported = false, Align = w };
         StaticHeader(table, holder);
-        if (getter is not null)
-        {
-            Require(getter);
-            table.Relocs.Add(new DataReloc(StaticHeaderWords * w, CallLabel(getter), 0));
-        }
-        if (setter is not null)
-        {
-            Require(setter);
-            table.Relocs.Add(new DataReloc((StaticHeaderWords + 1) * w, CallLabel(setter), 0));
-        }
+        if (getter is not null) table.Relocs.Add(new DataReloc(StaticHeaderWords * w, getter, 0));
+        if (setter is not null) table.Relocs.Add(new DataReloc((StaticHeaderWords + 1) * w, setter, 0));
         if (backing is not null) table.Relocs.Add(new DataReloc((StaticHeaderWords + 2) * w, StaticFieldTable(backing), 0));
         _m.Data.Add(table);
         return label;
@@ -292,50 +287,64 @@ public sealed partial class Lowering
     private const int PropertyGetter = 0, PropertySetter = 1, PropertyBacking = 2;
 
     /// <summary>
-    /// Whether a static method is called with its declared arguments only
-    /// (StaticProperty, StaticOverloads): its own code, not a shared copy's
-    /// -- one of a class sharing its code runs the canonical copy's, handed
-    /// its instantiation's context (Monomorphiser.CanonContextCall), which a
-    /// shared method copy, its template out of sight, asks for beside this.
+    /// Whether a static method can be called through a table's word with its
+    /// declared arguments (StaticWordFor): none of a result buffer, type
+    /// arguments, a struct by value or a native's packing, which a call
+    /// through a word does not hand. Alike in every instantiation of the
+    /// template, so what shared code refuses (PendHiddenArguments) is what no
+    /// instantiation's table could serve.
     /// </summary>
-    private bool CallableThroughEntry(MethodSymbol m)
-        => m.Static && m.Owner.Decl?.Canon is null && !CanonicalCopy(m.Owner) && !Buffered(m) && !TakesContext(Canonical(m))
-        && Monomorphiser.SharedMethodCopy(m.Name) == 0 && !_b.PackedNatives.Contains(m);
+    private bool EntryCallable(MethodSymbol m)
+        => m.Static && !Buffered(m) && Monomorphiser.SharedMethodCopy(m.Name) == 0 && !_b.PackedNatives.Contains(m)
+        && !StructContext(Canonical(m)) && !m.Params.Any(p => !p.ByRef && HomedStruct(p.Type));
 
     /// <summary>
-    /// A STATIC OF A CLASS SHARING ITS CODE, reached through a derived type
-    /// copied per argument (`Derived<T>.Who(x)`, Who Base<T>'s): a function
-    /// taking the declared arguments that hands the canonical copy's body
-    /// this instantiation's context (ContextStatic), as a call naming it
-    /// directly does (CallDirect). Null for one handed more than that -- a
-    /// result buffer, a struct's context, a struct by value, type arguments.
+    /// WHAT AN INSTANTIATION'S TABLE HOLDS FOR ONE OF ITS STATIC METHODS
+    /// (StaticOverloads, StaticProperty): the method itself, its own code,
+    /// declared in the type the table is the named type's; else a thunk
+    /// taking the declared arguments that touches the type that declares it
+    /// -- a call of a static touches its declaring type, not the type that
+    /// named it, and the method's own code does not (TouchType) -- and calls
+    /// it, a class sharing its code's body handed this instantiation's
+    /// context (ContextStatic) as a call naming it directly is (CallDirect).
+    /// Null for one no word can call (EntryCallable).
     /// </summary>
-    private string? ContextThunk(MethodSymbol m)
+    private string? StaticWordFor(MethodSymbol m, TypeSymbol holder)
     {
-        MethodSymbol canonical = Canonical(m);
-        if (!m.Static || !ContextStatic(canonical) || StructContext(canonical) || Buffered(m) || Monomorphiser.SharedMethodCopy(m.Name) > 0
-            || m.Owner.Decl?.Canon is null || _b.PackedNatives.Contains(m) || m.Params.Any(p => !p.ByRef && HomedStruct(p.Type)))
+        if (!EntryCallable(m))
         {
             return null;
+        }
+        MethodSymbol canonical = Canonical(m);
+        bool shared = TakesContext(canonical);
+        if (shared && m.Owner.Decl?.Canon is null)
+        {
+            return null;
+        }
+        Require(m);
+        if (!shared && ReferenceEquals(m.Owner, holder))
+        {
+            return CallLabel(m);
         }
         string label = "__static_thunk$" + TypeKey(m.Owner) + "$" + CallLabel(m);
         if (!_structHelpers.Add(label))
         {
             return label;
         }
-        Require(m);
         IrType returns = ReturnIr(m);
         Function made = new(label, returns) { Coalescible = true, FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner) };
         InFunction(made, () =>
         {
-            List<Operand> args = new() { R(_e.Address(ContextToken(m.Owner))) };
+            TouchType(m.Owner, fromOutside: true);
+            List<Operand> args = new();
+            if (shared) args.Add(R(_e.Address(ContextToken(m.Owner))));
             foreach (ParamSymbol p in m.Params)
             {
                 VReg given = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
                 _f.Params.Add(given);
                 args.Add(R(given));
             }
-            VReg? answered = _e.Call(BodyLabel(canonical), returns, args.ToArray());
+            VReg? answered = _e.Call(shared ? BodyLabel(canonical) : CallLabel(m), returns, args.ToArray());
             _e.Ret(answered is null ? null : R(answered));
         });
         return label;
@@ -354,12 +363,12 @@ public sealed partial class Lowering
     /// <summary>
     /// AN INSTANTIATION'S TABLE OF ITS STATIC METHODS BY A NAME ("call:Name"):
     /// its head, then a word for each (StaticsByName), the function, or 0 for
-    /// one shared code cannot call through a word (CallableThroughEntry).
+    /// one shared code cannot call through a word (StaticWordFor).
     /// </summary>
     private string? StaticOverloads(TypeSymbol holder, string name)
     {
         List<MethodSymbol> all = StaticsByName(holder, name);
-        List<string?> words = all.Select(m => CallableThroughEntry(m) ? CallLabel(m) : ContextThunk(m)).ToList();
+        List<string?> words = all.Select(m => StaticWordFor(m, holder)).ToList();
         if (words.All(x => x is null))
         {
             return null;
@@ -375,7 +384,6 @@ public sealed partial class Lowering
         for (int i = 0; i < all.Count; i++)
         {
             if (words[i] is not string word) continue;
-            Require(all[i]);
             table.Relocs.Add(new DataReloc((StaticHeaderWords + i) * w, word, 0));
         }
         _m.Data.Add(table);
@@ -393,8 +401,13 @@ public sealed partial class Lowering
             ? self is not null && _b.TypeOf(self).Symbol is { } selfOwner && SharedContext(selfOwner) ? ContextEntryOrZero(Eval(self), selfOwner, slot) : null
             : need >= 0 && _needDictionary is not null ? NeedEntry(need) : null;
 
-    /// <summary>A call's target by the entry shared code reads for it (StaticWord): the method, the entry and the method's place in the table.</summary>
-    private (MethodSymbol Method, VReg Entry, int Place)? _pendingStatic;
+    /// <summary>
+    /// A call's target by the entry shared code reads for it (StaticWord): the
+    /// method, the entry, the method's place in the table, and whether the
+    /// table's type is touched -- not for a static the named type inherits,
+    /// whose word touches the type that declares it (StaticWordFor).
+    /// </summary>
+    private (MethodSymbol Method, VReg Entry, int Place, bool Touch)? _pendingStatic;
 
     /// <summary>
     /// A table's touch (StaticHeader), where the table is not 0: its type's
@@ -414,7 +427,7 @@ public sealed partial class Lowering
         _e.Emit(Opcode.CompilerFence, null);
         _e.Branch(_e.Binary(Opcode.Eq, state, 1), done, run);
         _e.SetBlock(run);
-        _e.CallIndirect(R(touch), IrType.Void, Array.Empty<Operand>());
+        _e.CallIndirect(R(touch), IrType.Void, Array.Empty<Operand>(), StaticTableCall.Marker);
         _e.Jump(done);
         _e.SetBlock(done);
     }
@@ -423,9 +436,9 @@ public sealed partial class Lowering
     /// The word at `place` after a table's head (StaticHeader), its type
     /// touched first -- 0 where there is no table or no word.
     /// </summary>
-    private VReg StaticWord(VReg table, int place)
+    private VReg StaticWord(VReg table, int place, bool touch = true)
     {
-        StaticTableTouch(table);
+        if (touch) StaticTableTouch(table);
         VReg result = _f.NewReg(IrTypes.Word, "staticword");
         Block read = _f.NewBlock("staticread"), end = _f.NewBlock("staticend");
         _e.CopyTo(result, Imm(0, IrTypes.Word));
@@ -459,10 +472,24 @@ public sealed partial class Lowering
     /// </summary>
     private void PendStaticAccessor(Expr target, MethodSymbol accessor, int place)
     {
-        if (accessor.Static && target is MemberExpr { } m && (m.StaticSlot >= 0 || m.StaticNeed >= 0)
-            && StaticEntry(m.StaticSelf, m.StaticSlot, m.StaticNeed) is VReg entry)
-            _pendingStatic = (accessor, entry, place);
+        if (!accessor.Static || target is not MemberExpr { } m || m.StaticSlot < 0 && m.StaticNeed < 0) return;
+        // One no table can serve, where the template is known to copy per
+        // argument (StaticSlot): refused, never the copy over object's.
+        if (!EntryCallable(accessor))
+        {
+            if (m.StaticSlot >= 0) Error(m, $"'{accessor.Owner.Name}.{m.Name}' is reached from code shared by every reference argument, and its accessor takes what a call through a table cannot hand it (a struct result or a struct by value); C# gives each instantiation its own, which that code cannot find");
+            return;
+        }
+        if (StaticEntry(m.StaticSelf, m.StaticSlot, m.StaticNeed) is VReg entry)
+            _pendingStatic = (accessor, entry, place, Inherits(m.Target, accessor) is false);
     }
+
+    /// <summary>
+    /// Whether `m` is a static the type `named` names inherits from a base
+    /// (StaticWordFor); null where the binder gave the name no type.
+    /// </summary>
+    private bool? Inherits(Expr named, MethodSymbol m)
+        => _b.TypeOf(named).Symbol is { } type ? type.Decl?.Template is string written && m.Owner.Decl?.Template != written : null;
 
     /// <summary>
     /// WHERE ANOTHER INSTANTIATION'S STATIC FIELD IS, read from shared code
@@ -490,7 +517,7 @@ public sealed partial class Lowering
             _e.CopyTo(found, Imm(0, IrTypes.Word));
             _e.Branch(cellOf, call, called);
             _e.SetBlock(call);
-            _e.CopyTo(found, R(_e.CallIndirect(R(cellOf), IrTypes.Word, Array.Empty<Operand>())!));
+            _e.CopyTo(found, R(_e.CallIndirect(R(cellOf), IrTypes.Word, Array.Empty<Operand>(), StaticTableCall.Marker)!));
             _e.Jump(called);
             _e.SetBlock(called);
         }

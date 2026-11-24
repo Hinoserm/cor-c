@@ -3008,15 +3008,16 @@ public sealed partial class Lowering
                     }
                     continue;
                 }
-                // A STATIC FIELD OF A TYPE COPIED PER ARGUMENT (Monomorphiser.
-                // CanonStaticField): the function answering where this
-                // instantiation's is. The canonical copy's own holds 0, and
-                // its code reads the field it names.
+                // A STATIC FIELD OR PROPERTY OF A TYPE COPIED PER ARGUMENT
+                // (Monomorphiser.CanonStaticField), its bases' too: this
+                // instantiation's table for it (StaticFieldTable,
+                // StaticProperty). The canonical copy's own holds 0, and its
+                // code reads the field it names.
                 if (written is not null && k < written.Count && written[k].MadeFor is string staticFor && staticFor.StartsWith("static:", StringComparison.Ordinal))
                 {
                     // A static property's: its accessors' table.
                     if (!CanonicalCopy(chain[d]) && made[k] is { Kind: TypeKind.Class or TypeKind.Struct } holder
-                        && (holder.Fields.FirstOrDefault(x => x.Static && x.Name == staticFor["static:".Length..]) is FieldSymbol field
+                        && (holder.FindField(staticFor["static:".Length..]) is FieldSymbol { Static: true } field
                             ? StaticFieldTable(field)
                             : StaticProperty(holder, staticFor["static:".Length..])) is string accessor)
                         table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, accessor, 0));

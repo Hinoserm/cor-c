@@ -1717,6 +1717,9 @@ public sealed class Monomorphiser
             ? template.Kind is not (TypeKind.Class or TypeKind.Struct)
               || !template.Members.Any(x => x is FieldDecl f && f.Name == source.Name && f.Mods.HasFlag(Mods.Static) && !f.Mods.HasFlag(Mods.Const)
                   || x is PropertyDecl p && p.Name == source.Name && p.Mods.HasFlag(Mods.Static))
+                 // A base's, read through this type's name: the lowering
+                 // finds it on the instantiation, or holds 0 (TypeContext).
+                 && !(template.Bases.Count > 0 && !template.Members.Any(x => x is MemberDecl d && d.Name == source.Name))
             : !inCopy || called)
             return;
         TypeRef written = new() { Name = named.Name, Arguments = named.TypeArgs.ToList(), Line = named.Line, Col = named.Col, MadeFor = "static:" + source.Name };
@@ -1773,6 +1776,9 @@ public sealed class Monomorphiser
         if (_generic.TryGetValue(Arity(path, named.TypeArgs.Count), out TypeDecl? template)
             ? template.Kind is not (TypeKind.Class or TypeKind.Struct) || Shareable(template)
               || !template.Members.Any(x => x is MethodDecl f && f.Name == member.Name && f.Mods.HasFlag(Mods.Static) && f.TypeParams.Count == 0 && !f.IsCtor)
+                 // A base's, called through this type's name (StaticsByName
+                 // lists the bases' too).
+                 && !(template.Bases.Count > 0 && !template.Members.Any(x => x is MemberDecl d && d.Name == member.Name))
             : !inCopy)
             return;
         TypeRef written = new() { Name = named.Name, Arguments = named.TypeArgs.ToList(), Line = named.Line, Col = named.Col, MadeFor = "call:" + member.Name };

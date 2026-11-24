@@ -1,0 +1,40 @@
+// test: generic_statics_inherited_from_shared_code_touch_their_declaring_type
+// expect-exit: 0
+// expect-output:
+// who Cond who String
+// Cond String 1 2 1 2
+// init base Cond, init base String
+//
+// A STATIC A DERIVED GENERIC TYPE INHERITS, reached from shared code through
+// the derived type's name (`Derived<T>.Who(x)`, `Derived<T>.Tag`): each
+// instantiation's own, and the type that declares it initialised -- C#
+// runs Base<X>'s static constructor for it, never Derived<X>'s, and never
+// the copy over object's. Checked against .NET 10.
+
+using System;
+using System.Collections.Generic;
+sealed class Cond { }
+class Log { public static List<string> Lines = new(); }
+class Base<T> {
+    static Base() { Log.Lines.Add("init base " + typeof(T).Name); }
+    public static string Tag = typeof(T).Name;
+    public static string Who(T x) => "who " + Tag;
+    public static int Count;
+}
+class Derived<T> : Base<T> {
+    static Derived() { Log.Lines.Add("init derived " + typeof(T).Name); }
+    public static int Own;
+}
+class G<T> {
+    public string Call(T x) => Derived<T>.Who(x);
+    public string ReadTag() => Derived<T>.Tag;
+    public int Bump() => ++Derived<T>.Count;
+}
+static class P {
+    static void Main() {
+        G<Cond> g = new(); G<string> h = new();
+        Console.WriteLine(g.Call(new Cond()) + " " + h.Call("x"));
+        Console.WriteLine(g.ReadTag() + " " + h.ReadTag() + " " + g.Bump() + " " + g.Bump() + " " + h.Bump() + " " + Base<Cond>.Count);
+        Console.WriteLine(string.Join(", ", Log.Lines));
+    }
+}

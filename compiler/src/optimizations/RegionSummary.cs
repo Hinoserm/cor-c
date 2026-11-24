@@ -481,7 +481,7 @@ public static class RegionSummary
                     // code's, and what it reaches of ours is what took an
                     // address -- read as ours, Marshal.AddRef called every
                     // method of every program blind.
-                    if (callee is null && !NativeCall.Is(i) && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var through } && MethodRead(through, 0))
+                    if (callee is null && !NativeCall.Is(i) && !StaticTableCall.Is(i) && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var through } && MethodRead(through, 0))
                     {
                         CallsThroughMethod = true;
                         MethodSlots(through, 0);
