@@ -152,6 +152,10 @@ public sealed class Pipeline
         p.Passes.Add(new NullCheckFold());
         p.Passes.Add(new LoadReuse());
         p.Passes.Add(new DeadCodeElimination());
+        // A field a loop reads and never writes, and an array's length, read
+        // once before it (LoopLoads), before the computing done with them
+        // follows them out (LoopInvariant).
+        p.Passes.Add(new LoopLoads());
         p.Passes.Add(new LoopInvariant());
         // A loop's test of what it never changes, out of it (LoopUnswitch):
         // after the invariant work is out, so a test computed in the loop

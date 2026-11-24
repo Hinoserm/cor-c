@@ -1,0 +1,71 @@
+// test: a_field_a_loop_never_writes_is_read_once_before_it
+// expect-exit: 0
+// expect-output:
+// empty with null: fine
+// null fault, first word 1
+// 17,34,67,132
+// 703
+// 91
+// 4006
+// out of range after 273,546,67,132
+//
+// A FIELD A LOOP READS AND NEVER WRITES, read once before it (LoopLoads):
+// `B[k] |= o.B[k]` reads this.B and o.B once. A loop that never runs reads
+// neither (no fault for a null o); one that runs faults on a null o before
+// its first store; a field the loop writes -- through this, through another
+// object at the same offset, or in a call -- is read again after the write;
+// the elements stored before an index fault stay stored. Checked against
+// .NET 10.
+using System;
+using System.Runtime.CompilerServices;
+sealed class Bits
+{
+    public ulong[] B;
+    public Bits(int words) { B = new ulong[words]; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Or(Bits o) { for (int k = 0; k < B.Length; k++) B[k] |= o.B[k]; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public ulong SumSwapping(Bits other)
+    {
+        ulong sum = 0;
+        for (int k = 0; k < 4; k++) { sum += B[k]; if (k == 1) B = other.B; }
+        return sum;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public ulong SumWhileOtherChanges(Bits o, Bits next)
+    {
+        ulong sum = 0;
+        for (int k = 0; k < 4; k++) { sum += o.B[k]; if (k == 0) o.B = next.B; }
+        return sum;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    void Swap(Bits other) => B = other.B;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public ulong SumCalling(Bits other)
+    {
+        ulong sum = 0;
+        for (int k = 0; k < 4; k++) { sum += B[k]; if (k == 2) Swap(other); }
+        return sum;
+    }
+}
+static class P
+{
+    static Bits Of(params ulong[] w) { var b = new Bits(w.Length); for (int i = 0; i < w.Length; i++) b.B[i] = w[i]; return b; }
+    static void Main()
+    {
+        var empty = new Bits(0);
+        empty.Or(null);
+        Console.WriteLine("empty with null: fine");
+        var a = Of(1, 2, 3, 4);
+        try { a.Or(null); Console.WriteLine("no fault"); }
+        catch (NullReferenceException) { Console.WriteLine("null fault, first word " + a.B[0]); }
+        a.Or(Of(16, 32, 64, 128));
+        Console.WriteLine(string.Join(",", a.B));
+        Console.WriteLine(Of(1, 2, 3, 4).SumSwapping(Of(100, 200, 300, 400)));
+        var o = Of(1, 2, 3, 4);
+        Console.WriteLine(new Bits(0).SumWhileOtherChanges(o, Of(10, 20, 30, 40)));
+        Console.WriteLine(Of(1, 2, 3, 4).SumCalling(Of(1000, 2000, 3000, 4000)));
+        try { a.Or(Of(256, 512)); }
+        catch (IndexOutOfRangeException) { Console.WriteLine("out of range after " + string.Join(",", a.B)); }
+    }
+}
