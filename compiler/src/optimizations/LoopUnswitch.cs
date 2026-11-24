@@ -208,22 +208,29 @@ public sealed class LoopUnswitch : IPass
     /// <summary>
     /// THE COPY: the loop made again, the preheader's jump a test of the
     /// branch's register -- the copy where it is true, the loop where false --
-    /// and each one's branch a jump the way its test went.
+    /// and each one's branch a jump the way its test went; the loop's own
+    /// registers fresh in the copy (below).
     /// </summary>
     private static void Copy(Function function, HashSet<Block> loop, Block header, Block entry, Block b, Instr branch)
     {
+        // What is live into the loop, asked before the copy's blocks exist.
+        Liveness live = new(function);
         Dictionary<Block, Block> copy = new(ReferenceEqualityComparer.Instance);
         // In the function's order, so the copy's layout is the loop's.
         List<Block> blocks = function.Blocks.Where(loop.Contains).ToList();
         foreach (Block original in blocks) copy[original] = function.NewBlock(original.Label + ".u");
         // THE LOOP'S OWN REGISTERS, A FRESH SET IN THE COPY (loop versioning's
         // new values, the IR here having no phis): each register every write
-        // and read of which is inside the loop. Shared, an object made in
-        // the loop was a register with two writes, one a copy, and the
-        // lifetime rules, which take such a register for one that may hold
-        // anything, freed nothing made in either (1200, 1529). What is read
-        // or written outside the loop -- a counter set before it, a total
-        // read after -- stays the one register, whichever copy ran.
+        // and read of which is inside the loop, and that holds nothing on the
+        // way into it (not live into the header: no value carried in from an
+        // earlier run of the loop, inside an outer one). Shared, an object
+        // made in the loop was a register with two writes, one a copy, and
+        // the lifetime rules, which take such a register for one that may
+        // hold anything, freed nothing made in either (1200, 1529). What is
+        // read or written outside the loop -- a counter set before it, a
+        // total read after -- or carried into it stays the one register,
+        // whichever copy ran.
+        HashSet<VReg> parameters = new(function.Params);
         HashSet<VReg> outside = new();
         foreach (Block other in function.Blocks)
         {
@@ -237,7 +244,7 @@ public sealed class LoopUnswitch : IPass
         Dictionary<VReg, VReg> fresh = new();
         foreach (Block original in blocks)
             foreach (Instr i in original.Instrs)
-                if (i.Dest is { } d && !outside.Contains(d) && !function.Params.Contains(d) && !fresh.ContainsKey(d))
+                if (i.Dest is { } d && !outside.Contains(d) && !parameters.Contains(d) && !fresh.ContainsKey(d) && !live.IsLiveIn(header, d))
                     fresh[d] = function.NewReg(d.Type, d.Name);
         foreach (Block original in blocks)
         {

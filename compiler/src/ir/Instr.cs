@@ -254,7 +254,9 @@ public sealed class Instr : OperandList
     /// <summary>
     /// The same instruction again, for another block: every field the
     /// inliner's copy carries, the same operands and registers, the same
-    /// targets. Not SSA, so a register defined in both copies is fine.
+    /// targets. Not SSA, so a register defined in both copies is the one
+    /// register -- a caller that wants the copy's own renames it
+    /// (LoopUnswitch.Copy).
     /// </summary>
     public Instr Clone()
     {
