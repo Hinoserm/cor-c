@@ -274,8 +274,17 @@ public sealed partial class Lowering
     private Type? _returnType;
     private int _checkedDepth;
 
-    /// <summary>The block that reports a failed bounds check; one per function, made on demand.</summary>
-    private Block? _boundsFail;
+    /// <summary>
+    /// THE BLOCKS THAT REPORT A FAILED BOUNDS CHECK, ONE A SOURCE LINE, made on
+    /// demand: the call in each is the frame the stack trace reads, and its
+    /// return address finds its line in the line table (Encoder.Lines). One a
+    /// function reported every fault at the line of its first check. Go keys
+    /// its panic blocks the same way (ssagen's s.panics, by function and line);
+    /// .NET's JIT shares one a function and loses the line. A line with
+    /// several checks shares one block, which is all the line table can tell
+    /// apart; CommonTailMerge keeps blocks of different lines apart.
+    /// </summary>
+    private Dictionary<int, Block>? _boundsFail;
 
     // THE METHOD'S LOCAL-FUNCTION ENVIRONMENT, where it has one
     // (BindResult.Environments): the block in its frame, and its address.
@@ -2394,22 +2403,25 @@ public sealed partial class Lowering
 
     private Block BoundsFail()
     {
-        if (_boundsFail is null)
+        _boundsFail ??= new();
+        int line = _e.Line;
+        if (!_boundsFail.TryGetValue(line, out Block? fail))
         {
-            _boundsFail = _f.NewBlock("outofrange");
+            fail = _f.NewBlock("outofrange");
+            _boundsFail[line] = fail;
             Block was = _e.Block;
-            _e.SetBlock(_boundsFail);
-            MethodSymbol? fail = RuntimeMethod("IndexOutOfRange", 0);
-            if (fail is not null)
+            _e.SetBlock(fail);
+            MethodSymbol? thrower = RuntimeMethod("IndexOutOfRange", 0);
+            if (thrower is not null)
             {
-                Require(fail);
-                _e.Call(CallLabel(fail), IrType.Void);
+                Require(thrower);
+                _e.Call(CallLabel(thrower), IrType.Void);
             }
             _e.Emit(Opcode.Trap, null);
             _e.Unreachable();
             _e.SetBlock(was);
         }
-        return _boundsFail;
+        return fail;
     }
 
     private VReg LoadElement(VReg basis, VReg index, Type element, Node at)

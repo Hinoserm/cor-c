@@ -78,7 +78,7 @@ public sealed partial class Lowering
         VReg a = f.NewReg(IrTypes.Word, "this"), b = f.NewReg(IrTypes.Word, "other");
         f.Params.Add(a);
         f.Params.Add(b);
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
+        Function savedFn = _f; Builder savedB = _e; Dictionary<int, Block>? savedFail = _boundsFail; HelperContext context = EnterHelper();
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
         Node at = new MethodDecl { Name = name, Line = 0, Col = 0 };
 
@@ -121,7 +121,7 @@ public sealed partial class Lowering
         Function f = new(name, IrType.I32) { Coalescible = true };
         VReg a = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(a);
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
+        Function savedFn = _f; Builder savedB = _e; Dictionary<int, Block>? savedFail = _boundsFail; HelperContext context = EnterHelper();
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
 
         MethodSymbol? hashesBy = AttributeHelper(attribute, "HashesBy", 1);

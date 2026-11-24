@@ -455,7 +455,7 @@ public sealed partial class Lowering
             buffer = f.NewReg(IrTypes.Word, "retbuf");
             f.Params.Add(buffer);
         }
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
+        Function savedFn = _f; Builder savedB = _e; Dictionary<int, Block>? savedFail = _boundsFail; HelperContext context = EnterHelper();
         // A FRESH FUNCTION HAS NO FAILURE BLOCK YET: a bounds check's is
         // cached per function, and the last function's is not this one's.
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;

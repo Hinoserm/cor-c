@@ -3790,7 +3790,7 @@ public sealed partial class Lowering
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);
         foreach (ParamSymbol p in m.Params) f.Params.Add(f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name));
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
+        Function savedFn = _f; Builder savedB = _e; Dictionary<int, Block>? savedFail = _boundsFail; HelperContext context = EnterHelper();
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
         Builder e = _e;
         Node at = new MethodDecl { Name = f.Name, Line = 0, Col = 0 };
