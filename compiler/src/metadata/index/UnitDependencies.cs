@@ -173,9 +173,10 @@ public static class UnitDependencies
     {
         if (!File.Exists(path)) return "no receipt";
         const string unreadable = "receipt unreadable";
-        // The index's own faults are the index's, not the receipt's: a log
-        // that says "receipt unreadable" for a damaged or out-of-date index
-        // sends its reader to the wrong file.
+        // An index that cannot be opened is the index's fault, not the
+        // receipt's: a log that says "receipt unreadable" for it sends its
+        // reader to the wrong file. (A fault the open index raises later, as
+        // a record is read, is reported with the receipt's below.)
         DeclarationCatalog catalog;
         try { catalog = new(index); }
         catch (IOException failure) { return "declaration index unreadable (" + failure.Message + ")"; }
@@ -270,6 +271,12 @@ public static class UnitDependencies
         // an index that is not there.
         catch (IOException failure) { return unreadable + " (" + failure.Message + ")"; }
         catch (InvalidDataException failure) { return unreadable + " (" + failure.Message + ")"; }
+        // What a receipt's bytes can throw besides: a 7-bit string length or
+        // a number that is not one. Answered here, so every caller -- the
+        // build's scan and the unit that compiles it -- sees a stale unit,
+        // never a fault.
+        catch (FormatException failure) { return unreadable + " (" + failure.Message + ")"; }
+        catch (OverflowException failure) { return unreadable + " (" + failure.Message + ")"; }
     }
 
     /// <summary>A ByMember type's shape: its records' shapes, in the order of what they hold.</summary>

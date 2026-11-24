@@ -634,26 +634,23 @@ public static class ProjectCompile
         // `dotnet corc.dll`, whose path is the host's.
         bool mayUseProcesses = pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers;
         // A receipt whose bytes are not what a receipt is makes its unit
-        // stale: whoever compiles it writes it again. Only what such bytes can
-        // throw counts (a bad number, a bad length, data the reader refuses);
-        // anything else is a fault of the compiler and surfaces. An IOException
-        // (EndOfStreamException among them) is answered inside Stale already.
-        bool StaleOrUnreadable(Unit unit)
-        {
-            try { return Stale(unit) is not null; }
-            catch (Exception failure) when (failure is FormatException or OverflowException or InvalidDataException) { return true; }
-        }
+        // stale (UnitDependencies.Stale answers it): whoever compiles it
+        // writes it again.
+        bool StaleOrUnreadable(Unit unit) => Stale(unit) is not null;
         // threads > 1 here (mayUseProcesses), so the scan's parallelism is
         // never 0. The kernel stamp a module index needs is made once however
         // many units ask at once (DeclarationStamp.Of). A fault inside the
         // scan surfaces as itself, not wrapped in PLINQ's AggregateException,
-        // so the driver reports it as it reports any other.
+        // so the driver reports it as it reports any other (one of them, when
+        // several threads fail at once).
         bool[] staleAt = Array.Empty<bool>();
         if (mayUseProcesses)
         {
             try { staleAt = rest.AsParallel().AsOrdered().WithDegreeOfParallelism(threads).Select(StaleOrUnreadable).ToArray(); }
             catch (AggregateException failure) when (failure.InnerExceptions.Count > 0)
             {
+                // One of them (several threads may fail at once), with its own
+                // stack; `throw;` only tells the compiler the catch ends here.
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure.InnerExceptions[0]).Throw();
                 throw;
             }
