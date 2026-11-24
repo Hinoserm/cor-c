@@ -1,10 +1,10 @@
 // test: loop_tests_of_what_the_loop_never_changes
 // expect-exit: 0
 // expect-output:
+// switched 20 0 13 11 0 8 12 0
 // sum 4950 0 4950 0
 // stop 0 45
 // mixed 2450 2500 98 100
-// switched 20 0 13 11 0 8 12 0
 //
 // A LOOP'S TEST OF SOMETHING IT NEVER CHANGES (LoopUnswitch): decided once
 // before the loop where one way leaves it (the trivial kind: `if (quit)
