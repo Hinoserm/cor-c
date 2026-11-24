@@ -1,0 +1,38 @@
+// test: using_alias_of_a_constructed_type_in_lookup_order
+// expect-exit: 0
+// expect-output:
+// nested 5
+// namespace member 7
+// alias 3
+//
+// AN ALIAS OF A CONSTRUCTED TYPE in C#'s lookup order, each line what .NET 10
+// prints: the parser reads `Map` through `using Map = Dictionary<string,
+// int>;`, and the binder still finds a nearer Map first -- one nested in a
+// type around the use, one in a namespace inside the alias's (Binder.
+// AliasYields) -- and the alias only where nothing nearer has the name.
+using System;
+using Map = System.Collections.Generic.Dictionary<string, int>;
+
+namespace Inner { public class Map { public int X = 7; } }
+namespace Inner.Deep
+{
+    static class InDeep { public static string Who() { Map m = new Map(); return "namespace member " + m.X; } }   // Inner.Map before the file's alias
+}
+namespace Outer
+{
+    class Holder
+    {
+        class Map { public int X = 5; }
+        public static string Who() { Map m = new Map(); return "nested " + m.X; }                                 // the nested Map
+    }
+    static class Plain { public static string Who() { Map m = new() { ["k"] = 3 }; return "alias " + m["k"]; } } // the alias
+}
+class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(Outer.Holder.Who());
+        Console.WriteLine(Inner.Deep.InDeep.Who());
+        Console.WriteLine(Outer.Plain.Who());
+    }
+}

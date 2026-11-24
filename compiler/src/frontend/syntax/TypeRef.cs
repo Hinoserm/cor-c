@@ -180,6 +180,20 @@ public sealed class TypeRef : Node
     }
 
     /// <summary>
+    /// AN ALIAS THE PARSER READ THROUGH (Parser.ParseTypeRef's type aliases,
+    /// `using Map = Dictionary<string, int>;`): the name as written and the
+    /// namespace whose block wrote the alias ("" for the file's). This
+    /// reference is the alias's target; the binder still asks whether C#'s
+    /// order finds something else first (Binder.AliasYields) -- a type nested
+    /// in one around the use, a member of a namespace at or inside the
+    /// alias's, an import inside it.
+    /// </summary>
+    public string? AliasName { get => _rare?.AliasName; set { if (value is not null || _rare is not null) Rare.AliasName = value; } }
+
+    /// <summary>The namespace whose block wrote the alias AliasName names.</summary>
+    public string? AliasLevel { get => _rare?.AliasLevel; set { if (value is not null || _rare is not null) Rare.AliasLevel = value; } }
+
+    /// <summary>
     /// WHAT A GENERIC WAS WRITTEN QUALIFIED WITH, where the copy's name lost
     /// it: `System.Collections.Generic.List<int>` is the reference List$int,
     /// and `System.Collections.Generic` is kept here -- a namespace alias at
@@ -315,4 +329,6 @@ internal sealed class TypeRefRare
     public string? MadeFor;
     public string? Qualifier;
     public bool NullableInPattern;
+    public string? AliasName;
+    public string? AliasLevel;
 }

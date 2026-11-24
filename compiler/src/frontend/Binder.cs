@@ -698,6 +698,17 @@ public sealed partial class Binder
     /// <summary>What AliasConflict found on the last FindType: reported by the use that asked, then cleared.</summary>
     private string? _aliasConflict;
 
+    /// <summary>
+    /// CS0576 said once a place: a base list is asked again by every walk of
+    /// the hierarchy (BaseDeclOf, TemplateName's probes), not once a pass.
+    /// </summary>
+    private void ConflictAt(Node at, string message)
+    {
+        if (_quiet == 0 && _conflictsSaid.Add(at)) Error(at, message);
+    }
+
+    private readonly HashSet<Node> _conflictsSaid = new(ReferenceEqualityComparer.Instance);
+
     private bool FindType(string name, out TypeSymbol? sym)
     {
         _aliasConflict = null;
@@ -5545,7 +5556,7 @@ public sealed partial class Binder
                 : FindWritten(b, out based))
         {
             // Its namespace's own type where an alias of the block names it too (AliasConflict).
-            if (_aliasConflict is { } conflict) { _aliasConflict = null; Error(b, conflict); }
+            if (_aliasConflict is { } conflict) { _aliasConflict = null; ConflictAt(b, conflict); }
             return true;
         }
         // A QUALIFIED BASE NAMES ITS LAST PART, as a qualified type does
@@ -7138,7 +7149,7 @@ public sealed partial class Binder
         if (_aliasConflict is { } conflict)
         {
             _aliasConflict = null;
-            if (r.Written) Error(r, conflict);
+            if (r.Written) ConflictAt(r, conflict);
         }
         // Not for a generic copy's own names, whose owner is the copy (its
         // signatures are resolved before binding enters it, InGenericCopy).
@@ -7280,8 +7291,57 @@ public sealed partial class Binder
         return new Type { Prim = prim, Symbol = symbol, Args = args, UseArgs = useArgs };
     }
 
+    /// <summary>
+    /// WHETHER C#'S ORDER FINDS SOMETHING BEFORE AN ALIAS THE PARSER READ
+    /// THROUGH (TypeRef.AliasName): the parser substitutes `using Map =
+    /// Dictionary<string, int>;` where it reads `Map`, knowing no types; C#
+    /// looks first at the types around the use, then namespace by namespace
+    /// from the innermost -- each one's members, then the directives its
+    /// block wrote -- and meets the alias only at the level that wrote it
+    /// (ECMA-334, namespace and type names). So a type nested in one around
+    /// the use, a member of a namespace inside the alias's or an import there,
+    /// is what the name means; a member of the alias's own namespace makes it
+    /// ambiguous (CS0576). True with the type found.
+    /// </summary>
+    private bool AliasYields(TypeRef r, out TypeSymbol? winner)
+    {
+        winner = null;
+        string name = r.AliasName!, level = r.AliasLevel ?? "";
+        TypeDecl? written = (_scope ?? _thisType)?.Decl;
+        string within = _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
+        FileScope? file = _member?.Scope ?? written?.Scope;
+        // The types around the use, innermost first.
+        for (string? at = (_scope ?? _thisType)?.Key; at is not null && _r.Types.ContainsKey(at); at = Enclosing(at))
+            if (TypeCandidateIn(at, name, out winner, use: false) && !HiddenFromProgram(winner)) { Use(winner!); return true; }
+        // The namespaces, from the use's out to the alias's.
+        for (string? at = within; at is not null; at = at.Length == 0 ? null : Enclosing(at) ?? "")
+        {
+            bool member = at.Length == 0
+                ? TypeCandidate(name, out winner, use: false) && winner?.Decl is { } declared && IsProgramSource(declared)
+                : TypeCandidateIn(at, name, out winner, use: false) && !HiddenFromProgram(winner);
+            if (member)
+            {
+                if (at == level)
+                {
+                    ConflictAt(r, $"CS0576: Namespace '{(at.Length == 0 ? "<global namespace>" : at)}' contains a definition conflicting with alias '{name}'");
+                    winner = null;
+                    return false;
+                }
+                Use(winner!);
+                return true;
+            }
+            winner = null;
+            if (at == level) return false;
+            if (file != null && Imported(file, at, name, out winner)) return true;
+        }
+        return false;
+    }
+
     private Type ResolveCore(TypeRef r, TypeSymbol? context)
     {
+        // AN ALIAS READ THROUGH that C#'s order passes over for a nearer name (AliasYields).
+        if (r.AliasName is not null && r.Written && AliasYields(r, out TypeSymbol? nearer) && nearer is not null)
+            return NamedType(nearer, Array.Empty<Type>(), null);
         // A TYPE THE COMPILER MADE (not TypeRef.Written), with all it is made
         // of, names its type for the compiler -- a guard's Exception, the type
         // a generic copy's parameter was bound to, spelt by the path its

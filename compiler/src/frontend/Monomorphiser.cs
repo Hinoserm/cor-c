@@ -490,6 +490,8 @@ public sealed class Monomorphiser
                 ? QualifierOf(r.Name) : null),
             Line = r.Line,
             Col = r.Col,
+            AliasName = r.AliasName,
+            AliasLevel = r.AliasLevel,
         };
     }
 
@@ -2834,6 +2836,10 @@ public sealed class Monomorphiser
             Line = r.Line, Col = r.Col,
         };
         made.MadeFor = r.MadeFor;
+        // AND THE ALIAS IT WAS READ THROUGH (TypeRef.AliasName), which the
+        // binder still weighs against a nearer name of its own.
+        made.AliasName = r.AliasName;
+        made.AliasLevel = r.AliasLevel;
         // AND WHAT IT WAS QUALIFIED WITH, which the copy's name drops
         // (GenericPath): `System.Collections.Generic.List<int>` needs no
         // using in C#, and the binder is told so (TypeRef.Qualifier).

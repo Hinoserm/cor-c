@@ -581,7 +581,7 @@ public sealed class Parser
             // reader of the hole or made twice under one name.
             Parser sub = new(tokens, _file)
             {
-                Source = expression, _typeAliases = _typeAliases, _anonymous = _anonymous, _anonymousTypes = _anonymousTypes, _hidden = _hidden,
+                Source = expression, _typeAliases = _typeAliases, _typeAliasLevels = _typeAliasLevels, _anonymous = _anonymous, _anonymousTypes = _anonymousTypes, _hidden = _hidden,
             };
             Expr hole = sub.ParseExpr();
             _hidden = sub._hidden;
@@ -1022,7 +1022,7 @@ public sealed class Parser
         // call's register, which --syscall-abi decides (the target's own
         // where it is not given).
         if (GlobalTypeAliases is { } globalAliases)
-            foreach ((string alias, string aimed) in globalAliases) _typeAliases[alias] = aimed;
+            foreach ((string alias, string aimed) in globalAliases) { _typeAliases[alias] = aimed; _typeAliasLevels[alias] = ""; }
         _typeAliases["SyscallWord"] = SyscallWordType ?? (Target.Current.WordSize == 8 ? "ulong" : "uint");
         ParseUsings(unit);
 
@@ -1117,12 +1117,13 @@ public sealed class Parser
             // where they are used: a copy for the block, the enclosing ones
             // back after it.
             FileScope enclosing = _fileScope;
-            Dictionary<string, string> enclosingTypeAliases = _typeAliases;
+            Dictionary<string, string> enclosingTypeAliases = _typeAliases, enclosingLevels = _typeAliasLevels;
             if (block)
             {
                 Expect(Tok.LBrace, "'{' or ';' after namespace");
                 _fileScope = enclosing.Inside();
                 _typeAliases = new(_typeAliases, StringComparer.Ordinal);
+                _typeAliasLevels = new(_typeAliasLevels, StringComparer.Ordinal);
             }
 
             // A namespace's own using directives scope what follows them --
@@ -1136,6 +1137,7 @@ public sealed class Parser
                 Expect(Tok.RBrace, "'}' to close the namespace");
                 _fileScope = enclosing;
                 _typeAliases = enclosingTypeAliases;
+                _typeAliasLevels = enclosingLevels;
                 ParseUsings(unit);
             }
             _namespace = within;
@@ -1474,6 +1476,7 @@ public sealed class Parser
                     List<string> words = new();
                     while (!At(Tok.Semi) && !At(Tok.End)) words.Add(_t[_i++].Text);
                     _typeAliases[name] = string.Join(" ", words);
+                    _typeAliasLevels[name] = _namespace;
                     if (global) unit.GlobalUsings.Add(name + "=" + string.Join(" ", words));
                     Expect(Tok.Semi, "';' after using");
                     continue;
@@ -1486,7 +1489,10 @@ public sealed class Parser
                 // Num = double;`, `using Num = System.Double;` -- resolves as a
                 // written type does, and no alias of a name found it.
                 if (target.IndexOf('.') < 0 || target.StartsWith("System.", StringComparison.Ordinal) && target.IndexOf('.', 7) < 0)
+                {
                     _typeAliases[name] = target;
+                    _typeAliasLevels[name] = _namespace;
+                }
             }
             else
             {
@@ -4909,6 +4915,7 @@ public sealed class Parser
         if (args.Count == 0 && _typeAliases.TryGetValue(name, out string? aliased))
         {
             TypeRef made = new Parser(Lexer.Tokenize(aliased, _file, at.Line, at.Col), _file) { _written = _written }.ParseTypeRef();
+            if (_typeAliasLevels.TryGetValue(name, out string? level)) { made.AliasName = name; made.AliasLevel = level; }
             return Suffixes(made, !pattern);
         }
 
@@ -4920,6 +4927,9 @@ public sealed class Parser
 
     /// <summary>`using Map = Dictionary<string, int>;` and the like: each alias of a type, as its tokens' text (ParseUsings).</summary>
     private Dictionary<string, string> _typeAliases = new(StringComparer.Ordinal);
+
+    /// <summary>Where each of _typeAliases was written: the namespace whose block holds it ("" for the file's, and a global alias's).</summary>
+    private Dictionary<string, string> _typeAliasLevels = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The rest of a tuple, from wherever it was recognised.

@@ -1,0 +1,12 @@
+// test: using_alias_of_a_constructed_type_conflicting_with_namespace_member
+// expect-compile-error: CS0576: Namespace 'N3' contains a definition conflicting with alias 'B'
+//
+// AN ALIAS OF A CONSTRUCTED TYPE AND A TYPE OF ITS OWN NAMESPACE OF ONE NAME
+// are ambiguous where the name is used, as an alias of a plain type is (2718).
+namespace N3 { class B { } }
+namespace N3
+{
+    using B = System.Collections.Generic.List<int>;
+    class Z { B b = null!; }
+}
+class Program { static void Main() { } }
