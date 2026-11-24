@@ -1673,6 +1673,125 @@ public sealed class Monomorphiser
     }
 
     /// <summary>
+    /// A STATIC FIELD OF A GENERIC TYPE COPIED PER ARGUMENT (HasStaticState),
+    /// READ IN SHARED CODE OVER WHAT ONLY RUN TIME KNOWS -- `EmptyArray<T>.Value`
+    /// in a shared class's copy, or in Array.Empty's shared method copy over
+    /// its T. C# gives each instantiation its own; over the machine word this
+    /// code names the copy over object, whose field every instantiation
+    /// sharing the code read and wrote: Array.Empty of a sealed class was an
+    /// object[], and a cast of it to the class's array threw. Asked of run
+    /// time instead, as .NET's shared code asks its generic dictionary for a
+    /// type's statics: an entry of this copy's type context, or of the shared
+    /// method copy's dictionary, marked "static:Name", which each
+    /// instantiation fills with the function answering where its own field
+    /// is (Lowering.StaticAccessor).
+    /// </summary>
+    private void CanonStaticField(MemberExpr made, MemberExpr source)
+    {
+        if (source.StaticSlot >= 0)
+        {
+            made.StaticSlot = source.StaticSlot;
+            made.StaticSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
+            _canonMarked = true;
+            return;
+        }
+        if (source.StaticNeed >= 0)
+        {
+            made.StaticNeed = source.StaticNeed;
+            return;
+        }
+        if (source.Target is not NameExpr { TypeArgs.Count: > 0 } named) return;
+        bool inCopy = _needs is not null;
+        bool inClass = _canonSelf && _canonParams is not null && _canonMade is not null;
+        if (!inCopy && !inClass) return;
+        // THE TEMPLATE'S OWN STATIC FIELD, where its template is in sight. A
+        // shared method copy is made with no template table (Specialise): its
+        // entry is asked for whatever the name is, and the lowering fills it
+        // only for an instantiation that has a static field by the name
+        // (TypeContext), the copy reading its own where the entry is 0.
+        string path = GenericPath(named.Name, named.TypeArgs.Count, source) ?? Path(named.Name);
+        if (_generic.TryGetValue(Arity(path, named.TypeArgs.Count), out TypeDecl? template)
+            ? template.Kind is not (TypeKind.Class or TypeKind.Struct)
+              || !template.Members.Any(x => x is FieldDecl f && f.Name == source.Name && f.Mods.HasFlag(Mods.Static) && !f.Mods.HasFlag(Mods.Const)
+                  || x is PropertyDecl p && p.Name == source.Name && p.Mods.HasFlag(Mods.Static))
+            : !inCopy)
+            return;
+        TypeRef written = new() { Name = named.Name, Arguments = named.TypeArgs.ToList(), Line = named.Line, Col = named.Col, MadeFor = "static:" + source.Name };
+        if (inCopy)
+        {
+            if (Need(written, array: false) is int need and >= 0) made.StaticNeed = need;
+            return;
+        }
+        if (!OverCanonParams(written)) return;
+        string key = EntryKey(written);
+        int at = _canonMade!.FindIndex(t => EntryKey(t) == key);
+        if (at < 0)
+        {
+            at = _canonMade.Count;
+            _canonMade.Add(written);
+        }
+        made.StaticSlot = 2 * _canonParams!.Count + at;
+        made.StaticSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
+        _canonMarked = true;
+    }
+
+    /// <summary>
+    /// A STATIC METHOD OF A GENERIC TYPE COPIED PER ARGUMENT (not Shareable),
+    /// CALLED FROM SHARED CODE OVER WHAT ONLY RUN TIME KNOWS -- `Registry<T>.Add(x)`
+    /// in a shared class's copy, Lazy's `LazyFactory<T>.Make()`. Its code is
+    /// each instantiation's own -- it reads that one's statics, it makes a T
+    /// (TypeParam.Made) -- and over the machine word this call named the copy
+    /// over object's. As a static field is found (CanonStaticField): an
+    /// entry marked "call:Name", which each instantiation fills with its
+    /// table of the static methods by that name (Lowering.StaticOverloads),
+    /// the call taking the overload it was bound to from it.
+    /// </summary>
+    private void CanonStaticCall(CallExpr made, CallExpr source)
+    {
+        if (source.StaticCallSlot >= 0)
+        {
+            made.StaticCallSlot = source.StaticCallSlot;
+            made.CanonSelf ??= new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
+            _canonMarked = true;
+            return;
+        }
+        if (source.StaticCallNeed >= 0)
+        {
+            made.StaticCallNeed = source.StaticCallNeed;
+            return;
+        }
+        if (source.Target is not MemberExpr { TypeArgs.Count: 0, Target: NameExpr { TypeArgs.Count: > 0 } named } member) return;
+        bool inCopy = _needs is not null;
+        bool inClass = _canonSelf && _canonParams is not null && _canonMade is not null;
+        if (!inCopy && !inClass) return;
+        // Where the template is in sight, a class with statics of its own
+        // and a static, non-generic method by the name (CanonStaticField).
+        string path = GenericPath(named.Name, named.TypeArgs.Count, source) ?? Path(named.Name);
+        if (_generic.TryGetValue(Arity(path, named.TypeArgs.Count), out TypeDecl? template)
+            ? template.Kind is not (TypeKind.Class or TypeKind.Struct) || Shareable(template)
+              || !template.Members.Any(x => x is MethodDecl f && f.Name == member.Name && f.Mods.HasFlag(Mods.Static) && f.TypeParams.Count == 0 && !f.IsCtor)
+            : !inCopy)
+            return;
+        TypeRef written = new() { Name = named.Name, Arguments = named.TypeArgs.ToList(), Line = named.Line, Col = named.Col, MadeFor = "call:" + member.Name };
+        if (inCopy)
+        {
+            if (Need(written, array: false) is int need and >= 0) made.StaticCallNeed = need;
+            return;
+        }
+        if (!OverCanonParams(written)) return;
+        string key = EntryKey(written);
+        int at = _canonMade!.FindIndex(t => EntryKey(t) == key);
+        if (at < 0)
+        {
+            at = _canonMade.Count;
+            _canonMade.Add(written);
+        }
+        made.StaticCallSlot = 2 * _canonParams!.Count + at;
+        made.CanonSelf ??= new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
+        _canonMarked = true;
+    }
+
+    /// <summary>
     /// A CONSTRUCTED TYPE OVER THE PARAMETERS, TESTED OR CAST TO in the
     /// canonical class copy's instance code -- `source is ICollection<T>` in
     /// List's copy constructor, `as IReadOnlyList<T>`, `(IList<T>)x`. Over the
@@ -4075,6 +4194,7 @@ public sealed class Monomorphiser
                     Line = m.Line, Col = m.Col,
                 };
                 if (m.TypeArgs.Count > 0) SubInto(made.WritableTypeArgs, m.TypeArgs, map);
+                if (!ReferenceEquals(m, _callTarget)) CanonStaticField(made, m);
                 return made;
             }
 
@@ -4099,6 +4219,7 @@ public sealed class Monomorphiser
                 }
                 CallExpr made = new() { Target = target, FormatHole = c.FormatHole, Line = c.Line, Col = c.Col };
                 CanonContextCall(made, c);
+                CanonStaticCall(made, c);
 
                 foreach (Expr a in c.Args)
                 {

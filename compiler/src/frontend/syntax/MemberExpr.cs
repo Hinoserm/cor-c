@@ -58,4 +58,19 @@ public sealed class MemberExpr : Expr
     /// and only the binder knows which of the two the subject has.
     /// </summary>
     public string? Else { get; init; }
+
+    /// <summary>
+    /// A STATIC FIELD OF A GENERIC TYPE COPIED PER ARGUMENT, read in shared
+    /// code over what only run time knows -- `EmptyArray<T>.Value` in a
+    /// shared class's copy, or in a shared method copy called with its T
+    /// (Monomorphiser.CanonStaticField): each instantiation has its own, and
+    /// the copy over object's is not the caller's. The entry of the shared
+    /// class's type context that holds the address of the function answering
+    /// where that instantiation's field is (Lowering.StaticAccessor), or -1.
+    /// </summary>
+    public int StaticSlot { get; set; } = -1;
+    /// <summary>The `this` or context the entry is read through (StaticSlot).</summary>
+    public Expr? StaticSelf { get; set; }
+    /// <summary>The same from a shared method copy: its dictionary's entry, or -1.</summary>
+    public int StaticNeed { get; set; } = -1;
 }

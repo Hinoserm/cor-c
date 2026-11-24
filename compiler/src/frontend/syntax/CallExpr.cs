@@ -157,6 +157,16 @@ public sealed class CallExpr : Expr
     public int ContextSlot { get; set; } = -1;
     /// <summary>The same from a shared method copy (Monomorphiser.CanonContextCall): its dictionary's entry; -1 for none.</summary>
     public int ContextNeed { get; set; } = -1;
+    /// <summary>
+    /// A STATIC METHOD OF A GENERIC TYPE COPIED PER ARGUMENT, called from
+    /// shared code over what only run time knows (Monomorphiser.
+    /// CanonStaticCall): the entry of the caller's type context, read
+    /// through CanonSelf, holding that instantiation's table of its static
+    /// methods by the name (Lowering.StaticOverloads); -1 for none.
+    /// </summary>
+    public int StaticCallSlot { get; set; } = -1;
+    /// <summary>The same from a shared method copy: its dictionary's entry; -1 for none.</summary>
+    public int StaticCallNeed { get; set; } = -1;
     /// <summary>The copy a call with a dictionary runs, by its owner's key and its name (Binder.NoteCopyNeeds): what its machine's entry names.</summary>
     public string? NeedCallee { get; set; }
 

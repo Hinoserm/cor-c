@@ -17996,6 +17996,10 @@ public sealed partial class Binder
                 return CheckName(n);
 
             case MemberExpr m:
+                // The shared code's `this` or context another instantiation's
+                // static is found through (MemberExpr.StaticSelf), bound where
+                // the read is: in a lambda, captured.
+                if (m.StaticSelf is { } staticSelf) CheckExpr(staticSelf);
                 // `Length`, OR `Count` when that is what the type has.
                 if (m.Else is not null)
                 {

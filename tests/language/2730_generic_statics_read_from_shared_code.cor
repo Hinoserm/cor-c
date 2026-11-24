@@ -1,0 +1,93 @@
+// test: generic_statics_read_from_shared_code
+// expect-exit: 0
+// expect-output:
+// Cond[] Cond[] Cond[] Cond[] String[]
+// Cond[] String[] Cond[]
+// 2 1 2 1
+// 3 3
+// Cond[] 0
+// 3 6 3 6
+// Cond String True
+// 13 106 13 106
+// Cond! String Cond! String
+//
+// A GENERIC TYPE'S STATICS ARE EACH INSTANTIATION'S OWN, read from code one
+// copy of which serves every reference argument (a shared class's copy, a
+// shared method copy called from it, a lambda in it). Over the machine word
+// that code named the copy over object, whose statics every instantiation
+// read and wrote: Array.Empty<T>() in G<Cond> was an object[], a cast of it
+// to Cond[] threw (the natively built compiler did, in LINQ's ToArray), and
+// a count kept per instantiation was one count for all of them; a static
+// method or property called from that code ran the copy over object's,
+// over its statics. Each is now asked of run time: the instantiation's type
+// context, or the shared method copy's dictionary, holds the function that
+// answers where its own field is, or its table of the static methods by the
+// name (after the function that runs its type's initialiser, which a call
+// of a static does). Checked against .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Cond { }
+
+class Box<T> {
+    internal static readonly T[] Value = new T[0];
+    internal static int Count;
+}
+
+class Reg<T> {
+    static readonly List<T> items = new();
+    public static void Add(T x) { items.Add(x); }
+    public static void Add(T x, int times) { for (int i = 0; i < times; i++) items.Add(x); }
+    public static int Count => items.Count;
+    public static string Kind => typeof(T).Name;
+}
+
+class Tally<T> {
+    public static int Total { get; set; }
+    public static string Name { get; set; } = typeof(T).Name;
+}
+
+class G<T> {
+    public void Set(int v) { Tally<T>.Total = v; }
+    public void AddTo(int v) { Tally<T>.Total += v; Tally<T>.Total++; }
+    public int Get() => Tally<T>.Total;
+    public string Name() => Tally<T>.Name;
+    public void Rename(string s) { Tally<T>.Name ??= "never"; Tally<T>.Name += s; }
+    public void Put(T x) { Reg<T>.Add(x); Reg<T>.Add(x, 2); }
+    public int Has() => Reg<T>.Count;
+    public string Kind() => Reg<T>.Kind;
+    public EqualityComparer<T> Comparer() => EqualityComparer<T>.Default;
+    public T[] ViaMethod() => Array.Empty<T>();
+    public T[] Direct() => Box<T>.Value;
+    public static T[] StaticVia() => Array.Empty<T>();
+    public U[] Other<U>() => Array.Empty<U>();
+    public void Bump() { Box<T>.Count++; }
+    public int Seen() => Box<T>.Count;
+    public Func<T[]> Later() => () => Box<T>.Value;
+    public void BumpBy(int n) { Action a = () => Box<T>.Count += n; a(); }
+}
+
+static class P {
+    static void Main() {
+        G<Cond> g = new();
+        G<string> h = new();
+        Console.WriteLine(g.ViaMethod().GetType().Name + " " + g.Direct().GetType().Name + " " + G<Cond>.StaticVia().GetType().Name
+            + " " + g.Other<Cond>().GetType().Name + " " + h.ViaMethod().GetType().Name);
+        Console.WriteLine(g.Later()().GetType().Name + " " + h.Later()().GetType().Name + " " + ReferenceEquals(g.Direct(), Box<Cond>.Value).ToString().Replace("True", "Cond[]"));
+        g.Bump(); g.Bump(); h.Bump();
+        Console.WriteLine(g.Seen() + " " + h.Seen() + " " + Box<Cond>.Count + " " + Box<string>.Count);
+        g.BumpBy(1); h.BumpBy(2);
+        Console.WriteLine(g.Seen() + " " + h.Seen());
+        Cond[] none = new List<Cond>().Select(c => c).Where(c => c != null).ToArray();
+        Console.WriteLine(none.GetType().Name + " " + none.Length);
+        g.Put(new Cond()); h.Put("a"); h.Put("b");
+        Console.WriteLine(g.Has() + " " + h.Has() + " " + Reg<Cond>.Count + " " + Reg<string>.Count);
+        Console.WriteLine(g.Kind() + " " + h.Kind() + " " + ReferenceEquals(g.Comparer(), EqualityComparer<Cond>.Default));
+        g.Set(10); h.Set(100); g.AddTo(2); h.AddTo(5);
+        Console.WriteLine(g.Get() + " " + h.Get() + " " + Tally<Cond>.Total + " " + Tally<string>.Total);
+        g.Rename("!");
+        Console.WriteLine(g.Name() + " " + h.Name() + " " + Tally<Cond>.Name + " " + Tally<string>.Name);
+    }
+}

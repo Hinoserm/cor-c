@@ -212,6 +212,33 @@ public sealed partial class Lowering
     /// <summary>A direct call by label; the callee is marked reachable.</summary>
     private VReg? CallDirect(MethodSymbol m, IrType returns, List<Operand> args)
     {
+        // ANOTHER INSTANTIATION'S, CALLED FROM SHARED CODE (StaticWord): the
+        // function its entry gives, called with the declared arguments alone
+        // -- that instantiation's code is its own, handed no context -- and
+        // where the entry gives none, this one, as it is called otherwise.
+        if (_pendingStatic is { } through && ReferenceEquals(through.Method, m))
+        {
+            _pendingStatic = null;
+            if (Monomorphiser.SharedMethodCopy(m.Name) == 0 && !Buffered(m) && !_b.PackedNatives.Contains(m))
+            {
+                VReg word = StaticWord(through.Entry, through.Place);
+                VReg? result = returns == IrType.Void ? null : _f.NewReg(returns, "staticcall");
+                Block via = _f.NewBlock("staticvia"), mine = _f.NewBlock("staticmine"), end = _f.NewBlock("staticend");
+                _e.Branch(word, via, mine);
+                _e.SetBlock(via);
+                _e.CallIndirect(R(_e.Load(IrTypes.Word, through.Entry, 0)), IrType.Void, Array.Empty<Operand>());
+                VReg? viaResult = _e.CallIndirect(R(word), returns, args.ToArray());
+                if (ByValueOperands(m, args.Count) is ulong viaByValue and not 0) _e.Block.Instrs[^1].PassedByValue = viaByValue;
+                if (result is not null) _e.CopyTo(result, R(viaResult!));
+                _e.Jump(end);
+                _e.SetBlock(mine);
+                VReg? ownResult = CallDirect(m, returns, args);
+                if (result is not null) _e.CopyTo(result, R(ownResult!));
+                _e.Jump(end);
+                _e.SetBlock(end);
+                return result;
+            }
+        }
         Require(m);
         ulong byValue = ByValueOperands(m, args.Count);
         VReg? buffer = Buffered(m) ? ResultHome(m) ?? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
@@ -686,6 +713,15 @@ public sealed partial class Lowering
         _pendingContext = call.ContextSlot >= 0 && call.CanonSelf is { } contextSelf && _b.TypeOf(contextSelf).Symbol is { } contextOwner
             && SharedContext(contextOwner) ? (target, ContextEntryOrZero(Eval(contextSelf), contextOwner, call.ContextSlot))
             : call.ContextNeed >= 0 && _needDictionary is not null ? (target, NeedEntry(call.ContextNeed)) : null;
+        // A STATIC OF ANOTHER INSTANTIATION OF A TYPE COPIED PER ARGUMENT
+        // (Monomorphiser.CanonStaticCall): its table by the name, from this
+        // code's type context or dictionary, read at the place of the
+        // overload bound here.
+        _pendingStatic = null;
+        if ((call.StaticCallSlot >= 0 || call.StaticCallNeed >= 0) && target.Static
+            && StaticsByName(target.Owner, target.Name).IndexOf(target) is int place and >= 0
+            && StaticEntry(call.CanonSelf, call.StaticCallSlot, call.StaticCallNeed) is VReg entry)
+            _pendingStatic = (target, entry, place);
     }
 
     private VReg EmitCall(CallExpr call)

@@ -2156,6 +2156,20 @@ public sealed partial class Lowering
     {
         if (f.Static)
         {
+            // ANOTHER INSTANTIATION'S, READ FROM SHARED CODE (MemberExpr.StaticSlot):
+            // the function this code's type context or dictionary holds for
+            // it, which touches that type and answers where its field is; the
+            // field named here where neither holds one.
+            if (at is MemberExpr { StaticSlot: >= 0 } or MemberExpr { StaticNeed: >= 0 } && StaticAccessor(f) is string own
+                && StaticEntry(((MemberExpr)at).StaticSelf, ((MemberExpr)at).StaticSlot, ((MemberExpr)at).StaticNeed) is VReg entry)
+            {
+                // An auto property's backing field read in its place: the
+                // accessor its property's table holds (StaticProperty).
+                if (((MemberExpr)at).Name != f.Name) entry = StaticWord(entry, 2);
+                VReg accessor = EntryOr(entry, own);
+                VReg where = _e.CallIndirect(R(accessor), IrTypes.Word, Array.Empty<Operand>())!;
+                return new MemPlace(RegOperand.Of(where), 0, f.Type, f.Volatile);
+            }
             // READING OR WRITING A STATIC TOUCHES THE TYPE, which is one of
             // the three things C# says runs its initialisers.
             TouchType(f.Owner);
