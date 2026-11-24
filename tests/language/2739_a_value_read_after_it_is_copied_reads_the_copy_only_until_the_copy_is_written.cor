@@ -1,0 +1,61 @@
+// test: a_value_read_after_it_is_copied_reads_the_copy_only_until_the_copy_is_written
+// expect-exit: 0
+// expect-output:
+// 15 1,2,3,4,5
+// 4060
+// 9460711
+// 45
+//
+// A VALUE READ AFTER IT IS COPIED (CopyLateUses): the read takes the copy
+// -- `i++` and the loop's test one register -- only until the copy is
+// written again; a post-increment's old value, a temporary copied and the
+// copy then added to, a swap whose temporary is read after the copy is
+// overwritten, a countdown testing the value before its decrement. Checked
+// against .NET 10.
+using System;
+using System.Runtime.CompilerServices;
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int PostIncrement(int[] a)
+    {
+        int i = 0, sum = 0;
+        while (i < a.Length) { a[i++] = i; sum += i; }
+        return sum;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CopiedThenWritten(int n)
+    {
+        int i = 0, sum = 0;
+        for (int k = 0; k < n; k++)
+        {
+            int t = i + 1;
+            i = t;
+            i += 5;
+            sum += t * 100 + i;
+        }
+        return sum;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Swapping(int n)
+    {
+        long a = 1, b = 1;
+        for (int k = 0; k < n; k++) { long t = a + b; a = b; b = t; if (t > 1000) b = t - 1000; }
+        return a * 10000 + b;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Countdown(int n)
+    {
+        int s = 0;
+        for (int i = n; i-- > 0;) s += i;
+        return s;
+    }
+    static void Main()
+    {
+        var a = new int[5];
+        Console.WriteLine(PostIncrement(a) + " " + string.Join(",", a));
+        Console.WriteLine(CopiedThenWritten(4));
+        Console.WriteLine(Swapping(20));
+        Console.WriteLine(Countdown(10));
+    }
+}

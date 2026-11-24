@@ -360,6 +360,11 @@ public sealed class Pipeline
             ArgumentCopies.Run(m);
             foreach (Function f in m.Functions) SlotScalars.ApplyAndClean(f);
             SweepLate(m);
+            // A value read after it is copied, read from the copy, after
+            // every pass that forwards copies the other way, the final
+            // function passes among them (CopyLateUses): `i++` and the
+            // loop's test one register, not two.
+            if (Switches.SkipPasses?.Contains("CopyLateUses") != true) new CopyLateUses().Run(m);
         }
     }
 
