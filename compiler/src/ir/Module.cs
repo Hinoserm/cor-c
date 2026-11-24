@@ -33,9 +33,11 @@ public sealed class Module
 
     /// <summary>
     /// What another unit's descriptors hold, as far as this one can know it
-    /// from their declarations: a non-generic class's virtual slots. Never
-    /// emitted; read by Devirtualize, so a call on an object made in sight
-    /// whose class another unit defines (a StringBuilder's ToString) is direct.
+    /// from their declarations: a non-generic class's virtual slots and its
+    /// flags word (Lowering.ClassFlags). Never emitted; read by Devirtualize,
+    /// so a call on an object made in sight whose class another unit defines
+    /// (a StringBuilder's ToString) is direct, and by the lifetime rules
+    /// (Escape.FieldsOwnNothing).
     /// </summary>
     public Dictionary<string, DataItem> ShadowData { get; } = new(StringComparer.Ordinal);
 

@@ -144,7 +144,7 @@ public sealed partial class Escape : IModulePass
         AnalysisCache.Open();
         Dictionary<Instr, Instr>? sequences = m.AtLink ? StoresOfSequences(m.Functions) : null;
         try { RunCore(m); }
-        finally { if (sequences is not null) SequencesAgain(m.Functions, sequences); AnalysisCache.Close(); _freedFacts = null; _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
+        finally { if (sequences is not null) SequencesAgain(m.Functions, sequences); AnalysisCache.Close(); _freedFacts = null; _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _shadowItems = null; _typedFieldsOf = null; _stampItems = null; }
     }
 
     /// <summary>
@@ -213,7 +213,7 @@ public sealed partial class Escape : IModulePass
         _repeating = null;
         AnalysisCache.Close();
         Cfg.ForgetThread();
-        _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null;
+        _copies = null; _typeItems = null; _shadowItems = null; _typedFieldsOf = null; _stampItems = null;
         _returnsFirst = null; _bodies = null; _invokeOnly = null; _unresolvedWhy = null; UsedAfterWhy = null;
         OwnedFieldEscape.Forget();
     }
@@ -2947,7 +2947,8 @@ continue;
     /// <summary>
     /// Whether a class's descriptor says its fields own nothing (lowering's
     /// TypeFlagFieldsOwnNothing, in its flags word): read from the descriptor
-    /// this run holds, this unit's or the link's.
+    /// this run holds (the link's, with every unit's real descriptor), this
+    /// unit's own, or this unit's shadow of another unit's class.
     /// </summary>
     private static bool FieldsOwnNothing(string descriptor)
     {

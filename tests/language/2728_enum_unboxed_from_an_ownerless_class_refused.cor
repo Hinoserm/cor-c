@@ -1,0 +1,41 @@
+// test: enum_unboxed_from_an_ownerless_class_refused
+// expect-exit: 0
+// expect-output:
+// iterator small refused, word refused
+// projected small refused, word refused
+// boxed small B, word refused / small B, word refused
+//
+// AN OBJECT IS NO BOXED ENUM: a LINQ iterator -- a class whose fields own
+// nothing, said in its descriptor's flags (Lowering's
+// TypeFlagFieldsOwnNothing) -- cast to an sbyte-backed enum is refused, as
+// .NET refuses it. That flag once sat in the bits a box keeps its kind in
+// (bits 12 to 19), and read as an sbyte's kind the cast went through. A real
+// box of the enum or of its sbyte converts, as .NET's does. Checked against
+// .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+enum Small : sbyte { A = 1, B = 2 }
+enum Word : int { A = 1 }
+
+static class P
+{
+    static string Try(object o)
+    {
+        string a, b;
+        try { Small s = (Small)o; a = "small " + s; } catch (InvalidCastException) { a = "small refused"; }
+        try { Word w = (Word)o; b = "word " + w; } catch (InvalidCastException) { b = "word refused"; }
+        return a + ", " + b;
+    }
+
+    static void Main()
+    {
+        object walk = new int[] { 1, 2, 3 }.Where(x => x > 1);
+        object projected = new List<int> { 4 }.Select(x => x * 2);
+        Console.WriteLine("iterator " + Try(walk));
+        Console.WriteLine("projected " + Try(projected));
+        Console.WriteLine("boxed " + Try((object)Small.B) + " / " + Try((object)(sbyte)2));
+    }
+}

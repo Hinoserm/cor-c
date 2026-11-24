@@ -3555,11 +3555,7 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
-        int classFlags = (t.Kind == TypeKind.Class && EquatableSlot is not null && TypedEquals(t) is not null ? TypeFlagEquatable : 0)
-            | (t.Kind == TypeKind.Class && DelegateObject(t) ? TypeFlagDelegateObject : 0)
-            | (t.Kind == TypeKind.Class && MulticastObject(t) ? TypeFlagMulticastObject : 0)
-            | (t.Kind == TypeKind.Class && t.Decl is { } declared && (declared.Mods.HasFlag(Mods.Abstract) || declared.Mods.HasFlag(Mods.Static)) ? TypeFlagAbstract : 0)
-            | (t.Kind == TypeKind.Class && CopiedChain(t) ? TypeFlagFieldsOwnNothing : 0);
+        int classFlags = ClassFlags(t);
         if (classFlags != 0) WriteWord(block, DescFlags * w, classFlags);
 
         // THE SHARED COPIES ITS CHAIN STANDS ON (DataItem.SharedCopies): a
@@ -3701,15 +3697,31 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
-        // What its fields are, as its own unit's descriptor says it: the
-        // lifetime rules here read it (Escape.FieldsOwnNothing).
-        if (CopiedChain(t)) WriteWord(block, DescFlags * w, TypeFlagFieldsOwnNothing);
+        // Its flags word as its own unit's descriptor has it (ClassFlags):
+        // what Devirtualize folds a test of it to, and what the lifetime
+        // rules read of its fields (Escape.FieldsOwnNothing).
+        int classFlags = ClassFlags(t);
+        if (classFlags != 0) WriteWord(block, DescFlags * w, classFlags);
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
         for (int i = 0; i < slots; i++)
             if (table[i] is { } m && m.Decl is not null && m.Owner?.Decl?.Elsewhere == true && m.Owner.Decl.Template is null)
                 item.Relocs.Add(new DataReloc(_t.DescriptorBytes + i * w, CallLabel(m), 0));
         _m.ShadowData[sym] = item;
     }
+
+    /// <summary>
+    /// A class descriptor's flags word (DescFlags), the one answer its own
+    /// descriptor and every unit's shadow of it give: equatable by a typed
+    /// Equals, a delegate's object, a multicast one, abstract or static, and
+    /// fields that own nothing.
+    /// </summary>
+    private int ClassFlags(TypeSymbol t)
+        => t.Kind != TypeKind.Class ? 0
+            : (EquatableSlot is not null && TypedEquals(t) is not null ? TypeFlagEquatable : 0)
+            | (DelegateObject(t) ? TypeFlagDelegateObject : 0)
+            | (MulticastObject(t) ? TypeFlagMulticastObject : 0)
+            | (t.Decl is { } declared && (declared.Mods.HasFlag(Mods.Abstract) || declared.Mods.HasFlag(Mods.Static)) ? TypeFlagAbstract : 0)
+            | (CopiedChain(t) ? TypeFlagFieldsOwnNothing : 0);
 
     /// <summary>DescGcFlags on a class: it gives its storage back when freed (Runtime.FreeStorageOf, IOwnsStorage).</summary>
     private const long GcOwnsStorage = 2;
