@@ -38,6 +38,10 @@ internal static class AsmText
         _ => new[] { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi" }[id],
     };
 
+    /// <summary>Whether the encoder zeroes the instruction's register first (Encoder.ZeroFirst): asked, and not its own source.</summary>
+    private static bool Zeroes(MInstr i) => i.ZeroFirst
+        && !(i.Operands[1] is MReg { IsXmm: true } from && i.Operands[0] is MReg { IsXmm: true } to && from.XmmNumber == to.XmmNumber);
+
     private static string Size(int width) => width switch { 1 => "byte", 2 => "word", 8 => "qword", _ => "dword" };
 
     /// <summary>A packed instruction's register named at operand `k` (an MImm), mm0 or xmm0 where none is.</summary>
@@ -290,14 +294,16 @@ internal static class AsmText
             case MOp.UcomiF:
             {
                 string name = i.Op switch { MOp.AddF => "add", MOp.SubF => "sub", MOp.MulF => "mul", MOp.DivF => "div", MOp.SqrtF => "sqrt", _ => "ucomi" };
+                if (Zeroes(i)) yield return $"pxor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
                 yield return $"{name}{(i.Width == 8 ? "sd" : "ss")} {Op(i.Operands[0], i.Width, false)}, {Op(i.Operands[1], i.Width, true)}";
                 yield break;
             }
             case MOp.CvtFToF:
+                if (Zeroes(i)) yield return $"pxor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
                 yield return $"{(i.Width == 8 ? "cvtss2sd" : "cvtsd2ss")} {Op(i.Operands[0], 8, false)}, {Op(i.Operands[1], i.Width == 8 ? 4 : 8, true)}";
                 yield break;
             case MOp.CvtIntToF:
-                if (i.ZeroFirst) yield return $"xorps {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
+                if (Zeroes(i)) yield return $"pxor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
                 yield return $"{(i.Width == 8 ? "cvtsi2sd" : "cvtsi2ss")} {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, true)}";
                 yield break;
             case MOp.XorPs:

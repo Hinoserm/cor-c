@@ -237,7 +237,7 @@ internal sealed partial class Selector
         MovF(d, mask, w);
     }
 
-    private void SseSqrt(Instr i) => EmitW(MOp.SqrtF, FWidth(i.Dest!.Type), X(i.Dest!), X(i.Operands[0]));
+    private void SseSqrt(Instr i) => EmitW(MOp.SqrtF, FWidth(i.Dest!.Type), X(i.Dest!), X(i.Operands[0])).ZeroFirst = CpuModel.BreaksMerge(FWidth(i.Dest!.Type));
 
     /// <summary>
     /// UCOMISS/UCOMISD x, y: ZF, PF and CF as FUCOMIP leaves them for ST(0) ?
@@ -246,10 +246,10 @@ internal sealed partial class Selector
     private void SseCompare(Operand first, Operand second) => EmitW(MOp.UcomiF, FWidth(first.Type), X(first), XSource(second));
 
     /// <summary>Between a float and a double, both in the XMM class: CVTSS2SD, CVTSD2SS.</summary>
-    private void SseConvert(Instr i) => EmitW(MOp.CvtFToF, FWidth(i.Dest!.Type), X(i.Dest!), X(i.Operands[0]));
+    private void SseConvert(Instr i) => EmitW(MOp.CvtFToF, FWidth(i.Dest!.Type), X(i.Dest!), X(i.Operands[0])).ZeroFirst = CpuModel.BreaksMerge(FWidth(i.Dest!.Type));
 
     /// <summary>A signed 32-bit integer to a float or a double: CVTSI2SS, CVTSI2SD, from a register or memory.</summary>
-    private void SseFromInt(Instr i) => EmitW(MOp.CvtIntToF, FWidth(i.Dest!.Type), X(i.Dest!), R(i.Operands[0])).ZeroFirst = CpuModel.ZeroIdiomXmm;
+    private void SseFromInt(Instr i) => EmitW(MOp.CvtIntToF, FWidth(i.Dest!.Type), X(i.Dest!), R(i.Operands[0])).ZeroFirst = CpuModel.BreaksMerge(FWidth(i.Dest!.Type));
 
     /// <summary>
     /// A FLOAT TO A SIGNED 32-BIT INTEGER, the way .NET's JIT has it: CVTTSS2SI

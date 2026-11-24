@@ -30,13 +30,15 @@ public sealed class MInstr : MOperandList
     public Cond Cond { get; init; }
 
     /// <summary>
-    /// For CvtIntToF: XORPS its register with itself first, in the same
-    /// instruction as far as every pass is concerned. CVTSI2SS writes the low
-    /// lane alone and keeps the rest, so it waits on whatever last wrote the
-    /// register; a CPU that takes XORPS of a register with itself for a value
-    /// independent of the old one (CpuModel.ZeroIdiomXmm) starts it at once.
-    /// One instruction, so the zeroing is the conversion's own register and
-    /// no pass parts them or drops it as dead (Peephole.DeadXmmMoves); every
+    /// For CvtIntToF, CvtFToF and SqrtF: PXOR its register with itself
+    /// first, in the same instruction as far as every pass is concerned.
+    /// Each writes the low lane alone and keeps the rest, so it waits on
+    /// whatever last wrote the register; a CPU that takes PXOR of a register
+    /// with itself for a value independent of the old one starts it at once
+    /// (CpuModel.BreaksMerge, which says where). The encoder leaves it out
+    /// where the register is also the source (Encoder.ZeroFirst). One
+    /// instruction, so the zeroing is the conversion's own register and no
+    /// pass parts them or drops it as dead (Peephole.DeadXmmMoves); every
     /// rebuild of an instruction carries it (X86Target.Build, LoopRotate.Clone,
     /// Peephole's spill folding, Select.Owning).
     /// </summary>

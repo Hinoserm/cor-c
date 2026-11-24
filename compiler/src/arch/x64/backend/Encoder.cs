@@ -289,6 +289,27 @@ internal sealed class Encoder
     /// An SSE instruction: its mandatory prefix (66, F2 or F3) BEFORE the REX,
     /// then 0F and the opcode.
     /// </summary>
+    /// <summary>
+    /// A SCALAR WRITE OF 32 BITS WAITS ON THE REGISTER'S OLD VALUE --
+    /// CVTSI2SS, CVTSD2SS, SQRTSS keep the rest of it -- and the K8 keeps each
+    /// XMM register as two independent 64-bit halves, so the 64-bit writes
+    /// (CVTSI2SD, CVTSS2SD, SQRTSD) wait on nothing already (Agner Fog,
+    /// microarchitecture, chapter 20). PXOR of the register with itself first
+    /// is a value of its own there ("A false dependence can be broken by ...
+    /// PXOR, XORPS, XORPD", same chapter), so the 32-bit ones start at once
+    /// -- what LLVM's BreakFalseDeps does on every x86-64 target. Not where
+    /// the register is also the source: the zeroing would destroy it.
+    /// </summary>
+    private void BreakMerge(MInstr i, int width)
+    {
+        if (width != 4 || i.Operands[0] is not MReg to) return;
+        if (i.Operands[1] is MReg from && from.Hw == to.Hw && !IsGpr(i, from)) return;
+        Sse(0x66, false, to.Hw, to, 0xEF);
+    }
+
+    /// <summary>Whether the source register of a conversion from an integer is a general one (another register file from the XMM destination).</summary>
+    private static bool IsGpr(MInstr i, MReg from) => i.Op == MOp.CvtIntToF;
+
     private void Sse(int prefix, bool w, int reg, MOperand rm, int opcode)
     {
         Segment(rm);
@@ -530,16 +551,18 @@ internal sealed class Encoder
             case MOp.MulF: Sse(ScalarPrefix(w), false, Hw(i.Operands[0]), i.Operands[1], 0x59); break;
             case MOp.SubF: Sse(ScalarPrefix(w), false, Hw(i.Operands[0]), i.Operands[1], 0x5C); break;
             case MOp.DivF: Sse(ScalarPrefix(w), false, Hw(i.Operands[0]), i.Operands[1], 0x5E); break;
-            case MOp.SqrtF: Sse(ScalarPrefix(w), false, Hw(i.Operands[0]), i.Operands[1], 0x51); break;
+            case MOp.SqrtF: BreakMerge(i, w); Sse(ScalarPrefix(w), false, Hw(i.Operands[0]), i.Operands[1], 0x51); break;
             case MOp.UcomiF: Sse(w == 8 ? 0x66 : 0, false, Hw(i.Operands[0]), i.Operands[1], 0x2E); break;
             case MOp.XorF: Sse(0, false, Hw(i.Operands[0]), i.Operands[1], 0x57); break;
             case MOp.CvtIntToF:
+                BreakMerge(i, w);
                 Sse(ScalarPrefix(w), i.SourceWidth == 8, Hw(i.Operands[0]), i.Operands[1], 0x2A);
                 break;
             case MOp.CvtFToInt:
                 Sse(ScalarPrefix(i.SourceWidth), w == 8, Hw(i.Operands[0]), i.Operands[1], 0x2C);
                 break;
             case MOp.CvtFToF:
+                BreakMerge(i, w);
                 // To double from single is F3 5A; to single from double is F2 5A.
                 Sse(w == 8 ? 0xF3 : 0xF2, false, Hw(i.Operands[0]), i.Operands[1], 0x5A);
                 break;

@@ -59,13 +59,29 @@ internal static class CpuModel
     public static bool Athlon => K7 || K8;
 
     /// <summary>
-    /// The Pentium 4 (NetBurst): XORPS, XORPD and PXOR of a register with
-    /// itself are taken for a value independent of the register's old one, so
-    /// a conversion's merge into it (CVTSI2SS) waits on nothing after one
-    /// (MInstr.ZeroFirst). The K7 and K8 take no such idiom for the XMM
-    /// registers; no other SSE CPU of these profiles is claimed to.
+    /// WHETHER A SCALAR SSE INSTRUCTION'S MERGE IS BROKEN FIRST (MInstr.ZeroFirst):
+    /// CVTSI2SS/SD, CVTSS2SD/CVTSD2SS and SQRTSS/SD write the low lane alone
+    /// and keep the rest, so each waits on whatever last wrote its register.
+    /// PXOR of the register with itself first removes the wait where the
+    /// processor takes it for a value of its own (a zero idiom):
+    ///
+    /// - The Pentium 4 takes PXOR of a register with itself so, and not XORPS
+    ///   or XORPD (Agner Fog, microarchitecture 5.11: "The same applies to
+    ///   the PXOR instruction ... but not to ... XORPS, XORPD"); GCC breaks
+    ///   every one of these merges there (x86-tune.def
+    ///   SSE_PARTIAL_REG_CONVERTS_DEPENDENCY and _FP_CONVERTS_DEPENDENCY,
+    ///   m_P4_NOCONA; SSE_LOAD0_BY_PXOR).
+    /// - The K8 takes PXOR, XORPS and XORPD (Agner, chapter 20: "A false
+    ///   dependence can be broken by ... PXOR, XORPS, XORPD"), and keeps each
+    ///   XMM register as two independent 64-bit halves (same chapter): a
+    ///   write of the whole low half -- CVTSI2SD, CVTSS2SD, SQRTSD -- waits on
+    ///   nothing already, and only the 32-bit writes merge.
+    /// - The P6 family, the Pentium III among them, and the K7 take no such
+    ///   idiom for an XMM register (Agner 6.8: XOR "doesn't break its
+    ///   dependence on earlier instructions on PPro, P2, P3"; nothing claimed
+    ///   for the K7): a zeroing there would only be one more instruction.
     /// </summary>
-    public static bool ZeroIdiomXmm => Name == "pentium4";
+    public static bool BreaksMerge(int width) => Name == "pentium4" || K8 && width == 4;
 
     /// <summary>
     /// A function's alignment: 16 on the K6 (AMD 21924, "Aligning

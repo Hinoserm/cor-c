@@ -312,6 +312,20 @@ internal sealed class Encoder
         : throw new InvalidOperationException($"register v{id} left unallocated (EBP's value is made EBP by FramePointerFree)");
 
     /// <summary>An XMM register's hardware number.</summary>
+    /// <summary>
+    /// PXOR of the instruction's register with itself first, where that
+    /// breaks the wait on its old value (MInstr.ZeroFirst) -- and never where
+    /// the register is also what it reads, which a zeroing would destroy (a
+    /// conversion or root of a register into itself merges into itself, a
+    /// wait no zeroing removes).
+    /// </summary>
+    private void ZeroFirst(MInstr i)
+    {
+        if (!i.ZeroFirst || i.Operands[1] is MReg { IsXmm: true } from && Xmm(from) == Xmm(i.Operands[0])) return;
+        B(0x66, 0x0F, 0xEF);
+        XmmRM(Xmm(i.Operands[0]), i.Operands[0]);
+    }
+
     private static int Xmm(MOperand o) => o is MReg { IsXmm: true } r ? r.XmmNumber
         : throw new InvalidOperationException($"{o} is not an XMM register (one left unallocated?)");
 
@@ -947,6 +961,7 @@ internal sealed class Encoder
             case MOp.MulF:
             case MOp.DivF:
             case MOp.SqrtF:
+                if (i.Op == MOp.SqrtF) ZeroFirst(i);
                 B(Scalar(i), 0x0F, i.Op switch { MOp.AddF => (byte)0x58, MOp.MulF => (byte)0x59, MOp.SubF => (byte)0x5C, MOp.DivF => (byte)0x5E, _ => (byte)0x51 });
                 XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
                 break;
@@ -957,17 +972,13 @@ internal sealed class Encoder
                 XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.CvtFToF:
+                ZeroFirst(i);
                 // To a double: cvtss2sd (F3); to a float: cvtsd2ss (F2).
                 B(i.Width == 8 ? (byte)0xF3 : (byte)0xF2, 0x0F, 0x5A);
                 XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.CvtIntToF:
-                // Its register zeroed first where that breaks the wait on it (MInstr.ZeroFirst).
-                if (i.ZeroFirst)
-                {
-                    B(0x0F, 0x57);
-                    XmmRM(Xmm(i.Operands[0]), i.Operands[0]);
-                }
+                ZeroFirst(i);
                 B(Scalar(i), 0x0F, 0x2A);
                 ModRM(Xmm(i.Operands[0]), i.Operands[1]);
                 break;
