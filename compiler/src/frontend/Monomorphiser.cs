@@ -2252,7 +2252,7 @@ public sealed class Monomorphiser
         if (Imports("") is { } global) return global;
 
         // OTHERWISE A QUALIFIED NAME NAMES ITS LAST PART, as Binder.Resolve
-        // reads one: `System.Collections.Generic.Dictionary<K,V>` is the
+        // reads one: `System.Collections.Generic.Dictionary<TKey,TValue>` is the
         // Dictionary the library declares at the top level, because
         // namespaces are not a tree here and the qualifier has nothing to
         // select between.

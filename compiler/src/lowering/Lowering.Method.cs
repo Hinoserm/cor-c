@@ -275,14 +275,16 @@ public sealed partial class Lowering
     private int _checkedDepth;
 
     /// <summary>
-    /// THE BLOCKS THAT REPORT A FAILED BOUNDS CHECK, ONE A SOURCE LINE, made on
+    /// THE BLOCKS THAT REPORT A FAILED BOUNDS CHECK, ONE A STATEMENT'S LINE, made on
     /// demand: the call in each is the frame the stack trace reads, and its
     /// return address finds its line in the line table (Encoder.Lines). One a
     /// function reported every fault at the line of its first check. Go keys
     /// its panic blocks the same way (ssagen's s.panics, by function and line);
-    /// .NET's JIT shares one a function and loses the line. A line with
-    /// several checks shares one block, which is all the line table can tell
-    /// apart; CommonTailMerge keeps blocks of different lines apart.
+    /// .NET's JIT shares one a function and loses the line. The line is the
+    /// statement's (Builder.Line, set per statement), which is what the line
+    /// table records for every instruction of it: a statement written over
+    /// several lines reports its first, and its checks share one block.
+    /// CommonTailMerge keeps blocks of different lines apart.
     /// </summary>
     private Dictionary<int, Block>? _boundsFail;
 

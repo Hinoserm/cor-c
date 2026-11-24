@@ -75,14 +75,15 @@ internal static class CpuModel
     /// - The K8 takes PXOR, XORPS and XORPD (Agner, chapter 20: "A false
     ///   dependence can be broken by ... PXOR, XORPS, XORPD"); XORPS, the
     ///   floating-point one AMD 25112 gives for clearing an XMM register
-    ///   (8.4), keeps the zero in the domain the conversion reads. The K8
+    ///   (9.13), keeps the zero in the domain the conversion reads. The K8
     ///   holds each XMM register as two independent 64-bit halves (Agner,
     ///   20.11), so a write of a whole half -- CVTSI2SD, CVTSS2SD, SQRTSD --
     ///   waits on nothing; a 32-bit write is a write of part of a half, and
     ///   "an instruction that writes part of a register merges the modified
-    ///   portion with the current state of the other part" (AMD 25112, 5.7,
-    ///   partial-register writes) -- our reading of the two together, since
-    ///   neither book names CVTSI2SS. Only the 32-bit ones get XORPS there,
+    ///   portion with the current state of the other part" (AMD 25112, 4.7);
+    ///   and 25112's own table of scalar conversions (Appendix E, Table 22)
+    ///   puts XORPS before CVTSD2SS and CVTSI2SS and nothing before CVTSS2SD
+    ///   or CVTSI2SD. Only the 32-bit ones get XORPS there,
     ///   in either mode; x86-64 code is for the K8 and later, as its backend
     ///   says (X64 Machine), whatever --cpu names, unless it names the P4.
     /// - The P6 family, the Pentium III among them, and the K7 take no such

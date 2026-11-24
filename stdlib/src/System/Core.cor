@@ -14270,8 +14270,8 @@ public interface ILookup<TKey, TElement> : IEnumerable<IGrouping<TKey, TElement>
 }
 
 /// .NET's IOrderedEnumerable: a sorted sequence that a ThenBy sorts further.
-public interface IOrderedEnumerable<T> : IEnumerable<T> {
-    IOrderedEnumerable<T> CreateOrderedEnumerable<K>(Func<T, K> keySelector, IComparer<K>? comparer, bool descending);
+public interface IOrderedEnumerable<TElement> : IEnumerable<TElement> {
+    IOrderedEnumerable<TElement> CreateOrderedEnumerable<TKey>(Func<TElement, TKey> keySelector, IComparer<TKey>? comparer, bool descending);
 }
 
 /// A GROUP IS A READ-ONLY LIST, as .NET's Grouping is an IList: Count()
@@ -15098,7 +15098,7 @@ public static class Enumerable {
         foreach (T item in source) { yield return item; }
     }
 
-    public static IEnumerable<(T First, U Second)> Zip<T, U>(this IEnumerable<T> first, IEnumerable<U> second) {
+    public static IEnumerable<(TFirst First, TSecond Second)> Zip<TFirst, TSecond>(this IEnumerable<TFirst> first, IEnumerable<TSecond> second) {
         NotNull(first, "first"); NotNull(second, "second");
         return ZipPairs(first, second);
     }
@@ -15123,7 +15123,7 @@ public static class Enumerable {
     }
 
     // Three at once (.NET 6), as far as the shortest goes.
-    public static IEnumerable<(T First, U Second, V Third)> Zip<T, U, V>(this IEnumerable<T> first, IEnumerable<U> second, IEnumerable<V> third) {
+    public static IEnumerable<(TFirst First, TSecond Second, TThird Third)> Zip<TFirst, TSecond, TThird>(this IEnumerable<TFirst> first, IEnumerable<TSecond> second, IEnumerable<TThird> third) {
         NotNull(first, "first"); NotNull(second, "second"); NotNull(third, "third");
         return ZipTriples(first, second, third);
     }
@@ -15137,7 +15137,7 @@ public static class Enumerable {
     }
 
     // Each element with its position (.NET 9).
-    public static IEnumerable<(int Index, T Item)> Index<T>(this IEnumerable<T> source) {
+    public static IEnumerable<(int Index, TSource Item)> Index<TSource>(this IEnumerable<TSource> source) {
         NotNull(source, "source");
         return Indexed(source);
     }
@@ -20738,7 +20738,7 @@ public struct KeyValuePair<TKey, TValue> {
     }
 }
 
-// .NET spells this Dictionary<K,V>.Enumerator. It walks the table itself
+// .NET spells this Dictionary<TKey,TValue>.Enumerator. It walks the table itself
 // rather than copying it out, which is why it reads the private arrays: in C#
 // it is written inside the class and does exactly the same thing.
 // .NET's read-only view of a table, and Dictionary implements it. What it
@@ -21022,7 +21022,7 @@ public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDict
         }
     }
 
-    /// A COPY OF ANOTHER TABLE, which is .NET's Dictionary(IDictionary<K,V>)
+    /// A COPY OF ANOTHER TABLE, which is .NET's Dictionary(IDictionary<TKey,TValue>)
     /// and the shortest way to fork a map before changing one of the forks.
     /// Added an entry at a time, as the one above: a source keyed by another
     /// comparer may hold two keys the default one calls the same.
@@ -21450,7 +21450,7 @@ public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDict
         public void Clear() { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
         public bool Remove(TKey item) { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
 
-        /// .NET's Dictionary<K, V>.KeyCollection.Enumerator: as the table's walk, the key alone.
+        /// .NET's Dictionary<TKey, TValue>.KeyCollection.Enumerator: as the table's walk, the key alone.
         public struct Enumerator : IEnumerator<TKey>, IDisposable {
             private readonly Dictionary<TKey, TValue> over;
             private readonly int version;
@@ -21506,7 +21506,7 @@ public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDict
         public void Clear() { throw new NotSupportedException("Mutating a value collection derived from a dictionary is not allowed."); }
         public bool Remove(TValue item) { throw new NotSupportedException("Mutating a value collection derived from a dictionary is not allowed."); }
 
-        /// .NET's Dictionary<K, V>.ValueCollection.Enumerator: as the table's walk, the value alone.
+        /// .NET's Dictionary<TKey, TValue>.ValueCollection.Enumerator: as the table's walk, the value alone.
         public struct Enumerator : IEnumerator<TValue>, IDisposable {
             private readonly Dictionary<TKey, TValue> over;
             private readonly int version;

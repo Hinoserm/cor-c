@@ -5,7 +5,7 @@
 // program written for .NET reaches for: a stack, a doubly linked list, and the
 // two ordered maps.
 //
-// SortedList<K,V> and SortedDictionary<K,V> differ in .NET by their storage --
+// SortedList<TKey,TValue> and SortedDictionary<TKey,TValue> differ in .NET by their storage --
 // parallel arrays against a red-black tree -- and so in which operation is
 // cheap, not in what they answer. So here: SortedList is parallel arrays, and
 // SortedDictionary a red-black tree of its pairs (std.cor's SortedSet, by key).
@@ -534,7 +534,7 @@ class SortedPairs<K, V> {
     }
 }
 
-/// .NET's SortedList<K, V>.Enumerator, handed out as an IEnumerator as .NET
+/// .NET's SortedList<TKey, TValue>.Enumerator, handed out as an IEnumerator as .NET
 /// hands out its own: the pair the last MoveNext took, default before the
 /// first and after the last, and a list changed since the walk began an
 /// InvalidOperationException at the next MoveNext or Reset. Through the
@@ -1186,7 +1186,7 @@ public class SortedDictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOn
 
     public void Clear() { tree.Clear(); }
 
-    /// .NET's SortedDictionary<K, V>.Enumerator: a struct, the pair the last
+    /// .NET's SortedDictionary<TKey, TValue>.Enumerator: a struct, the pair the last
     /// MoveNext took, default before the first and after the last, and a map
     /// changed since the walk began an InvalidOperationException at the next
     /// MoveNext or Reset.

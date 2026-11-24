@@ -1356,9 +1356,9 @@ public static class Driver
         // Whether this object will carry link-time hints (Escape's), decided
         // before optimising as it is when the object is written: an object,
         // position-dependent, with the link-time optimizer on, linked against
-        // no shared library -- or a kernel module's unit whatever modules it
-        // links against (keepsHintsOverShared, below). Only such an object may
-        // call symbols only the link defines (field sites).
+        // no shared library (a kernel module's unit is the exception, below).
+        // Only such an object may call symbols only the link defines (field
+        // sites).
         // AND A UNIT OF A KERNEL MODULE (--kernel --obj), position-independent
         // as a module is, whose units the module's link optimises together as
         // a kernel's units are (IrLinkOptimizer): the link defines its field
