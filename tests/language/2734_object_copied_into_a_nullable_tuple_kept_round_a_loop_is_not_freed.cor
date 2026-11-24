@@ -1,0 +1,49 @@
+// test: object_copied_into_a_nullable_tuple_kept_round_a_loop_is_not_freed
+// expect-exit: 0
+// expect-output:
+// a p d q
+//
+// AN OBJECT MADE EACH LAP AND COPIED INTO A VARIABLE KEPT ROUND THE LOOP --
+// `first = (input.Name, contract)`, a tuple made of it copied into a
+// nullable and that into `first` -- is held there, though no store ever
+// wrote it into the variable's words (only block copies did): the lifetime
+// rules freed the last lap's object at the next lap's making, and the
+// natively built 64-bit linker read a freed contract (NullReferenceException
+// in X86CodeGenerationContract.Disagreeing). Checked against .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+sealed class Obj { public List<string> Sections = new(); }
+sealed record Rec(string Cpu, string Fpu, uint Features, bool Auto = true)
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static Rec? Read(Obj o)
+    {
+        if (o.Sections.Count == 0) return null;
+        string[] f = o.Sections[0].Split('\n');
+        var r = new Rec(f[0], f[1], uint.Parse(f[2]), f[3] == "1");
+        return r;
+    }
+}
+static class P {
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static (string, string, string, string)? Disagreeing(IEnumerable<(string Name, Obj Object)> inputs)
+    {
+        (string Name, Rec Contract)? first = null;
+        foreach (var input in inputs)
+        {
+            if (Rec.Read(input.Object) is not { } contract) continue;
+            if (first is not { } had) { first = (input.Name, contract); continue; }
+            if (contract.Features != had.Contract.Features || contract.Fpu != had.Contract.Fpu)
+                return (had.Name, had.Contract.Cpu, input.Name, contract.Cpu);
+        }
+        return null;
+    }
+    static Obj Make(string s) { Obj o = new(); if (s.Length > 0) o.Sections.Add(s); return o; }
+    static void Main() {
+        var l = new List<(string, Obj)> { ("a", Make("p\nx87\n5\n1")), ("b", Make("")), ("c", Make("p\nx87\n5\n1")), ("d", Make("q\nx87\n7\n0")) };
+        var r = Disagreeing(l);
+        Console.WriteLine(r is { } x ? x.Item1 + " " + x.Item2 + " " + x.Item3 + " " + x.Item4 : "none");
+    }
+}

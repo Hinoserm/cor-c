@@ -4413,7 +4413,20 @@ continue;
                         foreach (long o in offsets) if (o >= fromDelta && o - fromDelta < count) moved.Add(o - fromDelta);
                         if (moved.Count == 0) return;
                         if (count == long.MaxValue || HolderAt(i.Operands[0], 0) is not var (to, toDelta)) { flow.Escapes = true; return; }
-                        foreach (long o in moved) Hold(to, toDelta + o);
+                        // A WRITE OF THE OBJECT INTO THE WORDS IT LANDS IN, as a
+                        // store into them is (HeldAtSelf): a tuple made of it,
+                        // copied into a nullable and that into a variable kept
+                        // round a loop (`first = (name, made)`), held the last
+                        // lap's object in the variable's words, which no store
+                        // had written, and the object was freed at the next
+                        // lap's making while the variable still held it -- the
+                        // linker built 64-bit read a freed contract
+                        // (X86CodeGenerationContract.Disagreeing).
+                        foreach (long o in moved)
+                        {
+                            Hold(to, toDelta + o);
+                            (heldWrites ??= new()).Add((i, to, toDelta + o));
+                        }
                     }
                     return;
                 case Opcode.Eq:
@@ -6863,6 +6876,17 @@ continue;
                         if (offset < 0 ? state.Any(word => Equals(word.Item1, root)) : state.Contains((root, offset))) return true;
                 if (wrote.TryGetValue(i, out var writing) && i.Operands.Count > 1 && ThisLap(i.Operands[1]))
                     foreach ((object root, long offset) in writing) state.Remove((root, offset));
+                // A copy of words between holders (MemCopy, Analyse): the words
+                // it lands in hold an earlier lap's object where the words it
+                // comes from may, and this lap's -- or none -- where they
+                // cannot.
+                else if (writing is not null && i.Op == Opcode.MemCopy)
+                {
+                    bool old = read.TryGetValue(i, out var sources) && sources.Any(source => state.Any(word => Equals(word.Item1, source.Root)));
+                    foreach ((object root, long offset) in writing)
+                        if (old) state.Add((root, offset));
+                        else state.Remove((root, offset));
+                }
             }
             if (round || state.Count == 0) continue;
             List<Block> next = new();
