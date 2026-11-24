@@ -40,8 +40,9 @@ using Block = Corsac.Lang.Ir.Block;
 /// an instruction that dominates the preheader (the test reads the same value
 /// every lap and costs nothing to ask before it); no landing pad, no async
 /// body, no block the link gave a region of its own, no phi -- the IR here is
-/// not SSA, so a register written in both copies is the one register, and
-/// whichever copy ran is the one read after (Instr.Clone).
+/// not SSA: a register read or written outside the loop is the one register
+/// in both copies, whichever ran the one read after (Instr.Clone); one the
+/// loop alone writes and reads is a fresh register in the copy (Copy).
 /// </summary>
 public sealed class LoopUnswitch : IPass
 {
@@ -215,12 +216,38 @@ public sealed class LoopUnswitch : IPass
         // In the function's order, so the copy's layout is the loop's.
         List<Block> blocks = function.Blocks.Where(loop.Contains).ToList();
         foreach (Block original in blocks) copy[original] = function.NewBlock(original.Label + ".u");
+        // THE LOOP'S OWN REGISTERS, A FRESH SET IN THE COPY (loop versioning's
+        // new values, the IR here having no phis): each register every write
+        // and read of which is inside the loop. Shared, an object made in
+        // the loop was a register with two writes, one a copy, and the
+        // lifetime rules, which take such a register for one that may hold
+        // anything, freed nothing made in either (1200, 1529). What is read
+        // or written outside the loop -- a counter set before it, a total
+        // read after -- stays the one register, whichever copy ran.
+        HashSet<VReg> outside = new();
+        foreach (Block other in function.Blocks)
+        {
+            if (loop.Contains(other)) continue;
+            foreach (Instr i in other.Instrs)
+            {
+                if (i.Dest is { } d) outside.Add(d);
+                foreach (Operand o in i.Operands) if (o is RegOperand { Reg: var r }) outside.Add(r);
+            }
+        }
+        Dictionary<VReg, VReg> fresh = new();
+        foreach (Block original in blocks)
+            foreach (Instr i in original.Instrs)
+                if (i.Dest is { } d && !outside.Contains(d) && !function.Params.Contains(d) && !fresh.ContainsKey(d))
+                    fresh[d] = function.NewReg(d.Type, d.Name);
         foreach (Block original in blocks)
         {
             Block made = copy[original];
             foreach (Instr i in original.Instrs)
             {
                 Instr c = i.Clone();
+                if (c.Dest is { } written && fresh.TryGetValue(written, out VReg? renamed)) c.Dest = renamed;
+                for (int k = 0; k < c.Operands.Count; k++)
+                    if (c.Operands[k] is RegOperand { Reg: var read } && fresh.TryGetValue(read, out VReg? renamedRead)) c.Operands[k] = RegOperand.Of(renamedRead);
                 for (int k = 0; k < c.TargetCount; k++)
                     if (copy.TryGetValue(c.TargetAt(k), out Block? inCopy)) c.SetTarget(k, inCopy);
                 // A switch's default is an edge of its own (Block.Successors), not one of its targets.
