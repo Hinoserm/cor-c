@@ -889,7 +889,9 @@ public static class ProjectCompile
                 bool copy = symbol.Name.EndsWith(Corsac.Lang.Elf.Linker.InsideSuffix, StringComparison.Ordinal);
                 // And a function that never touches the FPU's state (X86.FpuFree's marker, local).
                 bool fpuFree = symbol.Name.EndsWith(FpuFreeSuffix, StringComparison.Ordinal);
-                if (symbol.IsDefined) { if (copy || fpuFree) copies.Add(symbol.Name); else defines.Add(symbol.Name); }
+                // (A $inside copy is a function this unit defines too: its own
+                // $fpufree marker is vetoed by another unit's copy that lacks one.)
+                if (symbol.IsDefined) { if (copy || fpuFree) copies.Add(symbol.Name); if (!fpuFree) defines.Add(symbol.Name); }
                 else calls.Add(copy ? symbol.Name[..^Corsac.Lang.Elf.Linker.InsideSuffix.Length] : symbol.Name);
             }
             read.Add(new UnitCalls(unit, copies, calls, defines));
@@ -983,8 +985,10 @@ public static class ProjectCompile
                     force("its calls into other units' FPU-free functions did not settle");
                     try { int failed = compile(trusting); if (failed != 0) return failed; }
                     finally { force(null); }
-                    foreach (Unit unit in trusting)
-                        try { File.WriteAllText(unit.Receipt + ".inside", ""); }
+                    // Their answers under the facts they were compiled with now.
+                    HashSet<Unit> again = new(trusting);
+                    foreach (UnitCalls one in ReadUnits(units).Where(one => again.Contains(one.Unit)))
+                        try { File.WriteAllText(one.Unit.Receipt + ".inside", Answers(one, facts)); }
                         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
                 }
                 Console.Error.WriteLine("corc: the units' calls into each other's packed methods still move after four rounds ("

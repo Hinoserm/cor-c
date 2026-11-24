@@ -63,10 +63,18 @@ public sealed class LoopUnswitch : IPass
             if (!Once(function, ref copies)) break;
     }
 
-    /// <summary>The copy budget in instructions: a share of the instruction cache, as LoopUnswitch's summary says.</summary>
+    /// <summary>
+    /// THE LOOPS ALREADY COPIED, the copy's header and the loop's own, in
+    /// any run of this pass over the function (the pipeline runs it each
+    /// round): one copy a loop, never a loop's copy copied again -- a loop
+    /// with three invariant tests would otherwise be eight.
+    /// </summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Block, object> Copied = new();
+
+    /// <summary>The copy budget in instructions: a share of the instruction cache, as LoopUnswitch's summary says, in either mode (the long-mode profile has its cache too).</summary>
     private int CopyBudget()
     {
-        if (OptimizeSize || Target.Current.WordSize != 4) return Target.Current.WordSize == 8 && !OptimizeSize ? 64 : 0;
+        if (OptimizeSize) return 0;
         int kb = Target.Current.X86Profile.InstructionCacheKb;
         // About three bytes an IR instruction once selected; a loop copied is
         // allowed one part in 64 of the cache -- 8 KB: 42 instructions; 16 KB
@@ -109,7 +117,7 @@ public sealed class LoopUnswitch : IPass
                 bool trivial = TrivialWay(cfg, loop, header, b, branch);
                 int size = 0;
                 foreach (Block inLoop in loop) size += inLoop.Instrs.Count;
-                if (!trivial && (copies >= 2 || size > CopyBudget())) continue;
+                if (!trivial && (copies >= 2 || size > CopyBudget() || Copied.TryGetValue(header, out _))) continue;
                 Block entry = Entry(function, preheader, header);
                 if (trivial) Trivial(loop, header, entry, b, branch);
                 else { Copy(function, loop, header, entry, b, branch); copies++; }
@@ -215,6 +223,8 @@ public sealed class LoopUnswitch : IPass
                 Instr c = i.Clone();
                 for (int k = 0; k < c.TargetCount; k++)
                     if (copy.TryGetValue(c.TargetAt(k), out Block? inCopy)) c.SetTarget(k, inCopy);
+                // A switch's default is an edge of its own (Block.Successors), not one of its targets.
+                if (c.Default is { } fallback && copy.TryGetValue(fallback, out Block? defaultInCopy)) c.Default = defaultInCopy;
                 made.Instrs.Add(c);
             }
         }
@@ -228,6 +238,8 @@ public sealed class LoopUnswitch : IPass
         Instr toFalse = new() { Op = Opcode.Jump, Line = branch.Line };
         toFalse.SetTargets(new[] { whenFalse });
         b.Instrs[b.Instrs.Count - 1] = toFalse;
+        Copied.AddOrUpdate(header, header);
+        Copied.AddOrUpdate(copy[header], header);
         // The way in decides once.
         Instr test = new() { Op = Opcode.Branch, Line = branch.Line };
         test.Operands.Add(branch.Operands[0]);

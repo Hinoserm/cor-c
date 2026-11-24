@@ -4,6 +4,7 @@
 // sum 4950 0 4950 0
 // stop 0 45
 // mixed 2450 2500 98 100
+// switched 20 0 13 11 0 8 12 0
 //
 // A LOOP'S TEST OF SOMETHING IT NEVER CHANGES (LoopUnswitch): decided once
 // before the loop where one way leaves it (the trivial kind: `if (quit)
@@ -52,8 +53,29 @@ static class Program
         return total;
     }
 
+    // A SWITCH IN A LOOP MADE AGAIN: its cases and its default -- an edge of
+    // its own, not one of its targets -- each in the copy that runs.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Switched(int n, bool count, int[] into)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            if (count) into[0]++;
+            switch (i % 5)
+            {
+                case 0: into[1]++; break;
+                case 1: into[2] += 2; break;
+                default: into[3]++; break;
+            }
+        }
+    }
+
     static int Main()
     {
+        int[] a = new int[4], b = new int[4];
+        Switched(20, true, a);
+        Switched(20, false, b);
+        Console.WriteLine("switched " + a[0] + " " + b[0] + " " + (a[1] + a[2] + 1) + " " + (b[1] + b[2] - 1) + " " + (a[3] - b[3]) + " " + a[2] + " " + b[3] + " " + (a[1] - b[1]));
         int b1, b2;
         int a1 = Split(100, true, out b1), a2 = Split(100, false, out b2);
         Console.WriteLine("sum " + Sum(100, false) + " " + Sum(100, true) + " " + a1 + " " + a2);

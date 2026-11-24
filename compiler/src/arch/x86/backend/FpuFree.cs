@@ -104,10 +104,11 @@ internal static class FpuFree
             if (state.ContainsKey(root)) continue;
             state[root] = 1;
             path.Push((root, 0));
+            Dictionary<Block, List<Block>> succsOf = new(ReferenceEqualityComparer.Instance);
             while (path.Count > 0)
             {
                 (Block at, int next) = path.Pop();
-                List<Block> succs = at.Successors.ToList();
+                if (!succsOf.TryGetValue(at, out List<Block>? succs)) succsOf[at] = succs = at.Successors.ToList();
                 if (next < succs.Count)
                 {
                     path.Push((at, next + 1));
