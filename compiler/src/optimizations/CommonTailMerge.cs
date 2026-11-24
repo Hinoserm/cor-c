@@ -70,7 +70,7 @@ public sealed class CommonTailMerge : IPass
         // shared with one it did not, a number's load with an address's.
         if (a.Number != b.Number || a.Family != b.Family || a.Field != b.Field
             || a.RegionSite != b.RegionSite || a.DispatchType != b.DispatchType
-            || a.Immutable != b.Immutable || a.Device != b.Device) return false;
+            || a.Immutable != b.Immutable || a.Device != b.Device || a.PassedByValue != b.PassedByValue) return false;
         for (int k = 0; k < a.Targets.Count; k++) if (a.Targets[k] != b.Targets[k]) return false;
         for (int k = 0; k < a.Operands.Count; k++)
         {

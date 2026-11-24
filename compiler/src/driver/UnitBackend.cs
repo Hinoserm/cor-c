@@ -141,6 +141,7 @@ public sealed class UnitBackend : IUnitBackend
             // What that run found of the unit's own functions, for each one's rules as it is loaded (Escape.LinkFacts.Unit).
             link?.Unit(module);
             AsyncTransform.Run(module, Target.Current.WordSize);
+            CopyLateUses.Run(module);
             LandingPadHomes.Run(module);
             // Only a collector reads stack maps, and a unit the late passes
             // found needs no heap carries none, as its compile would have.
@@ -522,6 +523,7 @@ public sealed class UnitBackend : IUnitBackend
                 // may be the frame's no longer: SlotScalars once more.)
                 if (given) { SlotScalars.ApplyAndClean(function); ArgumentSummary.Folding(1).Run(local); }
             }
+            CopyLateUses.Run(local);
             LandingPadHomes.Run(local);
             if (dumping) { System.Text.StringBuilder regenerated = new(); function.Dump(regenerated); Console.Error.WriteLine("== regenerated\n" + regenerated); }
             return function;

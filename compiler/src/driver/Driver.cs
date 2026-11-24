@@ -1626,6 +1626,7 @@ public static class Driver
         Program.BenchmarkStage("async-homes-imports");
 #endif
         Corsac.Lang.Opt.AsyncTransform.Run(module, target.WordSize);
+        Corsac.Lang.Opt.CopyLateUses.Run(module);
         Corsac.Lang.Opt.LandingPadHomes.Run(module);
         if (args.Contains("--dump-async"))
         {

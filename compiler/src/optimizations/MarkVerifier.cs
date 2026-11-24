@@ -10,7 +10,8 @@ using Block = Corsac.Lang.Ir.Block;
 /// An instruction carries what lowering and the link learned of it -- a
 /// number never an address (Instr.Number), the field it reads or writes
 /// (Field, Family), a site the link chose for a region (RegionSite), a
-/// virtual call's declaring type (DispatchType) -- and a block the loop
+/// virtual call's declaring type (DispatchType), a read of what the link
+/// made (Immutable) -- and a block the loop
 /// region the link gave it (Block.RegionLoop, RegionLoopBytes), a parameter
 /// that it is a number (VReg.Number). Every one of them is a property a
 /// pass that rebuilds an instruction must copy by hand, and a pass that

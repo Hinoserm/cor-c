@@ -32,6 +32,7 @@ public sealed class NullCheckFold : IPass
         Cfg? cfg = null;
         Defs? defs = null;
         Dictionary<VReg, List<(Block Block, int Index)>>? accessed = null;
+        Asked.Clear();
         foreach (Block block in function.Blocks)
         {
             for (int k = 0; k < block.Instrs.Count; k++)
@@ -94,16 +95,25 @@ public sealed class NullCheckFold : IPass
         defs ??= PipelineAnalyses.DefsOf(function);
         accessed ??= Accessed(function);
         if (!defs.IsSingle(receiver) || !accessed.TryGetValue(receiver, out var at)) return false;
+        // Asked once a receiver and block: `this`'s checks in one block are many.
+        if (Asked.TryGetValue((receiver, block), out bool known)) return known;
+        bool answer = false;
         (Block Block, int Index)? site = defs.Site(receiver) is { } s ? (s.Block, s.Index) : null;
         foreach ((Block where, int index) in at)
         {
             if (ReferenceEquals(where, block) || !cfg.Dominates(where, block)) continue;
             if (site is { } d && ReferenceEquals(d.Block, where) && index <= d.Index) continue;
             if (site is { } w && !ReferenceEquals(w.Block, where) && !cfg.Dominates(w.Block, where)) continue;
-            return true;
+            answer = true;
+            break;
         }
-        return false;
+        Asked[(receiver, block)] = answer;
+        return answer;
     }
+
+    /// <summary>MadeBefore's answers this run, by receiver and block; cleared as each function starts.</summary>
+    [ThreadStatic] private static Dictionary<(VReg, Block), bool>? _asked;
+    private static Dictionary<(VReg, Block), bool> Asked => _asked ??= new();
 
     /// <summary>Every register read or written through within the null page, and where.</summary>
     private static Dictionary<VReg, List<(Block Block, int Index)>> Accessed(Function function)

@@ -1,0 +1,63 @@
+// test: a_null_check_stays_where_no_earlier_access_of_the_same_value_dominates_it
+// expect-exit: 0
+// expect-output:
+// null 1
+// 18 4
+// null 1 5
+// 1 null 7
+//
+// A CALL'S NULL CHECK, all that is left of a method that touches no field
+// once inlined (NullCheckFold): dropped where a block every way here passes
+// through first read the same value (MadeBefore), kept where the access was
+// of an earlier lap's value -- the register written since -- or in an arm
+// the call's block is not dominated by. Checked against .NET 10.
+using System;
+using System.Runtime.CompilerServices;
+sealed class Node
+{
+    public int V;
+    public Node? Next;
+    public static int Touched;
+    public void Touch() { Touched++; }
+    public Node(int v, Node? next) { V = v; Next = next; }
+}
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Laps(Node head)
+    {
+        Node cur = head; int s = 0;
+        for (int k = 0; k < 3; k++) { s += cur.V; cur = cur.Next!; cur.Touch(); }
+        return s;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Arms(Node? n, bool first)
+    {
+        int s = 0;
+        if (first) s = n!.V;
+        else s = 7;
+        n!.Touch();
+        return s;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Dominated(Node n, bool again)
+    {
+        int s = n.V;
+        if (again) n.Touch();
+        n.Touch();
+        return s;
+    }
+    static string Try(Func<int> f)
+    {
+        try { return f().ToString(); }
+        catch (NullReferenceException) { return "null"; }
+    }
+    static void Main()
+    {
+        var list = new Node(1, new Node(2, null));
+        Console.WriteLine(Try(() => Laps(list)) + " " + Node.Touched);
+        Console.WriteLine(Try(() => Laps(new Node(5, new Node(6, new Node(7, new Node(8, null)))))) + " " + Node.Touched);
+        Console.WriteLine(Try(() => Arms(null, false)) + " " + Try(() => Arms(list, true)) + " " + Node.Touched);
+        Console.WriteLine(Try(() => Dominated(list, true)) + " " + Try(() => Dominated(null!, false)) + " " + Node.Touched);
+    }
+}
