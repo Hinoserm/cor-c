@@ -32,7 +32,11 @@ public sealed class NullCheckFold : IPass
         Cfg? cfg = null;
         Defs? defs = null;
         Dictionary<VReg, List<(Block Block, int Index)>>? accessed = null;
-        Asked.Clear();
+        try { Walk(); }
+        // The thread's answers hold this function's blocks: let them go.
+        finally { _asked?.Clear(); }
+        void Walk()
+        {
         foreach (Block block in function.Blocks)
         {
             for (int k = 0; k < block.Instrs.Count; k++)
@@ -77,6 +81,7 @@ public sealed class NullCheckFold : IPass
                     if (!IrInfo.IsPure(next) || next.Op == Opcode.Phi || next.Dest == receiver) break;
                 }
             }
+        }
         }
     }
 

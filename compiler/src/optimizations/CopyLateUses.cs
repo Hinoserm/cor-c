@@ -21,8 +21,10 @@ using Block = Corsac.Lang.Ir.Block;
 public static class CopyLateUses
 {
     /// <summary>
-    /// Every function of `module`, as the last thing done to its IR before
-    /// the backend: after the late passes, the link's own per-function
+    /// Every function of `module`, as the last step on its IR before the
+    /// backend but the landing pads' homes (and the allocator fast paths
+    /// instruction selection writes out, which add only their own code):
+    /// after the late passes, the link's own per-function
     /// cleanup (UnitBackend.Load's SlotScalars and argument folding, which
     /// forward copies the other way) and the link's lifetime rules -- before
     /// the landing pads' homes (LandingPadHomes), which every path runs next.
@@ -34,8 +36,11 @@ public static class CopyLateUses
         foreach (Function function in module.Functions) Run(function);
     }
 
-    private static bool Skipped => Switches.SkipPasses is { Length: > 0 } skip
+    private static bool Skipped => _skipped ??= Switches.SkipPasses is { Length: > 0 } skip
         && skip.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Contains("CopyLateUses", StringComparer.Ordinal);
+
+    /// <summary>The switch read once a process: Run is asked once a function at the link.</summary>
+    private static bool? _skipped;
 
     private static void Run(Function function)
     {

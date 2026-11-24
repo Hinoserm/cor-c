@@ -1626,7 +1626,8 @@ public static class Driver
         Program.BenchmarkStage("async-homes-imports");
 #endif
         Corsac.Lang.Opt.AsyncTransform.Run(module, target.WordSize);
-        Corsac.Lang.Opt.CopyLateUses.Run(module);
+        // (--no-opt is lowering's IR as it was made: not this step either.)
+        if (!args.Contains("--no-opt")) Corsac.Lang.Opt.CopyLateUses.Run(module);
         Corsac.Lang.Opt.LandingPadHomes.Run(module);
         if (args.Contains("--dump-async"))
         {
