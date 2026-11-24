@@ -2307,7 +2307,7 @@ public sealed class Monomorphiser
             Nullable = a.Nullable && !reference, ElementNullable = a.ElementNullable && !referenceElements,
             InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
             Written = a.Written, Qualifier = a.Qualifier,
-            Line = a.Line, Col = a.Col,
+            Line = a.Line, Col = a.Col, AliasName = a.AliasName, AliasLevel = a.AliasLevel,
         };
     }
 
@@ -2319,6 +2319,36 @@ public sealed class Monomorphiser
     /// constructed argument's own arguments. Not where the program has a type
     /// of its own called `dynamic`.
     /// </summary>
+    /// <summary>
+    /// AN ARGUMENT READ THROUGH AN ALIAS (TypeRef.AliasName) where C#'s order
+    /// finds the name nearer -- a type of it around the use, or in a namespace
+    /// inside the alias's, or imported there -- is that type, as the binder
+    /// takes a bare use (Binder.AliasYields): `List<Map>` beside a nested Map
+    /// is a list of it, not of the alias's Dictionary. Outward from where it
+    /// was written, the types around it and then each namespace, to the
+    /// alias's own level, where a member of the name is the binder's CS0576.
+    /// </summary>
+    private TypeRef NearerThanAlias(TypeRef a)
+    {
+        if (a.AliasName is not string name) return a;
+        string level = a.AliasLevel ?? "";
+        for (string at = _scope.Length > 0 ? _scope : _inNamespace; ; )
+        {
+            if (at == level) return a;
+            if (HasPath(at, name)) return Plain(at + "." + name);
+            if (Named(at, name) is string imported) return Plain(imported);
+            if (at.Length == 0) return a;
+            int cut = at.LastIndexOf('.');
+            at = cut < 0 ? "" : at[..cut];
+        }
+        TypeRef Plain(string full) => new()
+        {
+            Name = full, ArrayRank = a.ArrayRank, Nullable = a.Nullable, ElementNullable = a.ElementNullable,
+            InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, Written = a.Written,
+            Line = a.Line, Col = a.Col,
+        };
+    }
+
     private TypeRef DynamicAsObject(TypeRef a)
     {
         bool bare = a.Name == "dynamic" && a.Args.Count == 0 && a.PointerDepth == 0 && !_paths.Contains("dynamic");
@@ -2337,7 +2367,7 @@ public sealed class Monomorphiser
             Nullable = a.Nullable, ElementNullable = a.ElementNullable,
             InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
             Written = a.Written, Qualifier = a.Qualifier,
-            Line = a.Line, Col = a.Col,
+            Line = a.Line, Col = a.Col, AliasName = a.AliasName, AliasLevel = a.AliasLevel,
         };
     }
 
@@ -2357,7 +2387,7 @@ public sealed class Monomorphiser
             Name = name, ArrayRank = a.ArrayRank, Nullable = a.Nullable, UseArgs = QualifyAll(a.Args),
             ElementNullable = a.ElementNullable, InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth,
             Written = a.Written, Qualifier = a.Written ? QualifierOf(a.Name) : null,
-            Line = a.Line, Col = a.Col,
+            Line = a.Line, Col = a.Col, AliasName = a.AliasName, AliasLevel = a.AliasLevel,
         };
     }
 
@@ -2436,7 +2466,7 @@ public sealed class Monomorphiser
         // `KeyValuePair<string, byte[]>` as written (ArrayIsASequence) and a
         // List's base list over the KeyValuePair already made are one
         // interface, with one T.
-        args = args.Select(a => Constructed(a, at)).ToList();
+        args = args.Select(NearerThanAlias).Select(a => Constructed(a, at)).ToList();
         // ONE SPECIALISATION PER TYPE, AS C# HAS IT: a reference argument's `?`
         // is an annotation, not part of the type. List<(int, Box?)> and
         // List<(int, Box)> are one class at run time and one here; the marks
@@ -2596,6 +2626,20 @@ public sealed class Monomorphiser
 
     private TypeRef Sub(TypeRef r, Dictionary<string, TypeRef> map)
     {
+        // A TYPE PARAMETER OF THE ALIAS'S NAME is the parameter (C#: the type
+        // parameters before any namespace or directive), though the parser read
+        // the name through the alias (TypeRef.AliasName).
+        if (r.AliasName is string aliased && map.ContainsKey(aliased))
+            r = new TypeRef
+            {
+                Name = aliased, ArrayRank = r.ArrayRank, Nullable = r.Nullable, ElementNullable = r.ElementNullable,
+                InnerNullable = r.InnerNullable, PointerDepth = r.PointerDepth, Written = r.Written, Line = r.Line, Col = r.Col,
+            };
+        // AND A NEARER TYPE OF IT (NearerThanAlias), settled here, where the
+        // name is first rewritten, so no copy made of it later -- an array's
+        // element, an initialiser's -- reads the alias's target instead.
+        else if (r.AliasName is not null)
+            r = NearerThanAlias(r);
         // A bare type parameter becomes whatever it was bound to, keeping any
         // array rank or nullability written at the USE site.
         // THE STARS SURVIVE THE SUBSTITUTION, on both paths. Dropping them
@@ -2752,7 +2796,7 @@ public sealed class Monomorphiser
                 PointerDepth = r.PointerDepth,
                 CanonIndex = r.CanonIndex,
                 Written = r.Written, Qualifier = r.Qualifier,
-                Line = r.Line, Col = r.Col,
+                Line = r.Line, Col = r.Col, AliasName = r.AliasName, AliasLevel = r.AliasLevel,
             };
         }
 

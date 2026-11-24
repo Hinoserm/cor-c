@@ -7339,9 +7339,17 @@ public sealed partial class Binder
 
     private Type ResolveCore(TypeRef r, TypeSymbol? context)
     {
-        // AN ALIAS READ THROUGH that C#'s order passes over for a nearer name (AliasYields).
-        if (r.AliasName is not null && r.Written && AliasYields(r, out TypeSymbol? nearer) && nearer is not null)
-            return NamedType(nearer, Array.Empty<Type>(), null);
+        // AN ALIAS READ THROUGH that C#'s order passes over for a nearer name:
+        // a type parameter of it first, then a type (AliasYields).
+        if (r.AliasName is string aliasName && r.Written)
+        {
+            if (context != null && context.TypeParams.Contains(aliasName)
+                || _method != null && _method.TypeParams.Contains(aliasName)
+                || _signature != null && _signature.Exists(p => p.Name == aliasName))
+                return ResolveCore(new TypeRef { Name = aliasName, Written = true, Line = r.Line, Col = r.Col }, context);
+            if (AliasYields(r, out TypeSymbol? nearer) && nearer is not null)
+                return NamedType(nearer, Array.Empty<Type>(), null);
+        }
         // A TYPE THE COMPILER MADE (not TypeRef.Written), with all it is made
         // of, names its type for the compiler -- a guard's Exception, the type
         // a generic copy's parameter was bound to, spelt by the path its

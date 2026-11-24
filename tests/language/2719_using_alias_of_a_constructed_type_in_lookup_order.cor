@@ -4,12 +4,16 @@
 // nested 5
 // namespace member 7
 // alias 3
+// shapes 5 True 5
+// parameter Int32
 //
 // AN ALIAS OF A CONSTRUCTED TYPE in C#'s lookup order, each line what .NET 10
 // prints: the parser reads `Map` through `using Map = Dictionary<string,
 // int>;`, and the binder still finds a nearer Map first -- one nested in a
 // type around the use, one in a namespace inside the alias's (Binder.
-// AliasYields) -- and the alias only where nothing nearer has the name.
+// AliasYields) -- written bare, as an array, a nullable or a generic's
+// argument; a type parameter of the name before any of them; and the alias
+// only where nothing nearer has the name.
 using System;
 using Map = System.Collections.Generic.Dictionary<string, int>;
 
@@ -24,9 +28,15 @@ namespace Outer
     {
         class Map { public int X = 5; }
         public static string Who() { Map m = new Map(); return "nested " + m.X; }                                 // the nested Map
+        public static string Shapes()
+        {
+            Map[] a = { new Map() }; Map? n = null; System.Collections.Generic.List<Map> l = new() { new Map() };
+            return "shapes " + a[0].X + " " + (n == null) + " " + l[0].X;                                           // all the nested Map
+        }
     }
     static class Plain { public static string Who() { Map m = new() { ["k"] = 3 }; return "alias " + m["k"]; } } // the alias
 }
+class Box<Map> { public Map Item = default!; public string Who() => "parameter " + typeof(Map).Name; }   // the type parameter
 class Program
 {
     static void Main()
@@ -34,5 +44,7 @@ class Program
         Console.WriteLine(Outer.Holder.Who());
         Console.WriteLine(Inner.Deep.InDeep.Who());
         Console.WriteLine(Outer.Plain.Who());
+        Console.WriteLine(Outer.Holder.Shapes());
+        Console.WriteLine(new Box<int>().Who());
     }
 }

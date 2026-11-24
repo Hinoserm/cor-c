@@ -5129,7 +5129,7 @@ public sealed class Parser
             Name = bare.Name, ArrayRank = rank, Nullable = nullable,
             ElementNullable = elementNullable, InnerNullable = inner,
             PointerDepth = stars, TupleNames = bare.TupleNames,
-            Line = bare.Line, Col = bare.Col,
+            Line = bare.Line, Col = bare.Col, AliasName = bare.AliasName, AliasLevel = bare.AliasLevel,
         };
 
         type.Arguments.AddRange(bare.Args);
@@ -5166,7 +5166,7 @@ public sealed class Parser
         TypeRef element = bare;
         if (allowNullable && Take(Tok.Question))
         {
-            element = new TypeRef { Name = bare.Name, Nullable = true, TupleNames = bare.TupleNames, Line = bare.Line, Col = bare.Col };
+            element = new TypeRef { Name = bare.Name, Nullable = true, TupleNames = bare.TupleNames, Line = bare.Line, Col = bare.Col, AliasName = bare.AliasName, AliasLevel = bare.AliasLevel };
             element.Arguments.AddRange(bare.Args);
         }
         List<int> specifiers = new();
@@ -5187,7 +5187,7 @@ public sealed class Parser
             TypeRef maybe = new()
             {
                 Name = made.Name, ArrayRank = made.ArrayRank, ElementNullable = made.ElementNullable,
-                Nullable = true, Line = made.Line, Col = made.Col,
+                Nullable = true, Line = made.Line, Col = made.Col, AliasName = made.AliasName, AliasLevel = made.AliasLevel,
             };
             maybe.Arguments.AddRange(made.Args);
             made = maybe;
@@ -5201,7 +5201,7 @@ public sealed class Parser
         {
             Name = element.Name, ArrayRank = element.ArrayRank + 1,
             ElementNullable = element.ArrayRank == 0 ? element.Nullable : element.ElementNullable,
-            TupleNames = element.TupleNames, Line = element.Line, Col = element.Col,
+            TupleNames = element.TupleNames, Line = element.Line, Col = element.Col, AliasName = element.AliasName, AliasLevel = element.AliasLevel,
         };
         array.Arguments.AddRange(element.Args);
         return array;
@@ -10198,6 +10198,7 @@ public sealed class Parser
                 InnerNullable = ElementMarks(declared).Inner,
                 PointerDepth = declared.PointerDepth, ArrayRank = declared.ArrayRank - 1,
                 TupleNames = declared.TupleNames, Line = at.Line, Col = at.Col,
+                AliasName = declared.AliasName, AliasLevel = declared.AliasLevel,
             },
             Elements = new List<Expr>(),
             Line = at.Line, Col = at.Col,
@@ -11084,7 +11085,7 @@ public sealed class Parser
                     ElementNullable = type.ArrayRank > 1 && type.ElementNullable,
                     InnerNullable = ElementMarks(type).Inner,
                     PointerDepth = type.PointerDepth, ArrayRank = type.ArrayRank - 1,
-                    Line = type.Line, Col = type.Col,
+                    Line = type.Line, Col = type.Col, AliasName = type.AliasName, AliasLevel = type.AliasLevel,
                 },
                 Line = at.Line, Col = at.Col,
             };
@@ -11143,7 +11144,7 @@ public sealed class Parser
                     InnerNullable = type.InnerNullable | (type.ArrayRank > 0 && type.Nullable ? 1 << (type.ArrayRank - 1) : 0),
                     PointerDepth = type.PointerDepth,
                     ArrayRank = type.ArrayRank + jagged,
-                    TupleNames = type.TupleNames,
+                    TupleNames = type.TupleNames, AliasName = type.AliasName, AliasLevel = type.AliasLevel,
                     Line = type.Line,
                     Col = type.Col,
                 };
