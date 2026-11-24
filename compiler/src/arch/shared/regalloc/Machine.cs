@@ -67,6 +67,13 @@ public sealed class AInstr
     public required Named[] Regs { get; set; }
     public bool IsCall { get; init; }
     /// <summary>
+    /// A call that destroys no register of the allocator's but is a safepoint
+    /// (x86's CallSafe): what is live across it gets a stack map as a call's
+    /// does, and nothing else about it is a call's -- no value is kept clear
+    /// of it, no region around it counts as one with a call.
+    /// </summary>
+    public bool IsSafepoint { get; init; }
+    /// <summary>
     /// A register moved to another, operand 1 to operand 0: its destination
     /// and source are its first two named registers, read from them, so a
     /// pass that renames them (CopyFold, LoopSplit) renames the copy too.

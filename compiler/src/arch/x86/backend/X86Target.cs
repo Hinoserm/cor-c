@@ -128,7 +128,7 @@ internal sealed class X86Target : ITarget
                 // A caller's register is read off the frame pointer (Encoder's CallerReg).
                 // An asm block that pushes, names ESP or EBP or a slot off EBP.
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
-                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.CallerReg) return false;
+                    or MOp.CallSafe or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.CallerReg) return false;
                 if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
@@ -247,7 +247,7 @@ internal sealed class X86Target : ITarget
         // only in a function that has the XMM class, every other one's calls
         // left as they were.
         bool clobbersXmm = _m.XmmRegs.Count > 0 && i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd
-            or MOp.CallKeepEax or MOp.CallKeepEaxInd;
+            or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe;
         // AN ASM BLOCK CLOBBERS THE XMM REGISTERS IT WRITES, by number.
         uint xmmWritten = clobbersXmm ? 0xFFu : _m.XmmRegs.Count > 0 && i.Op == MOp.InlineAsm ? i.Asm!.XmmClobbers & 0xFF : 0;
         int xmmCount = System.Numerics.BitOperations.PopCount(xmmWritten);
@@ -272,6 +272,7 @@ internal sealed class X86Target : ITarget
             Tag = i,
             Regs = named,
             IsCall = i.Op is MOp.Call or MOp.CallInd,
+            IsSafepoint = i.Op == MOp.CallSafe,
             IsCopy = copy,
             // MOVAPS between two XMM registers is the whole register, whatever it holds.
             WholeCopy = copy && (i.Width == 4 || i.Op == MOp.MovF) && !i.Lock,

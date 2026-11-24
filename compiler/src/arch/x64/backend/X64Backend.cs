@@ -386,7 +386,7 @@ public sealed class X64Backend : IBackend
             MOp.Cmovcc => "cmov" + i.Cond.Mnemonic(),
             _ => i.Op.ToString().ToLowerInvariant(),
         };
-        string width = i.Op is MOp.Jcc or MOp.Jmp or MOp.Call or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas ? "" : $".{i.Width}";
+        string width = i.Op is MOp.Jcc or MOp.Jmp or MOp.Call or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas ? "" : $".{i.Width}";
         return $"{(i.Lock ? "lock " : "")}{name}{width} {string.Join(", ", i.Operands)}";
     }
 

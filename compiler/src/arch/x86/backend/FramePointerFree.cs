@@ -61,7 +61,7 @@ internal static class FramePointerFree
         {
             foreach (MInstr i in b.Instrs)
             {
-                if ((i.Op is MOp.Call or MOp.CallInd && !m.ColdFrames) || i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                if ((i.Op is MOp.Call or MOp.CallInd && !m.ColdFrames) || i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe
                     or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd)
                     throw new InvalidOperationException($"{m.Source.Name}: {i.Op} in a function without a frame");
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
@@ -133,7 +133,7 @@ internal static class FramePointerFree
                     if (after >= b.Instrs.Count || b.Instrs[after] is not { Op: MOp.Int3, Operands.Count: 0 } || i.Operands.Count > 0 && i.Operands[0] is MMem) return false;
                     calls = true;
                 }
-                if (i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.Push or MOp.Pop
+                if (i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe or MOp.Push or MOp.Pop
                     or MOp.Pushfd or MOp.Popfd or MOp.CallerReg or MOp.InlineAsm or MOp.SaveRegs) return false;
                 foreach (MOperand o in i.Operands)
                 {

@@ -1,0 +1,77 @@
+// test: polling_loop_keeps_its_registers_through_collections
+// expect-exit: 0
+// expect-output:
+// kept True 600 True
+//
+// A LOOP THAT POLLS KEEPS ITS VALUES IN REGISTERS through the poll (MOp.CallSafe:
+// the back edge's call keeps EAX, ECX and EDX, the three a call takes), and
+// the collector still finds the objects only those registers hold: the
+// spinner below walks a ring of nodes it holds nowhere else while the main
+// thread allocates enough to make the collector run many rounds, each of
+// which the spinner answers at its back edge. Every node is still the one it
+// was -- its value, its link -- at the end.
+using System;
+using System.Collections.Generic;
+using System.Threading;
+static class Program
+{
+    sealed class Node { public int Value; public Node Next = null!; public string Tag = ""; }
+    static volatile bool s_done;
+    static volatile bool s_started;
+    static int s_sum;
+    static bool s_ok = true;
+
+    static Node Ring(int n)
+    {
+        Node first = new() { Value = 0, Tag = "n0" }, at = first;
+        for (int i = 1; i < n; i++) { at.Next = new Node { Value = i, Tag = "n" + i }; at = at.Next; }
+        at.Next = first;
+        return first;
+    }
+
+    static void Spin()
+    {
+        Node a = Ring(3), b = Ring(5), c = Ring(7);
+        s_started = true;
+        long laps = 0;
+        // Not counted: ends when the flag says, so its back edge polls.
+        while (!s_done)
+        {
+            a = a.Next; b = b.Next; c = c.Next;
+            laps++;
+        }
+        // Every ring whole: each node's tag says its value, and the walk round returns.
+        foreach (Node ring in new[] { a, b, c })
+        {
+            Node at = ring;
+            int n = 0;
+            do
+            {
+                if (at.Tag != "n" + at.Value) s_ok = false;
+                at = at.Next;
+                n++;
+            } while (at != ring && n < 100);
+            s_sum += n;
+        }
+        s_sum = s_sum * 40 + (laps > 0 ? 0 : 1);
+    }
+
+    static int Main()
+    {
+        Thread t = new(Spin);
+        t.Start();
+        while (!s_started) Thread.Yield();
+        List<string> keep = new();
+        for (int round = 0; round < 200; round++)
+        {
+            List<int[]> waste = new();
+            for (int i = 0; i < 2000; i++) waste.Add(new int[64]);
+            keep.Add(round.ToString());
+            if (keep.Count > 50) keep.RemoveAt(0);
+        }
+        s_done = true;
+        t.Join();
+        Console.WriteLine("kept " + s_ok + " " + s_sum + " " + (keep.Count == 50));
+        return 0;
+    }
+}

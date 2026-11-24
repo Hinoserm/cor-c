@@ -282,6 +282,13 @@ internal static class Imports
 
     private static void Rewrite(MFunction m, MInstr i, Func<string, bool> isImported, List<MInstr> outList, List<string> errors)
     {
+        // A SAFEPOINT CALL INTO ANOTHER IMAGE stays one, through the GOT: its
+        // pushes and pops are around whatever the call is.
+        if (i.Op == MOp.CallSafe && i.Operands[0] is MImm { Symbol: { } safeCallee, Label: null, Value: 0 } && isImported(safeCallee))
+        {
+            outList.Add(new MInstr(MOp.CallSafe, new MMem(null, 0) { Symbol = safeCallee, Reloc = RelocKind.GotAddr }) { Width = i.Width, Line = i.Line });
+            return;
+        }
         if (i.Op == MOp.Call && i.Operands.Count >= 1 && i.Operands[0] is MImm { Symbol: { } callee, Label: null, Value: 0 } && isImported(callee))
         {
             // (Its argument registers with it, where it passes them so: RegisterArgs.)
@@ -291,7 +298,7 @@ internal static class Imports
             return;
         }
         // Any other call is the PLT's business and a jump table is this object's own.
-        if (i.Op is MOp.Call or MOp.Jmp or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd)
+        if (i.Op is MOp.Call or MOp.Jmp or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe)
         {
             outList.Add(i);
             return;

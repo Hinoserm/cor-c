@@ -183,6 +183,15 @@ internal static class AsmText
                 }
                 yield return $"call {Op(i.Operands[0], 4, true)}";
                 yield break;
+            case MOp.CallSafe:
+                yield return "push eax";
+                yield return "push ecx";
+                yield return "push edx";
+                yield return $"call {Op(i.Operands[0], 4, true)} ; a safepoint that keeps the registers";
+                yield return "pop edx";
+                yield return "pop ecx";
+                yield return "pop eax";
+                yield break;
             case MOp.Cdq:
                 yield return "cdq";
                 yield break;

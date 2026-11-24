@@ -254,6 +254,14 @@ internal static class Roles
                 // answers in (X64Backend.RefStoreStub).
                 yield return (int)Gpr.Rax;
                 break;
+            case MOp.CallSafe:
+                // The general registers pushed around it (MOp.CallSafe); the
+                // XMM ones a callee may destroy.
+                for (int k = 0; k < 16; k++)
+                {
+                    yield return MReg.XmmBase + k;
+                }
+                break;
             case MOp.Call:
             case MOp.CallInd:
                 // The callee may destroy every register the convention does

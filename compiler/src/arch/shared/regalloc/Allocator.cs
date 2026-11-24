@@ -640,7 +640,7 @@ public sealed class Allocator
             for (int i = first[b] + count[b] - 1; i >= first[b]; i--)
             {
                 int p = i * 4;
-                if (_lin[i].IsCall)
+                if (_lin[i].IsCall || _lin[i].IsSafepoint)
                 {
                     // live-out of the call is live ACROSS it: what the
                     // collector must find and, when it moves an object,
@@ -2476,8 +2476,13 @@ public sealed class Allocator
                 if (v < a._fv || a._remat[v] is not null || !a._rf.Classes[a._t.ClassOf(v)].HoldsReferences) continue;
                 // A home is an incoming argument's word, which the frame
                 // outside reads as what it is pushing: no map names it.
-                bool inRegister = a._spilledFrom[v] > index && a._assigned[v] >= 0
-                    && Array.IndexOf(a._rf.Classes[a._t.ClassOf(v)].CalleeSaved, a._assigned[v]) >= 0;
+                bool held = a._spilledFrom[v] > index && a._assigned[v] >= 0;
+                bool calleeSaved = held && Array.IndexOf(a._rf.Classes[a._t.ClassOf(v)].CalleeSaved, a._assigned[v]) >= 0;
+                // A SAFEPOINT THAT KEEPS EVERY REGISTER (AInstr.IsSafepoint):
+                // a value in a caller-saved one is still there after it, its
+                // word pushed where the collector reads it whole, and needs no
+                // map; the callee-saved ones are mapped as at any call.
+                bool inRegister = calleeSaved || held && a._lin[index].IsSafepoint;
                 // A sunk store's slot is not written before its spill point:
                 // there the register is the value, and the slot another's old
                 // word. A call clobbers every caller-saved register, so the scan
@@ -2486,7 +2491,7 @@ public sealed class Allocator
                 if (unwritten && !inRegister)
                     throw new InvalidOperationException($"{a._f.Name}: v{v}, its store sunk, is live across the call at {index} in caller-saved register {a._assigned[v]}");
                 if (a._slot[v] != 0 && a.HomeOf(v) == 0 && !unwritten) slots.Add(a._slot[v]);
-                if (inRegister) registers.Add(a._assigned[v]);
+                if (calleeSaved) registers.Add(a._assigned[v]);
             }
             slots.Sort();
             return (slots, registers);

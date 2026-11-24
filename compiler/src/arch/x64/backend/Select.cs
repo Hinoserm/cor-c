@@ -1691,7 +1691,12 @@ internal sealed partial class Selector
         {
             Mov(Rax, Imm(floats), 4);
         }
-        if (target is null)
+        if (target is null && !native && ints == 0 && floats == 0 && i.Callee == Corsac.Lang.Lto.RuntimeAbi.Poll)
+        {
+            // THE BACK EDGE'S POLL keeps the general registers (MOp.CallSafe).
+            Emit(new MInstr(MOp.CallSafe, MImm.Sym(i.Callee!, 0)));
+        }
+        else if (target is null)
         {
             Emit(new MInstr(MOp.Call, MImm.Sym(NativeCall.Symbol(i.Callee!), 0)) { IntArgs = ints, FloatArgs = floats, NativeAl = native });
         }

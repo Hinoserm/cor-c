@@ -3977,7 +3977,12 @@ internal sealed partial class Selector
             {
                 bytes += PushArg(i.Operands[k]);
             }
-            if (i.Op == Opcode.Call)
+            if (i.Op == Opcode.Call && !native && i.Callee == Corsac.Lang.Lto.RuntimeAbi.Poll && i.Operands.Count == 0 && bytes == 0)
+            {
+                // THE BACK EDGE'S POLL keeps the registers (MOp.CallSafe).
+                Emit(new MInstr(MOp.CallSafe, SymbolAddress(i.Callee!, 0)) { CallReloc = RelocKind.Rel32 });
+            }
+            else if (i.Op == Opcode.Call)
             {
                 Emit(new MInstr(MOp.Call, SymbolAddress(NativeCall.Symbol(i.Callee!), 0)) { CallReloc = RelocKind.Rel32, Native = native });
             }

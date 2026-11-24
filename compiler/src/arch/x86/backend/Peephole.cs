@@ -352,7 +352,7 @@ internal static class Peephole
                     k--;
                     break;
                 }
-                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe
                     or MOp.Jmp or MOp.Jcc or MOp.JmpTable or MOp.JmpInd or MOp.Ret or MOp.Epilogue or MOp.InlineAsm or MOp.Lea or MOp.Push or MOp.Pop) break;
                 bool reaches = false;
                 foreach (MOperand o in i.Operands)
@@ -1065,7 +1065,7 @@ internal static class Peephole
             // the slots stored again further on with no read between. Only
             // where the block makes no call, whose stack map may read a slot,
             // and the function has no handler.
-            if (handlers || b.Instrs.Any(i => i.Op is MOp.Call or MOp.CallInd)) continue;
+            if (handlers || b.Instrs.Any(i => i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe)) continue;
             HashSet<int> written = new();
             for (int k = b.Instrs.Count - 1; k >= 0; k--)
             {
@@ -1160,7 +1160,7 @@ internal static class Peephole
                     continue;
                 }
                 if (m.Safepoints.TryGetValue(i, out Safepoint? map)) live.UnionWith(map.SlotOffsets);
-                else if (i.Op is MOp.Call or MOp.CallInd) live.UnionWith(all);
+                else if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe) live.UnionWith(all);
                 foreach (MOperand o in i.Operands)
                     if (o is MMem mem)
                     {
@@ -1400,7 +1400,7 @@ internal static class Peephole
         // written is a register written like any other, which no slot here
         // is held in (holders are ids below 8, and EbpData is 32): it lets
         // go of nothing.
-        if (i.Op is MOp.Call or MOp.CallInd or MOp.InlineAsm) { state.Clear(); return i; }
+        if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.InlineAsm) { state.Clear(); return i; }
         Masks(i, out _, out long written);
         if (WritesFrame(i)) { state.Clear(); return i; }
         // A write to an allocator slot: what held it holds it no more.
@@ -1750,7 +1750,7 @@ internal static class Peephole
     private static bool ForwardCopy(MInstr copy, MInstr user, HashSet<int> deadAfter)
     {
         if (!IsMov(copy) || copy.Operands[0] is not MReg a || copy.Operands[1] is not MReg b || a.Id == b.Id
-            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd)
+            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe)
         {
             return false;
         }
@@ -1821,7 +1821,7 @@ internal static class Peephole
         MOp.Shld or MOp.Shrd => operand == 2,
         // A stub's registers are its calling convention: the slot in EAX,
         // the value in EDX (X86Backend.CardStub, BarrierStub).
-        MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd => operand > 0,
+        MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe => operand > 0,
         // So are a call's that passes its arguments in registers (RegisterArgs):
         // EAX, EDX and ECX, each the argument of its place.
         MOp.Call or MOp.CallInd => operand > 0,
@@ -1952,7 +1952,7 @@ internal static class Peephole
                 instrs.RemoveAt(k);
                 continue;
             }
-            if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd)
+            if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe)
             {
                 dead = 0xFF;
                 continue;
@@ -2022,7 +2022,7 @@ internal static class Peephole
                 // lines -- kept its test for the CLI after it.)
                 if (after.Op is MOp.Cli or MOp.Sti or MOp.Push or MOp.Pop or MOp.Pause) continue;
                 // A call or a return reads no flag of its caller's.
-                if (after.Op is MOp.Call or MOp.CallInd or MOp.Ret or MOp.Epilogue) break;
+                if (after.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.Ret or MOp.Epilogue) break;
                 if (WritesFlags(after) && !ReadsFlags(after)) break;
                 safe = false;
             }
@@ -2078,7 +2078,7 @@ internal static class Peephole
                     continue;
                 }
                 if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Nop or MOp.Jmp) continue;
-                if (after.Op is MOp.Call or MOp.CallInd or MOp.Ret or MOp.Epilogue) break;
+                if (after.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.Ret or MOp.Epilogue) break;
                 if (WritesFlags(after) && !MayReadFlags(after)) break;
                 safe = false;
             }
@@ -2113,7 +2113,7 @@ internal static class Peephole
             for (int j = k + 2; j < instrs.Count && alone; j++)
             {
                 if (MayReadFlags(instrs[j])) alone = false;
-                else if (WritesFlags(instrs[j]) || instrs[j].Op is MOp.Call or MOp.CallInd) break;
+                else if (WritesFlags(instrs[j]) || instrs[j].Op is MOp.Call or MOp.CallInd or MOp.CallSafe) break;
             }
             if (!alone) continue;
             instrs[k + 1] = new MInstr(MOp.Jcc, jump.Operands[0]) { Cond = jump.Cond == Cond.Ne ? set.Cond : set.Cond.Negate() };
@@ -2192,7 +2192,7 @@ internal static class Peephole
                 if (!flagsLive) instrs.RemoveAt(k);
                 else flagsLive = false;
             }
-            else if (WritesFlags(i) || i.Op is MOp.Call or MOp.CallInd)
+            else if (WritesFlags(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe)
             {
                 flagsLive = false;
             }
@@ -2494,7 +2494,7 @@ internal static class Peephole
             for (int j = k + 1; j < instrs.Count && ok; j++)
             {
                 MInstr i = instrs[j];
-                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe
                     or MOp.InlineAsm or MOp.Jmp or MOp.JmpTable or MOp.JmpInd or MOp.Epilogue) { ok = false; break; }
                 Masks(i, out long reads, out long writes);
                 if (((reads | writes) & bitA) != 0) { ok = false; break; }
@@ -2608,7 +2608,7 @@ internal static class Peephole
         {
             MInstr i = instrs[j];
             if (ReadsFlags(i) || !Understood(i)) return false;
-            if (WritesFlags(i) || i.Op is MOp.Jmp or MOp.Call or MOp.CallInd or MOp.Epilogue) return true;
+            if (WritesFlags(i) || i.Op is MOp.Jmp or MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.Epilogue) return true;
             if (i.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Push or MOp.Pop or MOp.Nop or MOp.Inc or MOp.Dec) continue;
             return false;
         }
@@ -2814,7 +2814,7 @@ internal static class Peephole
                     continue;
                 }
                 if (after.Op is MOp.Adc or MOp.Sbb) { safe = false; break; }
-                if (after.Op is MOp.Call or MOp.CallInd or MOp.Ret or MOp.Epilogue) break;
+                if (after.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.Ret or MOp.Epilogue) break;
                 if (WritesFlags(after)) break;
                 if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Push or MOp.Pop or MOp.Nop or MOp.Jmp) continue;
                 safe = false;
@@ -2871,7 +2871,7 @@ internal static class Peephole
                 return;
             }
             if (MayReadFlags(i)) flagsLive = true;
-            else if (WritesFlags(i) || i.Op is MOp.Call or MOp.CallInd) flagsLive = false;
+            else if (WritesFlags(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe) flagsLive = false;
             foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.Id < 8) dead |= 1 << r.Id;
             foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
             foreach ((MReg r, bool isDef) in Regs(i)) if (!isDef && r.Id < 8) dead &= ~(1 << r.Id);

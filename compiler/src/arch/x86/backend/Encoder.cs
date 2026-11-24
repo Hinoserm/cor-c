@@ -724,6 +724,24 @@ internal sealed class Encoder
                 B(0xFF);
                 ModRM(2, i.Operands[0]);
                 break;
+            case MOp.CallSafe:
+                // The caller-saved registers around the call (MOp.CallSafe),
+                // its return address the site the stack map is for.
+                B(0x50, 0x51, 0x52);
+                if (i.Operands[0] is MImm safeTarget)
+                {
+                    B(0xE8);
+                    _pending.Add(new Relocation(_out.Count, safeTarget.Symbol!, safeTarget.Value - 4, i.CallReloc));
+                    D32(0);
+                }
+                else
+                {
+                    B(0xFF);
+                    ModRM(2, i.Operands[0]);
+                }
+                CallSites.Add((i, _out.Count - _funcStart));
+                B(0x5A, 0x59, 0x58);
+                break;
             case MOp.CallKeep:
             case MOp.CallKeepEax:
             {

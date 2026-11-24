@@ -475,6 +475,26 @@ internal sealed class Encoder
                 Op(4, 2, i.Operands[0], 0, 0xFF);
                 CallSites.Add((i, _b.Count));
                 break;
+            case MOp.CallSafe:
+            {
+                // The nine caller-saved general registers, and eight bytes more
+                // so RSP is sixteen-aligned at the call as it was at the site.
+                foreach (Gpr r in SafeSaved) Push(MReg.Of(r));
+                Byte(0x48); Byte(0x83); Byte(0xEC); Byte(0x08);              // sub rsp, 8
+                MImm target = (MImm)i.Operands[0];
+                Byte(0xE8);
+                int at = _b.Count;
+                Imm32(0);
+                _relocs.Add((at, target.Symbol!, target.Value - 4, RelocKind.Plt32));
+                CallSites.Add((i, _b.Count));
+                Byte(0x48); Byte(0x83); Byte(0xC4); Byte(0x08);              // add rsp, 8
+                for (int k = SafeSaved.Length - 1; k >= 0; k--)
+                {
+                    if (((int)SafeSaved[k] & 8) != 0) Byte(0x41);
+                    Byte(0x58 + ((int)SafeSaved[k] & 7));
+                }
+                break;
+            }
             case MOp.CallKeep:
             case MOp.CallKeepRax:
             case MOp.CallKeepCas:
@@ -743,6 +763,9 @@ internal sealed class Encoder
             Op(w, Hw(src), dst, 0, w == 1 ? 0x88 : 0x89);
         }
     }
+
+    /// <summary>What MOp.CallSafe pushes: the SysV registers a callee may destroy.</summary>
+    private static readonly Gpr[] SafeSaved = { Gpr.Rax, Gpr.Rcx, Gpr.Rdx, Gpr.Rsi, Gpr.Rdi, Gpr.R8, Gpr.R9, Gpr.R10, Gpr.R11 };
 
     private void Push(MOperand o)
     {

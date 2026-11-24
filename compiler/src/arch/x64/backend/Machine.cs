@@ -248,6 +248,12 @@ public enum MOp : byte
     // RDX, CallKeepRax the same and answers in RAX, CallKeepCas reads RCX,
     // RDX and RAX and answers in RAX. The flags it leaves as it likes.
     CallKeep, CallKeepRax, CallKeepCas,
+    // A SAFEPOINT CALL THAT KEEPS THE GENERAL REGISTERS (i386's MOp.CallSafe):
+    // the nine the convention lets a callee destroy pushed around the call,
+    // RSP kept sixteen-aligned at it, so the allocator gives it no general
+    // register; the XMM registers are a call's as ever. What a loop's back
+    // edge calls when a collection is asking (BackEdgePolls, Runtime.Poll).
+    CallSafe,
 
     // ---- atomics and strings -----------------------------------------------------
     Xchg, Xadd, Cmpxchg, Mfence,

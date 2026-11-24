@@ -326,6 +326,20 @@ public enum MOp : byte
     /// <summary>CallKeepEax through a register, as CallKeepInd is CallKeep's.</summary>
     CallKeepEaxInd,
     /// <summary>
+    /// A SAFEPOINT CALL THAT KEEPS THE GENERAL REGISTERS: `push eax; push ecx;
+    /// push edx; call target; pop edx; pop ecx; pop eax`, the target by name
+    /// or through the GOT (operand 0). What a loop's back edge calls when a
+    /// collection is asking (BackEdgePolls, Runtime.Poll): to the allocator it
+    /// destroys no general register, so the loop's values stay where they are
+    /// around its cold path instead of being kept clear of the three a call
+    /// takes; it is still a call with a stack map (AInstr.IsSafepoint), and
+    /// the three words pushed below it are read whole by the collector, as a
+    /// call's pushed arguments are -- HotSpot's and NativeAOT's register-
+    /// saving poll stubs, inlined at the site (Gc.ScanStack). The XMM
+    /// registers and the x87 are a call's as ever.
+    /// </summary>
+    CallSafe,
+    /// <summary>
     /// Add or subtract one, every flag but CF set as ADD and SUB set them:
     /// made only at the end, by Peephole.IncDec, where nothing reads CF.
     /// </summary>
