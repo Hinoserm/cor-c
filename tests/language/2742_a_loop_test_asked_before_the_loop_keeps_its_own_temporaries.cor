@@ -5,6 +5,8 @@
 // 603
 // 1505
 // 0
+// 1004
+// 0
 // 28021
 // 0
 // 32
@@ -18,9 +20,10 @@
 // its own for what only the test reads -- its flag and the temporaries it
 // computes -- and the same registers as the loop's test for a value read
 // after the loop, or one the test reads before it writes it, carried from
-// lap to lap: a chain of temporaries before the test, a test value read
-// after the loop, a test that adds to a value only it reads, a loop that
-// never runs, and one that faults on its last lap. Checked against .NET 10.
+// lap to lap: a test of two parts, a chain of temporaries before a test
+// alone, a test value read after the loop, a test that adds to a value
+// only it reads, a loop that never runs, and one that faults on its last
+// lap. Checked against .NET 10.
 using System;
 using System.Runtime.CompilerServices;
 sealed class Rows
@@ -34,6 +37,14 @@ sealed class Rows
     {
         int sum = 0, k = 0;
         while (k * 3 + 1 < n && (k ^ 5) != 0) { sum += A[k]; k++; }
+        return sum * 100 + k;
+    }
+    // The header computes a chain of temporaries, its test alone.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Single(int n)
+    {
+        int sum = 0, k = 0, t;
+        while ((t = (k * 3 + 1) ^ 2) < n) { sum += A[k]; k++; }
         return sum * 100 + k;
     }
     // The header's temporary is read after the loop as well.
@@ -69,6 +80,8 @@ static class P
         Console.WriteLine(r.Chain(0));
         Console.WriteLine(r.Chain(10));
         Console.WriteLine(r.Chain(100));
+        Console.WriteLine(r.Single(0));
+        Console.WriteLine(r.Single(12));
         Console.WriteLine(r.After(0));
         Console.WriteLine(r.After(20));
         Console.WriteLine(r.Carried(1));
