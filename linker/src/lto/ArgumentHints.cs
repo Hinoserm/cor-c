@@ -50,7 +50,8 @@ public sealed class ArgumentHints
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
-        if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid argument hint section");
+        // Read before the link takes the units' sections (Section.HandOver): one handed over has no bytes to read.
+        if (sections.Length != 1 || sections[0].HandedOver is not null || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid argument hint section");
         int total = sections[0].Size;
         try
         {
