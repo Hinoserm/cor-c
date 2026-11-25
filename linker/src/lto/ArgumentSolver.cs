@@ -370,7 +370,8 @@ public static class ArgumentSolver
         }
 
         // EVERY UNIT'S CALLS ON WHICHEVER THREAD IS FREE, round after round
-        // until nothing moves. Each cell only ever rises -- unseen, one
+        // until nothing moves -- after the first round, only the units whose
+        // own functions' cells rose (stale). Each cell only ever rises -- unseen, one
         // value, many -- and what a call hands on rises with the cell it
         // reads, so the cells settle at the same least answer in whatever
         // order the calls are read: a round here reads some cells as other
@@ -378,12 +379,29 @@ public static class ArgumentSolver
         // more follows whenever anything moved. A function's cells are read
         // and raised under that function's lock (the array's), one lock at a
         // time.
+        // Which units hold each function (a generic body's copies, several).
+        Dictionary<string, List<int>> holders = new(StringComparer.Ordinal);
+        for (int u = 0; u < units.Count; u++)
+            foreach (string name in units[u].Functions.Keys)
+                (holders.TryGetValue(name, out List<int>? held) ? held : holders[name] = new()).Add(u);
+        // Every unit is read once; after that, only one whose functions' cells have risen since it was last read.
+        int[] stale = new int[units.Count];
+        Array.Fill(stale, 1);
         bool Lower(string target, int parameter, ArgumentValue met)
         {
             Cell[] of = cells[target];
             // (Many already, read without the lock: a cell never comes back from it.)
             if (parameter >= of.Length || Volatile.Read(ref of[parameter].State) == Many) return false;
-            lock (of) return of[parameter].Meet(met);
+            lock (of) if (!of[parameter].Meet(met)) return false;
+            // ITS CALLERS' UNITS READ AGAIN: what a unit's sweep finds depends
+            // on its own functions' cells alone, so only the units holding
+            // this function -- whose calls hand its parameters on -- have
+            // anything new to say. Marked after the cell is raised; a unit
+            // clears its mark before it reads, so a raise it misses marks it
+            // for the next round.
+            if (holders.TryGetValue(target, out List<int>? units_))
+                foreach (int u in units_) Volatile.Write(ref stale[u], 1);
+            return true;
         }
         bool Sweep(ArgumentHints unit)
         {
@@ -440,7 +458,7 @@ public static class ArgumentSolver
                 try
                 {
                     for (int u; (u = Interlocked.Increment(ref nextUnit)) < units.Count;)
-                        if (Sweep(units[u])) Volatile.Write(ref any, 1);
+                        if (Interlocked.Exchange(ref stale[u], 0) != 0 && Sweep(units[u])) Volatile.Write(ref any, 1);
                 }
                 catch (Exception error) { failed[thread] = error; }
             }

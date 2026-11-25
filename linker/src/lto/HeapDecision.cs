@@ -319,6 +319,17 @@ public static class HeapDecision
         private readonly Dictionary<ObjectFile, int> _unitOf = new(ReferenceEqualityComparer.Instance);
         private readonly List<Dictionary<string, HeapFunction>> _functions = new();
         private readonly Dictionary<string, ObjectFile> _owners = new(StringComparer.Ordinal);
+        // Each global name's symbol in its owner: the first the owner defines
+        // by that name, as its symbols list them. Looked for there each time
+        // (Data), every name the walk resolved to data read its owner's whole
+        // symbol table -- the walk, run once a round of types made, was the
+        // longest stretch of the catches' reach and of the heap decision.
+        private readonly Dictionary<string, Symbol> _ownerSymbols = new(StringComparer.Ordinal);
+        // The units whose records hold each function name, in the units'
+        // order (Elsewhere): asked of every unit in turn, each name the walk
+        // could not place was looked up once a unit -- hundreds of units,
+        // for most of the names a function's events hold.
+        private readonly Dictionary<string, List<int>> _definers = new(StringComparer.Ordinal);
         private readonly Dictionary<ObjectFile, Dictionary<string, Symbol>> _locals = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<Section, (long[] Offsets, string[] Targets)> _relocations = new(ReferenceEqualityComparer.Instance);
 
@@ -329,7 +340,9 @@ public static class HeapDecision
             {
                 _unitOf[units[u].Object] = u;
                 Dictionary<string, HeapFunction> byName = new(StringComparer.Ordinal);
-                foreach (HeapFunction f in units[u].Records.Functions) byName.TryAdd(f.Name, f);
+                foreach (HeapFunction f in units[u].Records.Functions)
+                    if (byName.TryAdd(f.Name, f))
+                        (_definers.TryGetValue(f.Name, out List<int>? definers) ? definers : _definers[f.Name] = new()).Add(u);
                 _functions.Add(byName);
             }
             foreach ((string _, ObjectFile obj) in inputs)
@@ -338,7 +351,8 @@ public static class HeapDecision
                 foreach (Symbol symbol in obj.Symbols)
                 {
                     if (!symbol.IsDefined) continue;
-                    if (symbol.Global) _owners.TryAdd(symbol.Name, obj); else locals.TryAdd(symbol.Name, symbol);
+                    if (symbol.Global) { if (_owners.TryAdd(symbol.Name, obj)) _ownerSymbols.Add(symbol.Name, symbol); }
+                    else locals.TryAdd(symbol.Name, symbol);
                 }
                 _locals[obj] = locals;
             }
@@ -419,7 +433,7 @@ public static class HeapDecision
             else if (_owners.TryGetValue(name, out ObjectFile? owner))
             {
                 obj = owner;
-                symbol = owner.Symbols.FirstOrDefault(s => s.IsDefined && s.Global && s.Name == name);
+                symbol = _ownerSymbols[name];
             }
             if (symbol?.Section is not Section section || !IsProgramData(section)) return null;
             return (obj!, symbol);
@@ -480,8 +494,8 @@ public static class HeapDecision
 
         public IEnumerable<Node> Elsewhere(string name)
         {
-            for (int u = 0; u < _functions.Count; u++)
-                if (_functions[u].ContainsKey(name)) yield return new Node(u, name);
+            if (!_definers.TryGetValue(name, out List<int>? units)) yield break;
+            foreach (int u in units) yield return new Node(u, name);
         }
 
         public IEnumerable<Node> AllFunctions()
