@@ -59,9 +59,23 @@ public static class IrLinkOptimizer
         // Every unit's hints read through one pool: what they state alike is
         // held once (LifetimeHintPool). The link never changes them.
         LifetimeHintPool pool = new();
-        foreach (var input in inputs)
+        // EVERY UNIT'S ARCHIVE READ ON ITS OWN THREAD, then taken in the
+        // inputs' order: an archive is its object's alone, and the hints, the
+        // pool they share and the owners (first one wins) are read in order
+        // below as before.
+        IrArchive?[] unitArchives = new IrArchive?[inputs.Count];
+        Exception?[] failed = new Exception?[inputs.Count];
+        Parallel.For(0, inputs.Count, k =>
         {
-            IrArchive? archive = ElfFormatException.Of(input.Name, () => IrArchive.Read(input.Object));
+            try { unitArchives[k] = ElfFormatException.Of(inputs[k].Name, () => IrArchive.Read(inputs[k].Object)); }
+            catch (Exception error) { failed[k] = error; }
+        });
+        for (int k = 0; k < inputs.Count; k++)
+            if (failed[k] is Exception error) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+        for (int k = 0; k < inputs.Count; k++)
+        {
+            var input = inputs[k];
+            IrArchive? archive = unitArchives[k];
             if (archive is not null) archives.Add(input.Object, archive);
             // Hints without the IR they would recompile are nothing to act on.
             if (archive is not null && LifetimeHints.Read(input.Object, pool) is LifetimeHints unit)
@@ -787,12 +801,14 @@ public static class IrLinkOptimizer
         }
         // Several only where each worker's backend is a process of its own:
         // a backend the caller handed in is one object, and not to be shared.
-        // Half the processors, as far as there is memory for a gigabyte each
-        // (no limit where the machine does not say what it has).
+        // The build's budget (--lto-jobs, a project's --jobs), or every
+        // processor -- each backend a process of its own, nothing in this one
+        // contends with it -- and either only as far as there is memory for a
+        // gigabyte each (no limit where the machine does not say what it has).
         long memory = MachineMemory.MachineAvailable();
         int byMemory = memory <= 0 ? int.MaxValue : (int)Math.Min(int.MaxValue, Math.Max(1, memory >> 30));
-        int workerCount = !parallelBackends ? 1 : Math.Max(1, Math.Min(plans.Count, Switches.LtoJobs > 0
-            ? Switches.LtoJobs : Math.Max(1, Math.Min(Environment.ProcessorCount / 2, byMemory))));
+        int workerCount = !parallelBackends ? 1 : Math.Max(1, Math.Min(plans.Count, Math.Min(byMemory,
+            Switches.LtoJobs > 0 ? Switches.LtoJobs : Math.Max(1, Environment.ProcessorCount))));
         if (workerCount == 1) Work();
         else
         {

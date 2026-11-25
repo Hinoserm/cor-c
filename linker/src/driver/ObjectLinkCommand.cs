@@ -206,23 +206,41 @@ public static class ObjectLinkCommand
         // Each object's bytes hashed as it is read (LinkReceipt): what the image is made of.
         List<string> objectHashes = new();
         HashSet<string> seen = new(StringComparer.Ordinal);
+        List<(string Path, string Full)> given = new();
         foreach (string path in paths)
         {
             string full = Path.GetFullPath(path);
             if (full == destination) return Fail("output would overwrite input '" + path + "'");
             if (!seen.Add(full)) return Fail("object supplied twice: '" + path + "'");
             if (!File.Exists(full)) return Fail("object does not exist: '" + path + "'");
+            given.Add((path, full));
+        }
+        // EVERY OBJECT READ AND HASHED ON ITS OWN THREAD, each into its own
+        // place, then taken in the order given: what is read of one object
+        // depends on that object alone, and the order the link sees them in
+        // is the command line's as before.
+        string?[] hashes = new string?[given.Count];
+        ObjectFile?[] read = new ObjectFile?[given.Count];
+        string?[] failed = new string?[given.Count];
+        Parallel.For(0, given.Count, k =>
+        {
             // Read so that each unit's IR stays in its file (ReadObjectFile):
             // a link holds the objects' code and tables, never their IR.
             try
             {
                 // Streamed: an object is IR mostly, never held whole for its hash.
-                using (FileStream bytes = File.OpenRead(full)) objectHashes.Add(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)));
-                inputs.Add((path, ElfReader.ReadObjectFile(full)));
+                using (FileStream bytes = File.OpenRead(given[k].Full)) hashes[k] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+                read[k] = ElfReader.ReadObjectFile(given[k].Full);
             }
-            catch (ElfFormatException error) { return Fail(path + ": " + error.Message); }
+            catch (ElfFormatException error) { failed[k] = error.Message; }
+        });
+        for (int k = 0; k < given.Count; k++)
+        {
+            if (failed[k] is string message) return Fail(given[k].Path + ": " + message);
+            objectHashes.Add(hashes[k]!);
+            inputs.Add((given[k].Path, read[k]!));
             // EACH INPUT SAID as it is read (Hino: a line for every file built or linked).
-            Console.Error.WriteLine("link input: " + path + " (" + new FileInfo(full).Length + " bytes)");
+            Console.Error.WriteLine("link input: " + given[k].Path + " (" + new FileInfo(given[k].Full).Length + " bytes)");
         }
         // Resolve every input and relocation before writing the destination.
         // LinkException is rendered by Driver, just as for compile-and-link.

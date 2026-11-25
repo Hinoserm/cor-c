@@ -120,6 +120,11 @@ public static class ProjectCommand
         if (regionReport is not null) { linkArguments.Add("--region-report"); linkArguments.Add(regionReport); }
         if (unusedReport is not null) { linkArguments.Add("--unused-report"); linkArguments.Add(unusedReport); }
         if (timings) linkArguments.Add("--timings");
+        // THE LINK'S BACKENDS THE BUILD'S BUDGET (--lto-jobs): by itself it
+        // takes half the processors it sees, and under a build's pinned share
+        // that was half the workers, the link the longest stretch of a build
+        // of the compiler. Its own cap by memory still holds (IrLinkOptimizer).
+        if (workers > 0) { linkArguments.Add("--lto-jobs"); linkArguments.Add(workers.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
         Directory.CreateDirectory(work);
@@ -215,6 +220,10 @@ public static class ProjectCommand
         static bool RuntimeProper(string path) => path.Replace('\\', '/').Contains("/runtime/src/") || path.Replace('\\', '/').EndsWith("/stdlib/src/System/GC.cor");
         string[] runtimeSources = libraries.Select(Path.GetFullPath).Distinct(StringComparer.Ordinal).Where(RuntimeProper).ToArray();
         string[] librarySources = libraries.Select(Path.GetFullPath).Distinct(StringComparer.Ordinal).Where(path => !RuntimeProper(path)).ToArray();
+        // THE RUNTIME'S COMPILE, run by the first worker while the others
+        // start on the units (InPool): the units are compiled against the
+        // index alone and read nothing of runtime.o, so nothing waits on it.
+        Func<bool>? runtimeStep = null;
         {
             string runtime = Path.Combine(work, "runtime.o");
             List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
@@ -228,7 +237,7 @@ public static class ProjectCommand
             {
                 if (!File.Exists(runtime)) throw new InvalidDataException("--link-only: the runtime object was never compiled: " + runtime);
             }
-            else if (!Compile(runtimeArgs, runtime, runtimeSignature, index)) return 1;
+            else runtimeStep = () => Compile(runtimeArgs, runtime, runtimeSignature, index);
             objects.Add(runtime);
         }
         int changed = 0, runtimeChanged = 0;
@@ -280,6 +289,14 @@ public static class ProjectCommand
             group.Units.Add((source, destination));
             objects.Add(destination);
         }
+        // ALL GROUPS THROUGH ONE POOL OF WORKERS. Compiled one group after
+        // another, each group's last and largest units ran with the rest of
+        // the workers idle: the class library's Core.cor alone, then the
+        // compiler's Binder.cs alone, the runtime before either. Now every
+        // worker takes the next unclaimed unit of any group, largest group
+        // first, and the runtime's compile runs beside them.
+        List<(List<(string Source, string Object)> Units, bool Runtime, Dictionary<string, DateTime> Before)> compiled = new();
+        List<(string List, List<(string Source, string Object)> Units, bool Entry, List<string> Args)> pending = new();
         foreach (var group in groups.Values)
         {
             if (linkOnly && !(runtimeOnly && group.Runtime))
@@ -292,18 +309,27 @@ public static class ProjectCommand
             File.WriteAllLines(list, group.Units.Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (group.Entry ? "entry" : "lib")));
             Dictionary<string, DateTime> before = group.Units.ToDictionary(unit => unit.Object,
                 unit => File.Exists(unit.Object) ? File.GetLastWriteTimeUtc(unit.Object) : DateTime.MinValue, StringComparer.Ordinal);
-            int processes = Processes(workers, group.Units.Count);
-            if (processes > 1)
+            compiled.Add((group.Units, group.Runtime, before));
+            pending.Add((list, group.Units, group.Entry, group.Args));
+        }
+        int processes = Processes(workers, pending.Sum(group => group.Units.Count));
+        if (processes > 1)
+        {
+            if (!InPool(pending, runtimeStep, processes, workers)) return 1;
+        }
+        else
+        {
+            if (runtimeStep is not null && !runtimeStep()) return 1;
+            foreach (var group in pending)
             {
-                if (!InProcesses(list, group.Units, group.Entry, group.Args, processes, workers)) return 1;
-            }
-            else
-            {
-                List<string> args = new() { "--units", list, "--jobs", workers.ToString() };
+                List<string> args = new() { "--units", group.List, "--jobs", workers.ToString() };
                 args.AddRange(group.Args);
                 if (ProjectCompile.Run(args.ToArray()) != 0) return 1;
             }
-            int rebuilt = group.Units.Count(unit => File.GetLastWriteTimeUtc(unit.Object) != before[unit.Object]);
+        }
+        foreach (var group in compiled)
+        {
+            int rebuilt = group.Units.Count(unit => File.GetLastWriteTimeUtc(unit.Object) != group.Before[unit.Object]);
             if (group.Runtime) runtimeChanged += rebuilt; else changed += rebuilt;
         }
         foreach (var source in generation)
@@ -439,29 +465,28 @@ public static class ProjectCommand
     }
 
     /// <summary>
-    /// A group's units dealt out to `processes` child compile-project runs of
-    /// this compiler, largest first and in turn so each gets its share of the
-    /// big ones, each with its share of the workers. Their output is this
-    /// process's; answers whether every one succeeded.
+    /// Every group's units dealt out to `processes` worker slots, each slot
+    /// a child compile-project run of this compiler at a time, one unit at a
+    /// time in each. A slot takes the largest group with a unit unclaimed,
+    /// runs a child over that group's whole list (ProjectCompile's
+    /// --claim-dir: whichever child is free first takes the next unit,
+    /// biggest first), and when the child finds nothing left it moves to the
+    /// next group, so no worker idles while any group has a unit to compile.
+    /// The first slot compiles the runtime (prelude) before it takes units.
+    /// Their output is this process's; answers whether every one succeeded.
     /// </summary>
-    private static bool InProcesses(string list, List<(string Source, string Object)> units, bool entry, List<string> options,
-        int processes, int workers)
+    private static bool InPool(List<(string List, List<(string Source, string Object)> Units, bool Entry, List<string> Args)> groups,
+        Func<bool>? prelude, int processes, int workers)
     {
-        // EVERY CHILD THE WHOLE LIST, each unit taken by whichever child is
-        // free first (ProjectCompile's --claim-dir), biggest first. Dealt out
-        // in turn beforehand, seven children of fifty-odd units each finished
-        // minutes apart, the rest of the machine idle meanwhile. A unit
-        // compiles to the same object in any process, with any neighbours.
-        string share = list[..^4] + "-all.tsv";
-        File.WriteAllLines(share, units.Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (entry ? "entry" : "lib")));
-        string claims = list[..^4] + "-claims";
-        if (Directory.Exists(claims)) Directory.Delete(claims, recursive: true);
-        Directory.CreateDirectory(claims);
-        // One worker each (Processes): a 32-bit space holds one large unit.
-        int each = 1;
-        List<(System.Diagnostics.Process Child, string Share, System.Diagnostics.ProcessStartInfo Start)> children = new();
-        for (int i = 0; i < processes; i++)
+        List<(string Share, string Claims, int Count, System.Diagnostics.ProcessStartInfo Start, List<string> Args)> work = new();
+        foreach (var group in groups.OrderByDescending(group => group.Units.Sum(unit => SourceBytes(unit.Source))))
         {
+            if (group.Units.Count == 0) continue;
+            string share = group.List[..^4] + "-all.tsv";
+            File.WriteAllLines(share, group.Units.Select(unit => unit.Source + "\t" + unit.Object + "\t" + unit.Object + ".deps\t" + (group.Entry ? "entry" : "lib")));
+            string claims = group.List[..^4] + "-claims";
+            if (Directory.Exists(claims)) Directory.Delete(claims, recursive: true);
+            Directory.CreateDirectory(claims);
             System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
             // The same executable: its identity, hashed once here.
             start.ArgumentList.Add("--compiler-identity"); start.ArgumentList.Add(ProjectCompile.CompilerIdentity());
@@ -481,72 +506,112 @@ public static class ProjectCommand
             start.ArgumentList.Add("compile-project");
             start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
             start.ArgumentList.Add("--claim-dir"); start.ArgumentList.Add(claims);
-            start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());
-            foreach (string option in options) start.ArgumentList.Add(option);
-            children.Add((System.Diagnostics.Process.Start(start)!, share + " #" + i, start));
+            // One worker each (Processes): a 32-bit space holds one large unit.
+            start.ArgumentList.Add("--jobs"); start.ArgumentList.Add("1");
+            foreach (string option in group.Args) start.ArgumentList.Add(option);
+            work.Add((share, claims, group.Units.Count, start, group.Args));
         }
-        // EACH ONE WATCHED ON ITS OWN, and a failure said the moment it
+        // A GROUP HAS WORK while fewer of its units are claimed than it has:
+        // a child claims each unit by making its file before compiling it, so
+        // one that finds every unit claimed exits at once.
+        int Next()
+        {
+            for (int g = 0; g < work.Count; g++)
+                if (Directory.EnumerateFiles(work[g].Claims).Take(work[g].Count).Count() < work[g].Count) return g;
+            return -1;
+        }
+        // EACH SLOT WATCHED ON ITS OWN, and a failure said the moment it
         // happens. Waited on in turn, a child killed by a signal -- which
         // writes nothing, the kernel does the talking -- was not noticed
         // until every child before it had finished, and then only as a
         // failed build with no word of which process or why.
         bool ok = true;
         object gate = new();
-        List<Thread> waits = new();
-        foreach ((System.Diagnostics.Process first, string which, System.Diagnostics.ProcessStartInfo start) in children)
+        List<Thread> slots = new();
+        for (int slot = 0; slot < processes; slot++)
         {
-            Thread wait = new(() =>
+            bool first = slot == 0;
+            Thread thread = new(() =>
             {
-                System.Diagnostics.Process child = first;
-                child.WaitForExit();
-                int code = child.ExitCode;
-                // SPENT (ProjectCompile.Recycle): its heap past half its
-                // ceiling, it took no more units; another takes its place.
-                while (code == ProjectCompile.Recycle)
+                if (first && prelude is not null)
                 {
-                    int spent = child.Id;
-                    child.Dispose();
-                    try { child = System.Diagnostics.Process.Start(start)!; }
+                    bool made;
+                    try { made = prelude(); }
+                    catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+                    {
+                        lock (gate) Console.Error.WriteLine("corc: the runtime's compile failed: " + e.Message);
+                        made = false;
+                    }
+                    if (!made) { lock (gate) ok = false; return; }
+                }
+                while (true)
+                {
+                    int g;
+                    lock (gate) g = ok ? Next() : -1;
+                    if (g < 0) return;
+                    string which = work[g].Share;
+                    System.Diagnostics.Process child;
+                    try { child = System.Diagnostics.Process.Start(work[g].Start)!; }
                     catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException or OutOfMemoryException)
                     {
-                        lock (gate)
-                        {
-                            ok = false;
-                            Console.Error.WriteLine("corc: the compile-project process for " + which + " could not be started again after pid " + spent + ": " + e.Message
-                                + "; the build fails");
-                        }
+                        lock (gate) { ok = false; Console.Error.WriteLine("corc: a compile-project process for " + which + " could not be started: " + e.Message + "; the build fails"); }
                         return;
                     }
-                    lock (gate) Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + spent + ") is spent; pid " + child.Id + " takes its place");
                     child.WaitForExit();
-                    code = child.ExitCode;
+                    int code = child.ExitCode;
+                    // SPENT (ProjectCompile.Recycle): its heap past half its
+                    // ceiling, it took no more units; another takes its place.
+                    while (code == ProjectCompile.Recycle)
+                    {
+                        int spent = child.Id;
+                        child.Dispose();
+                        try { child = System.Diagnostics.Process.Start(work[g].Start)!; }
+                        catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException or OutOfMemoryException)
+                        {
+                            lock (gate)
+                            {
+                                ok = false;
+                                Console.Error.WriteLine("corc: the compile-project process for " + which + " could not be started again after pid " + spent + ": " + e.Message
+                                    + "; the build fails");
+                            }
+                            return;
+                        }
+                        lock (gate) Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + spent + ") is spent; pid " + child.Id + " takes its place");
+                        child.WaitForExit();
+                        code = child.ExitCode;
+                    }
+                    int id = child.Id;
+                    child.Dispose();
+                    if (code == 0) continue;
+                    lock (gate)
+                    {
+                        ok = false;
+                        Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + id + ") "
+                            + HowEnded(code) + "; units of it not yet compiled are not built");
+                    }
+                    return;
                 }
-                if (code == 0) return;
-                lock (gate)
-                {
-                    ok = false;
-                    Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + child.Id + ") "
-                        + HowEnded(code) + "; units of it not yet compiled are not built");
-                }
-            });
-            wait.Start();
-            waits.Add(wait);
+            }) { IsBackground = true, Name = "pool-" + slot };
+            thread.Start();
+            slots.Add(thread);
         }
-        foreach (Thread wait in waits) wait.Join();
-        try { Directory.Delete(claims, recursive: true); } catch (IOException) { }
+        foreach (Thread thread in slots) thread.Join();
+        foreach (var group in work)
+            try { Directory.Delete(group.Claims, recursive: true); } catch (IOException) { }
         // THE CALLS BETWEEN UNITS INSIDE A KEPT STATE (ProjectCompile's
         // InsideRounds) need every unit's object, which no child had: one run
-        // more over the whole list, which finds each unit current by its stamp
-        // and does only those rounds. Bare-metal builds alone make copies.
-        if (ok && ProjectCompile.InsideFactsApply(options))
+        // more over each whole list, which finds each unit current by its
+        // stamp and does only those rounds. Bare-metal builds alone make copies.
+        foreach (var group in work)
         {
+            if (!ok || !ProjectCompile.InsideFactsApply(group.Args)) continue;
             System.Diagnostics.ProcessStartInfo last = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
             last.ArgumentList.Add("--compiler-identity"); last.ArgumentList.Add(ProjectCompile.CompilerIdentity());
             foreach (string flag in Driver.ChildFlags) last.ArgumentList.Add(flag);
             last.ArgumentList.Add("compile-project");
-            last.ArgumentList.Add("--units"); last.ArgumentList.Add(share);
+            last.ArgumentList.Add("--units"); last.ArgumentList.Add(group.Share);
             last.ArgumentList.Add("--jobs"); last.ArgumentList.Add(Math.Max(1, workers).ToString());
-            foreach (string option in options) last.ArgumentList.Add(option);
+            foreach (string option in group.Args) last.ArgumentList.Add(option);
             using System.Diagnostics.Process rounds = System.Diagnostics.Process.Start(last)!;
             rounds.WaitForExit();
             if (rounds.ExitCode != 0)
@@ -557,5 +622,8 @@ public static class ProjectCommand
         }
         return ok;
     }
+
+    /// <summary>A source's size, for ordering the groups; 0 for one not there.</summary>
+    private static long SourceBytes(string path) => File.Exists(path) ? new FileInfo(path).Length : 0;
 
 }

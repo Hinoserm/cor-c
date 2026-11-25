@@ -386,11 +386,24 @@ public static class SourceIndexBuilder
             // each type's name, kind, parameters and bases (InterfaceForms).
             List<InterfaceForms.Declared> skeletons = new();
             bool handlerSaid = false;
-            foreach (string path in files)
+            // EACH FILE READ, LEXED AND PARSED ON ITS OWN THREAD, a window of
+            // files at a time, and its records then written in the files'
+            // order as before: what a file's records say depends on that file
+            // alone (and the index under it, read only), so the index made is
+            // the same byte for byte. The window bounds what is held at once:
+            // every file's tokens together would be the whole tree's.
+            Read?[] window = new Read?[ReadWindow];
+            for (int from = 0; from < files.Length; from += ReadWindow)
             {
-                IReadOnlyCollection<string>? activeSymbols = fileSymbols?.GetValueOrDefault(path) ?? symbols;
-                string text = File.ReadAllText(path);
-                byte[] hash = TextHash(text);
+            int count = Math.Min(ReadWindow, files.Length - from);
+            int first = from;
+            Parallel.For(0, count, slot => window[slot] = ReadFile(files[first + slot], fileSymbols?.GetValueOrDefault(files[first + slot]) ?? symbols));
+            for (int slot = 0; slot < count; slot++)
+            {
+                Read read = window[slot]!;
+                window[slot] = null;
+                string path = read.Path, text = read.Text;
+                byte[] hash = read.Hash;
                 snapshots.Add((path, hash));
                 // WHICH TEXT OF THE FILE THIS INDEX WAS MADE FROM, by its full
                 // path (DeclarationCatalog.SourceHash): a unit compiled against
@@ -398,18 +411,11 @@ public static class SourceIndexBuilder
                 // a source edited after the index was written read its new
                 // self against its neighbours' old declarations.
                 yield return new DeclarationRecord(SourceKey(path), hash);
-                Lexer lexer = new(text, path, 1, 1, activeSymbols);
-                List<Token> tokens = new();
-                List<int> ends = new();
-                while (true)
-                {
-                    Token token = lexer.Next(); tokens.Add(token); ends.Add(lexer.Position);
-                    if (token.Kind == Tok.End) break;
-                }
-                // Parser speculation may split a >> token; retain untouched
-                // lexical spellings for the declaration-only source record.
-                Parser parser = new(new List<Token>(tokens), path, declarationsOnly: true);
-                CompilationUnit unit = parser.ParseUnit();
+                List<Token> tokens = read.Tokens;
+                List<int> ends = read.Ends;
+                Parser parser = read.Parser;
+                CompilationUnit unit = read.Unit;
+                IReadOnlyCollection<string>? activeSymbols = read.Symbols;
                 string TypeName(TypeDecl type)
                 {
                     // Its own arity, as .NET's metadata names it: Box`1+Nested`1
@@ -858,6 +864,7 @@ public static class SourceIndexBuilder
                         yield return new DeclarationRecord(RecordKey(identity), Encoding.UTF8.GetBytes(type.Name));
                 }
             }
+            }
             // THE FORMS EVERY UNIT NUMBERS A BLOCK FOR (InterfaceForms), over
             // the declarations of the whole project at once.
             foreach (var (form, library) in InterfaceForms.Conflicts(skeletons).OrderBy(c => c.Key, StringComparer.Ordinal))
@@ -869,5 +876,30 @@ public static class SourceIndexBuilder
                     throw new InvalidDataException("Source changed while indexing: " + snapshot.Path);
         }
         DeclarationIndexWriter.Write(output, Records(), memoryBytes);
+    }
+
+    /// <summary>How many files are read, lexed and parsed at once while an index is made: enough to keep every processor busy, few enough that their tokens stay small beside the build.</summary>
+    private const int ReadWindow = 64;
+
+    /// <summary>One file as the index reads it: its text and hash, its tokens with where each ends, its parser (whose spans the records read) and declarations, and the symbols it was lexed with.</summary>
+    private sealed record Read(string Path, string Text, byte[] Hash, List<Token> Tokens, List<int> Ends, Parser Parser, CompilationUnit Unit, IReadOnlyCollection<string>? Symbols);
+
+    /// <summary>A file read, lexed with its symbols and parsed for its declarations, on whatever thread asks.</summary>
+    private static Read ReadFile(string path, IReadOnlyCollection<string>? activeSymbols)
+    {
+        string text = File.ReadAllText(path);
+        Lexer lexer = new(text, path, 1, 1, activeSymbols);
+        List<Token> tokens = new();
+        List<int> ends = new();
+        while (true)
+        {
+            Token token = lexer.Next(); tokens.Add(token); ends.Add(lexer.Position);
+            if (token.Kind == Tok.End) break;
+        }
+        // Parser speculation may split a >> token; retain untouched
+        // lexical spellings for the declaration-only source record.
+        Parser parser = new(new List<Token>(tokens), path, declarationsOnly: true);
+        CompilationUnit unit = parser.ParseUnit();
+        return new Read(path, text, TextHash(text), tokens, ends, parser, unit, activeSymbols);
     }
 }
