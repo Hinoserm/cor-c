@@ -27,11 +27,35 @@ public static class ProjectCommand
     public static string HowEnded(int code) => code > 128 ? "was killed by signal " + (code - 128) : "exited with code " + code;
 
     /// <summary>
-    /// Whether this compiler can start copies of itself to compile units: not
-    /// hosted as `dotnet corc.dll`, whose process path is the host's.
+    /// Whether this compiler can start copies of itself to compile units:
+    /// native, its own image again; hosted as `dotnet corc.dll`, the host
+    /// again with the compiler's assembly first (SelfStart).
     /// </summary>
-    public static bool CanStartWorkers => Environment.ProcessPath is string path
-        && !Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("SingleFile", "IL3000",
+        Justification = "Hosted only, where the compiler is an assembly file.")]
+    public static bool CanStartWorkers => Environment.ProcessPath is not null
+        && (!Hosted || File.Exists(typeof(ProjectCommand).Assembly.Location));
+
+    /// <summary>Whether this compiler runs hosted, as `dotnet corc.dll`: the process is the host's.</summary>
+    private static bool Hosted => Environment.ProcessPath is string path
+        && Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// How to start this same compiler as a child: its own image, or hosted
+    /// the host with the compiler's assembly as its first argument. Under
+    /// dotnet the units were compiled as threads of one process, which ran
+    /// about two of four workers' worth (the collector and the shared caches
+    /// between them) where children of their own run each at full speed; a
+    /// child compiles many units, so its JIT's warm-up is paid once a slot.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("SingleFile", "IL3000",
+        Justification = "Hosted only, where the compiler is an assembly file.")]
+    internal static System.Diagnostics.ProcessStartInfo SelfStart()
+    {
+        System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+        if (Hosted) start.ArgumentList.Add(typeof(ProjectCommand).Assembly.Location);
+        return start;
+    }
 
     /// <summary>
     /// How many compile processes the machine's free memory holds: two
@@ -455,11 +479,11 @@ public static class ProjectCommand
         // live size), and was counted as four -- six children on a machine
         // with thirty-two processors and twenty-six gigabytes free. Two keeps
         // room for the biggest units, which all start at once (biggest first).
-        // IN PROCESS UNDER DOTNET ONLY: its heap copes with a dozen units at
-        // once, and one warm JIT beats twelve cold ones. A native compiler, of
-        // either word size, gives each unit a process: in long mode the in-
-        // process build ran every unit's garbage through one heap at once and
-        // took most of an hour for what the children do in minutes.
+        // EVERY COMPILER GIVES EACH UNIT A PROCESS, hosted under dotnet too
+        // (SelfStart): in long mode the in-process build ran every unit's
+        // garbage through one heap at once and took most of an hour for what
+        // the children do in minutes, and the hosted one ran its threads
+        // about two wide of four.
         if (!CanStartWorkers || workers < 2 || units < 2) return 1;
         return Math.Max(1, Math.Min(Math.Min(workers, WorkerSpaces()), units));
     }
@@ -487,7 +511,7 @@ public static class ProjectCommand
             string claims = group.List[..^4] + "-claims";
             if (Directory.Exists(claims)) Directory.Delete(claims, recursive: true);
             Directory.CreateDirectory(claims);
-            System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            System.Diagnostics.ProcessStartInfo start = SelfStart();
             // The same executable: its identity, hashed once here.
             start.ArgumentList.Add("--compiler-identity"); start.ArgumentList.Add(ProjectCompile.CompilerIdentity());
             // ITS SHARE OF THE MACHINE FOR ITS COLLECTOR: each child marks on
@@ -502,6 +526,12 @@ public static class ProjectCommand
                 start.ArgumentList.Add("--gc-workers");
                 start.ArgumentList.Add(Math.Min(7, Math.Max(0, cores - 1)).ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
+            // HOSTED, THE SAME SHARE FOR .NET'S COLLECTOR, which reads no flag
+            // of ours: its own setting for a child, in hexadecimal as it reads
+            // it. The project asks for four server heaps; sixteen children of
+            // four each put sixty-four collector threads on sixteen processors.
+            if (Hosted)
+                start.Environment["DOTNET_GCHeapCount"] = Math.Max(1, Environment.ProcessorCount / Math.Max(1, processes)).ToString("x", System.Globalization.CultureInfo.InvariantCulture);
             foreach (string flag in Driver.ChildFlags) start.ArgumentList.Add(flag);
             start.ArgumentList.Add("compile-project");
             start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
@@ -605,7 +635,7 @@ public static class ProjectCommand
         foreach (var group in work)
         {
             if (!ok || !ProjectCompile.InsideFactsApply(group.Args)) continue;
-            System.Diagnostics.ProcessStartInfo last = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            System.Diagnostics.ProcessStartInfo last = SelfStart();
             last.ArgumentList.Add("--compiler-identity"); last.ArgumentList.Add(ProjectCompile.CompilerIdentity());
             foreach (string flag in Driver.ChildFlags) last.ArgumentList.Add(flag);
             last.ArgumentList.Add("compile-project");

@@ -778,7 +778,7 @@ public static class ProjectCompile
         List<System.Diagnostics.ProcessStartInfo> starts = new();
         for (int i = 0; i < count; i++)
         {
-            System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            System.Diagnostics.ProcessStartInfo start = Corsac.Projects.ProjectCommand.SelfStart();
             start.ArgumentList.Add("--compiler-identity"); start.ArgumentList.Add(CompilerIdentity());
             // ITS SHARE OF THE PROCESSORS FOR ITS COLLECTOR, as ProjectCommand's
             // children have it: markers enough for its share, less its own.
