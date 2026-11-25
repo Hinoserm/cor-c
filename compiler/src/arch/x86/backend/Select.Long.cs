@@ -7,8 +7,8 @@ using Block = Corsac.Lang.Ir.Block;
 
 // LONG MODE'S METHODS OF THE FAMILY'S SELECTOR (Select.cs has the class and
 // i386's). A method with i386's name that is still long mode's own carries
-// an L, and reads long mode's own tables (_regsL, _useCountL, _constantsL);
-// the function, the blocks and the emission are the class's. Each is to be
+// an L; the function, the blocks, the emission and the tables of registers,
+// uses and constants are the class's. Each is to be
 // made one method for both modes.
 //
 // Instruction selection for x86-64: one IR function into machine
@@ -29,9 +29,6 @@ using Block = Corsac.Lang.Ir.Block;
 // sixteen-byte aligned at every call.
 internal sealed partial class Selector
 {
-    private readonly Dictionary<int, MReg> _regsL = new();
-    private readonly Dictionary<int, int> _useCountL = new();
-    private readonly Dictionary<int, long> _constantsL = new();
     private int _tablesL;
 
     internal static Gpr[] IntArgRegs => LongAbi.IntArgRegs;
@@ -55,9 +52,8 @@ internal sealed partial class Selector
         _m = new MFunction(f);
         _errors = errors;
         _external = isExternal;
-        // The family's tables of registers and uses, which long mode's own
-        // methods (the L ones) do not read: theirs are _regsL and _useCountL
-        // until a method is made one for both modes.
+        // The family's tables: a value's register by its number (_lo; no
+        // value has a second, _hi is the pairs' of i386), and its uses.
         _lo = new ByRegister<MReg>(f.RegCount);
         _hi = new ByRegister<MReg>(f.RegCount);
         _useCount = new UseCounts(f.RegCount);
@@ -110,10 +106,11 @@ internal sealed partial class Selector
     /// <summary>The machine register a virtual one lives in, of the class its type says.</summary>
     private MReg V(VReg v)
     {
-        if (!_regsL.TryGetValue(v.Id, out MReg? r))
+        MReg? r = _lo[v.Id];
+        if (r is null)
         {
             r = v.Type.IsFloat() ? _m.NewFloat() : _m.NewReg();
-            _regsL[v.Id] = r;
+            _lo[v.Id] = r;
         }
         return r;
     }
@@ -260,7 +257,7 @@ internal sealed partial class Selector
                 {
                     if (o is RegOperand r)
                     {
-                        _useCountL[r.Reg.Id] = _useCountL.GetValueOrDefault(r.Reg.Id) + 1;
+                        _useCount.Count(r.Reg.Id);
                     }
                 }
             }
@@ -273,19 +270,19 @@ internal sealed partial class Selector
         foreach (Block b in _f.Blocks)
         {
             _cur = _heads[b];
-            _constantsL.Clear();
+            _constants.Clear();
             for (int n = 0; n < b.Instrs.Count; n++)
             {
                 Instr i = b.Instrs[n];
                 _line = i.Line;
-                NoteConstantL(i);
+                NoteConstant(i);
                 // An asm block and its results, as one (Select.InlineAsm).
                 if (TryInlineAsmL(b.Instrs, n, out int asmTaken))
                 {
                     n += asmTaken - 1;
                     continue;
                 }
-                if (IsCompare(i.Op) && i.Dest is not null && n + 1 < b.Instrs.Count && FusesIntoL(i, b.Instrs[n + 1]))
+                if (IsCompare(i.Op) && i.Dest is not null && n + 1 < b.Instrs.Count && FusesInto(i, b.Instrs[n + 1]))
                 {
                     SelectFusedBranchL(i, b.Instrs[n + 1]);
                     n++;
@@ -341,26 +338,6 @@ internal sealed partial class Selector
             }
         }
     }
-
-    private void NoteConstantL(Instr i)
-    {
-        if (i.Dest is null)
-        {
-            return;
-        }
-        if (i.Op == Opcode.Copy && i.Operands[0] is ImmOperand imm && i.Dest.Type.IsInt())
-        {
-            _constantsL[i.Dest.Id] = imm.Value;
-        }
-        else
-        {
-            _constantsL.Remove(i.Dest.Id);
-        }
-    }
-
-    private bool FusesIntoL(Instr cmp, Instr next)
-        => next.Op == Opcode.Branch && next.Operands[0] is RegOperand r && r.Reg == cmp.Dest
-           && _useCountL.GetValueOrDefault(r.Reg.Id) == 1;
 
     private void SelectInstrL(Instr i)
     {
@@ -1274,7 +1251,7 @@ internal sealed partial class Selector
 
     private void SelectLoadL(Instr i) => LoadIntoL(i.Dest!, AddressL(i.Operands[0], i.Offset), i.Size, i.Signed);
 
-    /// <summary>`size` bytes at `m` into d, widened as d's type and `signed` say: SelectLoad's, and an asm block's slot read back (TryInlineAsm).</summary>
+    /// <summary>`size` bytes at `m` into d, widened as d's type and `signed` say: SelectLoadL's, and an asm block's slot read back (TryInlineAsmL).</summary>
     private void LoadIntoL(VReg d, MMem m, int size, bool signed)
     {
         if (d.Type.IsFloat())
@@ -1333,7 +1310,7 @@ internal sealed partial class Selector
 
     private void SelectStoreL(Instr i) => StoreFromL(AddressL(i.Operands[0], i.Offset), i.StoredValue, i.Size);
 
-    /// <summary>`size` bytes of v at `m`: SelectStore's, and an asm block's slot filled (TryInlineAsm).</summary>
+    /// <summary>`size` bytes of v at `m`: SelectStoreL's, and an asm block's slot filled (TryInlineAsmL).</summary>
     private void StoreFromL(MMem m, Operand v, int size)
     {
         if (v.Type.IsFloat())
@@ -1744,7 +1721,7 @@ internal sealed partial class Selector
             Jmp(Corsac.Lang.Opt.IrInfo.Normalise(imm.Value, c.Type) != 0 ? t : f);
             return;
         }
-        if (c is RegOperand cr && _constantsL.TryGetValue(cr.Reg.Id, out long known))
+        if (c is RegOperand cr && _constants.TryGetValue(cr.Reg.Id, out long known))
         {
             Jmp(Corsac.Lang.Opt.IrInfo.Normalise(known, c.Type) != 0 ? t : f);
             return;

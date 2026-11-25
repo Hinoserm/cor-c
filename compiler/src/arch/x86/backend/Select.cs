@@ -1181,8 +1181,9 @@ internal sealed partial class Selector
             _lo[v.Id] = r;
             // Both halves of a 64-bit integer are integers: telling the
             // stack maps so is the one bit of precision available while a
-            // reference and an int are both an I32 in the IR.
-            if (v.Type == IrType.I64)
+            // reference and an int are both an I32 in the IR. (In long mode
+            // an I64 is one register, and may be a reference.)
+            if (v.Type == IrType.I64 && !X86Mode.Long)
             {
                 _m.WideHalves.Add(r.Id);
             }
@@ -1509,7 +1510,8 @@ internal sealed partial class Selector
         {
             return;
         }
-        if (i.Op == Opcode.Copy && i.Operands[0] is ImmOperand imm && i.Dest.Type == IrType.I32)
+        // A word's constant: an I32, and in long mode an I64 too.
+        if (i.Op == Opcode.Copy && i.Operands[0] is ImmOperand imm && (X86Mode.Long ? i.Dest.Type.IsInt() : i.Dest.Type == IrType.I32))
         {
             _constants[i.Dest.Id] = imm.Value;
         }

@@ -151,7 +151,7 @@ public sealed class MFunction
 
     public MReg NewReg() => new(NextVReg++);
 
-    // ---- long mode's (X64's selector, target and encoder) -------------------------------
+    // ---- long mode's (Select.Long.cs, X64Target and the encoder's long forms) -----------
 
     /// <summary>
     /// A new virtual register of the XMM class: in XmmRegs, the one record

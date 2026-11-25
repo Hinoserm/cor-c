@@ -98,9 +98,8 @@ ONE SELECTOR CLASS (`X86.Selector`), not yet one selection. Long mode's
 methods are in `x86/backend/Select.Long.cs` and `Select.Long.InlineAsm.cs`,
 partials of the class i386's are in, over the same function, blocks and
 emission (`Emit`, `Jcc`, `Aside`, `Temp`); a method that has i386's name and
-is still long mode's own carries an `L` (`SelectAluL`, `RL`, `AddressL`),
-and its tables of registers, uses and constants are `_regsL`, `_useCountL`
-and `_constantsL`. Each is made the family's one method in turn, the mode
+is still long mode's own carries an `L` (`SelectAluL`, `RL`, `AddressL`);
+the tables of registers, uses and constants are the class's. Each is made the family's one method in turn, the mode
 asked where the two differ (a word of four bytes or eight, a 64-bit integer
 a pair of registers or one); what stays long mode's own is the System V
 call and return, RIP-relative and GOT addresses, 64-bit constants and
@@ -112,6 +111,7 @@ conversions, SYSCALL and the per-CPU words.
   Division uses the hardware and its trap, as on i386. Float-to-integer
   conversion follows .NET's saturating rule from the IEEE bits, exactly as
   the i386 backend does. The thread block is `gs:[0]`: FS is left to glibc, whose thread pointer C code needs.
+
 What is still x86-64's own, in `compiler/src/arch/x64/backend`:
 
 - **RegAlloc.cs, X64Target.cs** -- the function lowered into the one

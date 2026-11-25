@@ -15,7 +15,7 @@ using Encoder = Corsac.Lang.X86.Encoder;
 /// long-mode Linux program on anything from the first AMD64 processor (K8)
 /// on.
 ///
-/// Per function: instruction selection (Select.cs), address arithmetic
+/// Per function: instruction selection (x86/backend/Select.Long.cs), address arithmetic
 /// folded into the addressing modes (AddressFold.cs), register allocation
 /// (RegAlloc.cs), encoding (the family's Encoder, x86/backend). Data items go in .rodata, .data or
 /// .bss by their flags, holding 64-bit absolute relocations where they hold

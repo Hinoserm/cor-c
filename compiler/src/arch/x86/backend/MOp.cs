@@ -346,7 +346,7 @@ public enum MOp : byte
     /// </summary>
     Inc, Dec,
 
-    // ---- long mode's own (X64's selector and encoder; i386 makes none) ----------------
+    // ---- long mode's own (Select.Long.cs and Encoder.Long.cs; i386 makes none) --------
     /// <summary>A call into a store-sequence stub that keeps every register (RAX the answer for the Rax and Cas ones): never a safepoint.</summary>
     CallKeepRax, CallKeepCas,
     /// <summary>cmovcc r, r/m.</summary>
