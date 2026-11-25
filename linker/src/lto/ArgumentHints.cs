@@ -39,19 +39,26 @@ public sealed class ArgumentHints
         obj.Sections.Add(section);
     }
 
+    /// <summary>
+    /// A unit's hints, READ WHERE THE LINK LEFT THEM (ElfReader.LeftInFile),
+    /// through the section's stream. Read as the section's bytes they were
+    /// brought into memory, where a section stays once it is there, and
+    /// copied into one array besides: 125 MB of the compiler's own link held
+    /// from its first phase to its last, for hints it reads once.
+    /// </summary>
     public static ArgumentHints? Read(ObjectFile obj)
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
-        if (sections.Length != 1 || sections[0].Bytes.Count > MaximumBytes) throw new ElfFormatException("Invalid argument hint section");
-        byte[] bytes = sections[0].Bytes.ToArray();
+        if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid argument hint section");
+        int total = sections[0].Size;
         try
         {
-            using MemoryStream stream = new(bytes, writable: false);
+            using Stream stream = sections[0].OpenRead();
             using BinaryReader reader = new(stream);
             if (reader.ReadUInt32() != Magic || reader.ReadInt32() != Version) throw new ElfFormatException("Unsupported argument hints");
-            ArgumentHints hints = Read(reader, bytes.Length);
-            if (stream.Position != bytes.Length) throw new ElfFormatException("Trailing argument hint data");
+            ArgumentHints hints = Read(reader, total);
+            if (stream.Position != total) throw new ElfFormatException("Trailing argument hint data");
             return hints;
         }
         catch (EndOfStreamException) { throw new ElfFormatException("Truncated argument hints"); }

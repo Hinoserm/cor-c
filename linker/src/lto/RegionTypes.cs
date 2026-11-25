@@ -87,7 +87,7 @@ public sealed class RegionTypes
     // compiler's own link is past its budget before its first node is
     // taken, and held each of its twenty million values twice.
     private readonly List<ValueSet?> _delta = new();
-    // (A byte a node: beside the sets it spares, nothing.)
+    // _settled costs a byte a node, nothing beside the sets it spares.
     private readonly List<bool> _settled = new();
     // What else a node is, made only for the nodes that are anything more
     // than held: copied into others as it is, or as addresses into what it
@@ -745,11 +745,13 @@ public sealed class RegionTypes
             }
         foreach (HashSet<int>? r in _allReaders) readers += r?.Count ?? 0;
         foreach (HashSet<int>? b in _bound) bound += b?.Count ?? 0;
-        foreach (HashSet<int>? b in _boundInst) copies += b?.Count ?? 0;
+        // Only the copies made for a descriptor: a function's own instance is its function, counted above.
+        foreach (HashSet<int>? b in _boundInst)
+            if (b is not null) foreach (int instance in b) if (instance >= _functions.Count) copies++;
         return $"{_pts.Count} nodes ({small} small sets, {large} large of {blocks} blocks, {held} values held, {pending} yet to hand on), {uses} with uses "
             + $"({succ} copies, {moved} moved, {loads} loads, {stores} stores, {receives} receivers), {_objects.Count} objects, {_cells.Count} cells, "
-            + $"{readers} readers of whole objects, {_calls.Count} calls watched ({bound} functions and {copies} instances bound by name), {_dispatched.Count} dispatch answers over {_kinds.Count} kinds, "
-            + $"{_instBase.Count - _functions.Count} instances";
+            + $"{readers} readers of whole objects, {_calls.Count} calls watched ({bound} functions and {copies} descriptor copies bound by name), {_dispatched.Count} dispatch answers over {_kinds.Count} kinds, "
+            + $"{_instBase.Count - _functions.Count} descriptor copies made";
     }
 
     private sealed class OverBudget : Exception { }

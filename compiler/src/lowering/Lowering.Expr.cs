@@ -4357,10 +4357,11 @@ public sealed partial class Lowering
         // Nothing matched: the binder refused this unless there is a `_`, so
         // this path is unreachable, but the register needs a definition.
         // The block of a struct result defines the register already.
-        // A FLOAT'S ZERO IS ITS BITS' (Bits of an integer zero of its size): an
-        // integer zero copied into the float register first was a copy of
-        // one type into another, which the verifier of a debug-built
-        // compiler refuses -- no such compiler could build this one.
+        // A FLOAT'S ZERO IS MADE AS THE BITS OF AN INTEGER ZERO OF ITS SIZE, as
+        // `default` makes it. An integer zero copied into the float
+        // register first was a copy of one type into another, which the
+        // verifier of a debug-built compiler refuses -- no such compiler
+        // could build this one (tests/language/2323).
         if (made is null)
         {
             if (result.Type.IsFloat())

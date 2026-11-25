@@ -1,0 +1,33 @@
+// test: switch_expression_of_floats
+// expect-exit: 0
+// expect-output:
+// 32
+// 4
+// 10.5
+//
+// A switch expression whose result is a double or a float: constant arms,
+// type patterns and the discard arm. The path no arm matches gives the
+// result register its definition, a float's zero; a compiler built for
+// debugging verifies the IR before it optimises, and an integer zero
+// copied into a float register there stopped it from building itself.
+
+using System;
+
+static class Program
+{
+    static double Pick(int k, double a, double b) => k switch { 0 => a + b, 1 => a - b, 2 => a * b, _ => a / b };
+
+    static float PickF(int k, float a) => k switch { 0 => a + 1f, 1 => a * 2f, _ => -a };
+
+    static double Typed(object o) => o switch { int i => i * 1.5, double d => d, string s => s.Length, _ => -1.0 };
+
+    static int Main()
+    {
+        double total = 0;
+        for (int k = 0; k < 4; k++) total += Pick(k, 6.0, 3.0);
+        Console.WriteLine(total);
+        Console.WriteLine(PickF(0, 1.5f) + PickF(1, 1.5f) + PickF(2, 1.5f));
+        Console.WriteLine(Typed(4) + Typed(2.5) + Typed("abc") + Typed(null));
+        return 0;
+    }
+}
