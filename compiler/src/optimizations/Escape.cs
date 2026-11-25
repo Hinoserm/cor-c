@@ -5355,14 +5355,17 @@ continue;
                         continue;
                     }
                     string[] targets = Slot(declaring, method.Offset);
-                    // A SLOT NO TYPE MADE FILLS, where none answers it in no
-                    // table: every concrete type that is the declaring one
-                    // fills each of its slots, so only a type with no objects
-                    // answered -- an abstract one an `is` names, which made
-                    // it look made (__RectangularArray, named by Array.Rank:
-                    // three unresolved calls in the array faces, and with
-                    // them every method of every live type reached and a
-                    // collector, 1821) -- and the call reaches nothing.
+                    // A SLOT NO TYPE MADE FILLS, where no type answers the
+                    // interface outside its table (MayAnswer: an array's
+                    // faces, a box's or a string's system interfaces), reaches
+                    // nothing. A concrete class fills every slot of every
+                    // interface it lists (Binder.AssignSlots), so only a type
+                    // with no objects answered: an abstract one an `is`
+                    // names, which looks made (__RectangularArray, named by
+                    // Array.Rank). Left unresolved, one such call reaches
+                    // every method of every live type, and a collector (1821).
+                    // The link answers an unfilled slot the same way
+                    // (VirtualTargets.Index.Targets).
                     if (targets.Length == 0 && !faced.Contains((declaring, method.Offset)))
                     {
                         if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}+{method.Offset}: no made type fills it");
@@ -7207,7 +7210,8 @@ continue;
     /// An allocation this pass owns is freed on every path out of its
     /// function. So is the object a fresh function RETURNS, wherever the call
     /// to it is owned: the caller frees it. Such an allocation counts only if
-    /// its function is reached through a call that does not own the result --
+    /// its function is reached through a call that does not own the result
+    /// and runs more than once (a call that runs once makes it once) --
     /// through any path at all -- and a function's other allocations count
     /// wherever it is reached. Judging the returned object by the function
     /// alone made every program that called a fresh helper need a collector.
@@ -7309,10 +7313,11 @@ continue;
                         // call is owned; handed on as this function's own
                         // result, it is owned exactly as far as this one is.
                         // A CALL THAT RUNS ONCE makes the object it returns
-                        // once, kept or not: as a call that frees it, the
-                        // callee's fresh result counts nothing here (a static
-                        // initialiser's failure message, String.Concat into
-                        // TypeInitializationException, 1823).
+                        // once, kept or not, so the callee's fresh result
+                        // counts nothing here, as for a call that frees it: a
+                        // static initialiser's failure message, String.Concat
+                        // returned into TypeInitializationException (1823).
+                        // What that object's fields own is made once with it.
                         bool ownedCall = _ownedCalls.Contains(i) && !(_heldCalls.Contains(i) && Leaky(i));
                         bool callUnowned = ownedCall || once.RunsOnce(f, b) ? false : origin ? unowned : true;
                         Reach(i.Callee, callUnowned, f.Name);

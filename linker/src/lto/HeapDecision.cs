@@ -176,13 +176,13 @@ public static class HeapDecision
                                 : e.Permanent is not null && !writtenElsewhere.Contains(e.Permanent) ? "permanent in " + e.Permanent
                                 : e.Thrown is not null ? "thrown " + e.Thrown + ", one of boundedly many unwinds"
                                 : once.RunsOnce(node.Name, e) ? "runs once"
-                                : origin && !unowned ? "handed back to a caller that frees it" : null;
+                                : origin && !unowned ? "handed back to a caller that frees it or runs once" : null;
                             if (why is null && counted.Add((node, k))) sites.Add(node.Name + ": " + e.Name + " (reached: " + Path(node) + ")");
                             else if (why is not null) excused.Add(node.Name + ": " + e.Name + ": " + why);
                         }
                         // A call that runs once makes what it returns once,
-                        // as a call that frees it does nothing more
-                        // (Escape.CollectorSites).
+                        // so the callee's fresh result counts nothing, as for
+                        // a call that frees it (Escape.CollectorSites).
                         if ((e.Flags & HeapFlags.OwnedAllocation) == 0)
                             Reach(world.Resolve(node.Unit, e.Name, f => Reach(f, true), everyMethod, dataSeen),
                                 (e.Flags & HeapFlags.OwnedResult) != 0 || Held(e) || once.RunsOnce(node.Name, e) ? false : origin ? unowned : true);

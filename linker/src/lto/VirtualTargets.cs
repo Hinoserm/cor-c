@@ -16,9 +16,11 @@ namespace Corsac.Lang.Lto;
 /// link holds is the symbol tables and relocations it holds anyway.
 ///
 /// The answer is conservative where it can be nothing else: a slot one
-/// descriptor fills with something that is not a function, or no descriptor
-/// fills at all, is not resolved, and a call to it stays an escape. A type no
-/// descriptor is or derives from has no objects, and its calls reach nothing.
+/// descriptor fills with something that is not a function is not resolved,
+/// and a call to it stays an escape. A type no descriptor is or derives from
+/// has no objects, and its calls reach nothing; so does a slot no made type
+/// fills, since a concrete type fills every slot of what it is (only an
+/// abstract one, never made, leaves one empty).
 /// </summary>
 public static class VirtualTargets
 {
@@ -102,7 +104,7 @@ public static class VirtualTargets
     /// a call declared on one counts every box and the string among the
     /// objects it can run on, and what each holds at the slot among its
     /// targets. More than the box answers is only ever more targets.
-    /// ONLY THOSE FOUR: any interface at all made every one of a program's
+    /// ONLY THOSE: any interface at all made every one of a program's
     /// interface calls one a box might answer, and a box fills no slot of
     /// the runtime's own IOwnsElements -- "no descriptor fills the slot", the
     /// call left unresolved, and with it every method of every live type
@@ -116,13 +118,16 @@ public static class VirtualTargets
 
     /// <summary>
     /// AND AN ARRAY ITS SEQUENCE INTERFACES, which its table names none of
-    /// either (Lowering.ArrayFaces): IEnumerable, and IEnumerable,
-    /// ICollection, IList, IReadOnlyCollection and IReadOnlyList of any
-    /// element -- an element the array is not of is only more targets -- and
-    /// its walker IEnumerator of any.
+    /// either (Lowering.ArrayFaces' families): IEnumerable, ICollection and
+    /// IList, which System.Array is, and IEnumerable, ICollection, IList,
+    /// IReadOnlyCollection and IReadOnlyList of any element -- an element the
+    /// array is not of is only more targets -- and its walker IEnumerator of
+    /// any. Leaving out the non-generic ICollection and IList left Array's
+    /// own Count and indexer calls with no array among their targets.
     /// </summary>
     public static bool IsArrayFace(string declaring)
         => IsInterfaceOf(declaring, "IEnumerable", generic: false)
+        || IsInterfaceOf(declaring, "ICollection", generic: false) || IsInterfaceOf(declaring, "IList", generic: false)
         || IsInterfaceOf(declaring, "IEnumerable", generic: true) || IsInterfaceOf(declaring, "ICollection", generic: true)
         || IsInterfaceOf(declaring, "IList", generic: true) || IsInterfaceOf(declaring, "IReadOnlyCollection", generic: true)
         || IsInterfaceOf(declaring, "IReadOnlyList", generic: true);
@@ -134,7 +139,9 @@ public static class VirtualTargets
 
     /// <summary>
     /// Whether an interface's descriptor is one of the system interfaces a box
-    /// or a string answers (BoxedFaces.Of): IComparable or IFormattable, or
+    /// or a string answers (BoxedFaces.Of): IComparable, IFormattable or
+    /// IConvertible (Lowering.ConvertibleSlots: every primitive's box, an
+    /// enum's and the string's), or
     /// IComparable&lt;X&gt; or IEquatable&lt;X&gt; of any X -- by its name, in
     /// the global namespace or System's, as Lowering keys it ("i_IComparable",
     /// "i_IEquatable$0024int", "i_System$002eIFormattable"). An X no box
@@ -148,7 +155,7 @@ public static class VirtualTargets
         if (name.StartsWith(system, StringComparison.Ordinal)) name = name[system.Length..];
         int cut = name.IndexOf('$');
         string bare = cut < 0 ? name : name[..cut];
-        return cut < 0 ? bare is "IComparable" or "IFormattable" : bare is "IComparable" or "IEquatable";
+        return cut < 0 ? bare is "IComparable" or "IFormattable" or "IConvertible" : bare is "IComparable" or "IEquatable";
     }
 
     /// <summary>
