@@ -1,0 +1,68 @@
+// test: a_loop_test_asked_before_the_loop_keeps_its_own_temporaries
+// expect-exit: 0
+// expect-output:
+// 0
+// 603
+// 1505
+// 0
+// 28021
+// 0
+// 3
+// 36
+// out of range
+//
+// A LOOP'S TEST ASKED ONCE BEFORE IT (LoopLoads.Guard) writes registers of
+// its own for what only the test reads -- its flag and the temporaries it
+// computes -- and the same registers as the loop's test for a value read
+// after the loop: a chain of temporaries before the test, a test value read
+// after the loop, a loop that never runs, and one that faults on its last
+// lap. Checked against .NET 10.
+using System;
+using System.Runtime.CompilerServices;
+sealed class Rows
+{
+    public int[] A;
+    public int Stride;
+    public Rows(int n, int stride) { A = new int[n]; Stride = stride; for (int i = 0; i < n; i++) A[i] = i + 1; }
+    // The header computes a chain of temporaries before its test.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Chain(int n)
+    {
+        int sum = 0, k = 0;
+        while (k * 3 + 1 < n && (k ^ 5) != 0) { sum += A[k]; k++; }
+        return sum * 100 + k;
+    }
+    // The header's temporary is read after the loop as well.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int After(int n)
+    {
+        int sum = 0, k = 0, t;
+        while ((t = k * Stride) < n) { sum += A[k]; k++; }
+        return sum * 1000 + t;
+    }
+    // A loop that never runs, then one that runs once.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public long Bounded(int from, int to)
+    {
+        long sum = 0;
+        for (int k = from; k - 1 < to - 2; k++) sum += A[k];
+        return sum;
+    }
+}
+static class P
+{
+    static void Main()
+    {
+        var r = new Rows(8, 3);
+        Console.WriteLine(r.Chain(0));
+        Console.WriteLine(r.Chain(10));
+        Console.WriteLine(r.Chain(100));
+        Console.WriteLine(r.After(0));
+        Console.WriteLine(r.After(20));
+        Console.WriteLine(r.Bounded(5, 5));
+        Console.WriteLine(r.Bounded(2, 4));
+        Console.WriteLine(r.Bounded(0, 9));
+        try { Console.WriteLine(r.Bounded(6, 10)); }
+        catch (IndexOutOfRangeException) { Console.WriteLine("out of range"); }
+    }
+}

@@ -235,9 +235,30 @@ public sealed class LoopLoads : IPass
         jump.SetTargets(new[] { body });
         way.Instrs.Add(jump);
         preheader.Instrs.RemoveAt(preheader.Instrs.Count - 1);
+        // A register the header writes and only the header reads -- the
+        // test's flag above all -- gets a register of its own in the copy:
+        // written in both places, the flag would be read by two branches,
+        // and the selector fuses a compare only into the one branch that is
+        // its flag's single read (`cmp; jl`, not `setl; movzx; test; jne`
+        // on every lap).
+        HashSet<VReg> readOutside = new();
+        foreach (Block b in function.Blocks)
+            if (!ReferenceEquals(b, header))
+                foreach (Instr i in b.Instrs)
+                    foreach (Operand o in i.Operands)
+                        if (o is RegOperand { Reg: var r }) readOutside.Add(r);
+        Dictionary<VReg, VReg> own = new();
         foreach (Instr i in header.Instrs)
         {
             Instr copy = i.Clone();
+            for (int o = 0; o < copy.Operands.Count; o++)
+                if (copy.Operands[o] is RegOperand { Reg: var r } && own.TryGetValue(r, out VReg? mine)) copy.Operands[o] = RegOperand.Of(mine);
+            if (copy.Dest is { } d && !readOutside.Contains(d))
+            {
+                VReg fresh = function.NewReg(d.Type, d.Name);
+                own[d] = fresh;
+                copy.Dest = fresh;
+            }
             if (ReferenceEquals(i, branch)) copy.SetTarget(stay, way);
             preheader.Instrs.Add(copy);
         }
