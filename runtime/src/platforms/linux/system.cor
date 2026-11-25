@@ -652,8 +652,22 @@ public static class Platform
     public const int CompletedHook = 0;
 
     /// Memory committed as it is first touched: what every anonymous mapping
-    /// here is already (MapsCommitLazily).
-    public static nuint MapLazy(nuint bytes) => Map(bytes);
+    /// here is already (MapsCommitLazily) -- and NOT CHARGED until it is
+    /// (MAP_NORESERVE, 0x4000): the long-mode card tables are 2^37 bytes of
+    /// address space each (Gc.CardTableBytes), which the kernel's heuristic
+    /// overcommit refuses as an ordinary mapping and its "always" mode
+    /// allows; a kernel that ignores the flag (strict overcommit) refuses,
+    /// and the caller goes without. 0 when refused.
+    public static nuint MapLazy(nuint bytes)
+    {
+        // PROT_READ | PROT_WRITE = 3; MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE = 0x4022.
+        SyscallWord got = Sys.Syscall(LinuxCall.Mmap, 0, (SyscallWord)bytes, 3, 0x4022, SyscallRegister.MinusOne, 0);
+        if (Err.Failed(got))
+        {
+            return 0;
+        }
+        return (nuint)got;
+    }
 
     /// Nothing to commit ahead: the kernel commits on touch, and never fails
     /// to (Gc.CommitCards).

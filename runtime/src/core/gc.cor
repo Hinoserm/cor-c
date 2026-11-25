@@ -431,9 +431,10 @@ public static class Gc
     // old generation's marks untrustworthy (an abandoned cycle, a record of
     // the stacks' blocks that overflowed).
     //
-    // 32-bit only, and only where a mapping costs only the pages touched: the
-    // card table is the address space over 1024, four megabytes reserved and
-    // a page committed for every four megabytes of heap. Elsewhere every
+    // Only where a mapping costs only the pages touched: the card table is
+    // the address space over 1024 -- four megabytes on a 32-bit machine,
+    // 2^37 bytes of reserved address space in long mode (CardTableBytes) --
+    // and a page committed for every four megabytes of heap. Elsewhere every
     // collection is major, as before.
     static bool _generational;
     static bool _minor;             // the cycle under way is a minor one
@@ -452,7 +453,24 @@ public static class Gc
     /// given up, a full record of held blocks), the first, minors costing as
     /// much, the live heap grown, or no generations at all.
     public static long MajorsAsked, MajorsFirst, MajorsCostly, MajorsGrown, MajorsUngenerational;
+    // A CARD FOR EVERY KILOBYTE A REFERENCE CAN BE STORED INTO. On a 32-bit
+    // machine that is the whole address space, four megabytes of table. In
+    // long mode it is the 47 bits of user space -- the heap's chunks are
+    // mapped wherever the kernel puts them, the statics are in the image far
+    // below, and a store into a frame's object marks a card of the stack --
+    // so the table is 2^37 bytes of ADDRESS SPACE, reserved and never
+    // charged (Platform.MapLazy: MAP_NORESERVE), of which only the pages of
+    // cards actually marked or read ever exist: the same index, address >>
+    // CardShift, for the compiler's store sequences on both machines. A
+    // kernel that charges reservations all the same (strict overcommit)
+    // refuses it, and every collection is then a whole one, as before.
+    // (HotSpot and .NET bias a table over one reserved heap range; this
+    // heap has no one range to bias over.)
+#if TARGET_64BIT
+    const long CardTableBytes = 137438953472;
+#else
     const int CardTableBytes = 4194304;
+#endif
     const int NurseryLeast = 1048576;
     // The blocks the stacks held: a count word, then (block, size) pairs.
     // Two tables, swapped at every cycle: what the last one held is read
@@ -999,7 +1017,13 @@ public static class Gc
     static void StartGenerations()
     {
         _verifyGenerations = Platform.VerifyGenerations();
+        // (The ceiling is a 32-bit process's, known once the platform has said
+        // how much address space there is; long mode has none to wait for.)
+#if TARGET_64BIT
+        if (!Platform.MapsCommitLazily)
+#else
         if (HeapCeiling == 0 || !Platform.MapsCommitLazily)
+#endif
         {
             return;
         }
@@ -1009,20 +1033,20 @@ public static class Gc
         // collection may write the whole of one, in bursts no page fault
         // should have to keep up with (a kernel's lazy faults take frames set
         // aside beforehand), and they are a sixteenth of the cards' size.
-        nuint cards = Platform.MapLazy(CardTableBytes);
-        nuint taken = Platform.MapLazy(CardTableBytes);
+        nuint cards = Platform.MapLazy((nuint)CardTableBytes);
+        nuint taken = Platform.MapLazy((nuint)CardTableBytes);
         nuint held = Platform.Map(HeldBytes);
         nuint holding = Platform.Map(HeldBytes);
         if (cards == 0 || taken == 0 || held == 0 || holding == 0)
         {
-            if (cards != 0) Platform.Unmap(cards, CardTableBytes);
-            if (taken != 0) Platform.Unmap(taken, CardTableBytes);
+            if (cards != 0) Platform.Unmap(cards, (nuint)CardTableBytes);
+            if (taken != 0) Platform.Unmap(taken, (nuint)CardTableBytes);
             if (held != 0) Platform.Unmap(held, HeldBytes);
             if (holding != 0) Platform.Unmap(holding, HeldBytes);
             return;
         }
         _taken = taken;
-        _oldCards = Platform.MapLazy(CardTableBytes);
+        _oldCards = Platform.MapLazy((nuint)CardTableBytes);
         _held = held;
         _holding = holding;
         Runtime.Cards = cards;
