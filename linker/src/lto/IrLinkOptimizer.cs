@@ -849,8 +849,15 @@ public static class IrLinkOptimizer
             HeapRecords?[] now = new HeapRecords?[inputs.Count];
             List<(ObjectFile Object, HeapRecords Records)> units = new();
             bool complete = true;
-            // Each unit's read on a thread of its own (Lanes), taken in the inputs' order.
-            HeapRecords?[] readNow = Lanes.Each(inputs.Count, index => archives.ContainsKey(originals[index]) ? HeapRecords.Read(inputs[index].Object) : null);
+            // Each unit's read on a thread of its own (Lanes), taken in the
+            // inputs' order -- and none read where some unit has no records at
+            // all, as the loop below stopped at the first such before.
+            bool everyUnit = true;
+            for (int index = 0; index < inputs.Count && everyUnit; index++)
+                everyUnit = !archives.ContainsKey(originals[index]) || inputs[index].Object.Sections.Any(section => section.Name == HeapRecords.SectionName);
+            HeapRecords?[] readNow = everyUnit
+                ? Lanes.Each(inputs.Count, index => archives.ContainsKey(originals[index]) ? HeapRecords.Read(inputs[index].Object) : null)
+                : new HeapRecords?[inputs.Count];
             for (int index = 0; index < inputs.Count && complete; index++)
             {
                 if (!archives.ContainsKey(originals[index])) continue;

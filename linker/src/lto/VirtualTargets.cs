@@ -200,7 +200,8 @@ public static class VirtualTargets
     {
         Dictionary<string, string[]> answers = new(StringComparer.Ordinal);
         string[] names = wanted.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-        if (names.Length == 0) return answers;
+        // (No index made where no name is a slot's.)
+        if (names.Length == 0 || !names.Any(name => Parse(name) is not null)) return answers;
         Index index = IndexOf(inputs);
         // EACH NAME ON WHICHEVER THREAD IS FREE. A name's answer is the
         // index's alone -- read-only once made whole (Whole) -- so the names

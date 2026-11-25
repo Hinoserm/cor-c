@@ -399,7 +399,7 @@ public static class SourceIndexBuilder
                 long bytes = 0;
                 count = 0;
                 while (from + count < files.Length && count < ReadWindow && (count == 0 || bytes < ReadWindowBytes))
-                    bytes += new FileInfo(files[from + count++]).Length;
+                    bytes += SizeOf(files[from + count++]);
                 Read?[] window = ReadAll(files, from, count, path => fileSymbols?.GetValueOrDefault(path) ?? symbols);
                 for (int slot = 0; slot < count; slot++)
                 {
@@ -883,6 +883,13 @@ public static class SourceIndexBuilder
 
     /// <summary>How many files are read, lexed and parsed at once while an index is made: enough to keep every processor busy, few enough that their tokens stay small beside the build.</summary>
     private const int ReadWindow = 64;
+
+    /// <summary>A file's size for the window; 0 for one that cannot be asked, whose read then says why, in its place among the files.</summary>
+    private static long SizeOf(string path)
+    {
+        try { return new FileInfo(path).Length; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return 0; }
+    }
 
     /// <summary>And how much source they may come to together, past the first: a few of the largest files at a time.</summary>
     private const long ReadWindowBytes = 4L * 1024 * 1024;

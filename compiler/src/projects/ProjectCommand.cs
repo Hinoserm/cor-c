@@ -593,8 +593,7 @@ public static class ProjectCommand
                 try { child = System.Diagnostics.Process.Start(start)!; }
                 catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException or OutOfMemoryException)
                 {
-                    ok = false;
-                    Console.Error.WriteLine("corc: the compile-project process for " + which + " could not be started"
+                    Failed("corc: the compile-project process for " + which + " could not be started"
                         + (spent != 0 ? " again after pid " + spent : "") + ": " + e.Message + "; the build fails");
                     return null;
                 }
@@ -618,7 +617,18 @@ public static class ProjectCommand
             {
                 try
                 {
-                    if (first && prelude is not null && !prelude()) { Failed("corc: the runtime's compile failed; the build fails"); return; }
+                    if (first && prelude is not null)
+                    {
+                        bool made;
+                        // Said in a line, as a unit's is: the file that could not be read or written.
+                        try { made = prelude(); }
+                        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+                        {
+                            Failed("corc: the runtime's compile failed: " + e.Message + "; the build fails");
+                            return;
+                        }
+                        if (!made) { Failed("corc: the runtime's compile failed; the build fails"); return; }
+                    }
                     while (true)
                     {
                         int g, before;
@@ -655,11 +665,8 @@ public static class ProjectCommand
                         {
                             int after = Directory.EnumerateFiles(work[g].Claims).Count();
                             if (ok && after < work[g].Count && after == before)
-                            {
-                                ok = false;
-                                Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + id + ") ended without taking a unit, "
+                                Failed("corc: the compile-project process for " + which + " (pid " + id + ") ended without taking a unit, "
                                     + (work[g].Count - after) + " left; the build fails");
-                            }
                         }
                     }
                 }

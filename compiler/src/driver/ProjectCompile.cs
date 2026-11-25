@@ -304,8 +304,9 @@ public static class ProjectCompile
             // processors the unclaimed ones leave, no more than four in a
             // 32-bit space, whose four gigabytes hold one large unit. The
             // object is the same on any number (FunctionWorkers; not part of
-            // the stamp, OptionsOf).
-            if (claimedIn is not null && TailLanes() is int lanes && lanes > 1)
+            // the stamp, OptionsOf). Not under a build's budget (--worker-pool),
+            // where a unit holds one token and no more.
+            if (claimedIn is not null && pool is null && TailLanes() is int lanes && lanes > 1)
             {
                 one.Add("--jobs"); one.Add(lanes.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
