@@ -94,23 +94,46 @@ that is not a sign-extended 32 bits or is a symbol's address. Branches are
 relaxed to a fixed point by whole passes; loop heads are padded by `--cpu`
 unless `--opt-size`.
 
-ONE SELECTOR CLASS (`X86.Selector`), not yet one selection. Long mode's
-methods are in `x86/backend/Select.Long.cs` and `Select.Long.InlineAsm.cs`,
-partials of the class i386's are in, over the same function, blocks and
-emission (`Emit`, `Jcc`, `Aside`, `Temp`); a method that has i386's name and
-is still long mode's own carries an `L` (`SelectAluL`, `RL`, `AddressL`);
-the tables of registers, uses and constants are the class's. Each is made the family's one method in turn, the mode
-asked where the two differ (a word of four bytes or eight, a 64-bit integer
-a pair of registers or one); what stays long mode's own is the System V
-call and return, RIP-relative and GOT addresses, 64-bit constants and
-conversions, SYSCALL and the per-CPU words.
+ONE SELECTOR (`X86.Selector`, `x86/backend/Select.cs` and its partials). The
+walk over a function's blocks and the selection of nearly every opcode are
+one method each for both modes: copies, add, subtract and the bit
+operations, multiplication (constants as shifts and LEAs where `--cpu`'s
+latencies say so), division by a register, shifts, compares and what makes
+a 0 or 1 of one, branches and the fused compare-and-branch, the switch's
+table, the extensions and truncations, loads and stores of every size
+(device loads marked), the atomic operations, the string instructions'
+copies and fills, and the floats -- long mode's are i386's XMM class
+(`Select.Sse.cs`) with every float in it: arithmetic with a constant read
+from the pool by the instruction (`addsd xmm, [rip + constant]`; the 64-bit
+backend lays the pool down as i386's does), negation by XORPS, compares,
+conversions between the widths and from a signed integer, bit casts.
 
-- **Select.Long.cs** -- every value one register: I32 in the 32-bit forms (which
-  zero the upper half), I64 and addresses in the 64-bit forms, F32/F64 in XMM.
-  Named things are reached RIP-relative; a symbol's address is `lea`.
-  Division uses the hardware and its trap, as on i386. Float-to-integer
-  conversion follows .NET's saturating rule from the IEEE bits, exactly as
-  the i386 backend does. The thread block is `gs:[0]`: FS is left to glibc, whose thread pointer C code needs.
+What the modes differ in is asked in a few places and nowhere else:
+`Pairs` (an I64 is two registers on i386, one in long mode), `WordOf` (the
+bytes of that register), `R`, `RM` with a width and `Address` (long mode's
+operands: a constant by the shortest move, a 64-bit one through a
+register, a symbol RIP-relative or through its GOT slot). An instruction's
+width left unsaid is the mode's word (`MInstr.Width`), so a method that
+serves both names every width it emits.
+
+What is long mode's own, in `x86/backend/Select.Long.cs` (its methods of
+i386's names carry an `L`): the System V call, parameters and return
+(`SelectCallL`, `LoadParamsL`, `SelectRetL`), unwinding and SYSCALL, the
+makers of its operands (`RL`, `RML`, `AddressL`, `LoadConstant`,
+`GotAddress`), division by a constant at either width
+(`SelectDivByConstant`), an unsigned integer to a float and a float to an
+integer (64-bit conversions among them), a small copy or clear written as
+moves, the per-CPU words, and its machine intrinsics. `SelectInstrL` holds
+only their cases and hands every other opcode to the family's
+`SelectInstr`, which refuses in long mode an opcode whose case is still
+i386's alone (`BothModes`).
+
+Every value is one register: an I32 in the 32-bit forms (which clear the
+register's upper half), an I64 and an address in the 64-bit forms, a float
+in XMM. Named things are reached RIP-relative; a symbol's address is `lea`.
+Division uses the hardware and its trap, as on i386. A float's conversion to
+an integer follows .NET's saturating rule from the IEEE bits, as i386's
+does.
 
 What is still x86-64's own, in `compiler/src/arch/x64/backend`:
 
