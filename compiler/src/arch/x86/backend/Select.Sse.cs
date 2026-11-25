@@ -255,8 +255,10 @@ internal sealed partial class Selector
     /// <summary>Between a float and a double, both in the XMM class: CVTSS2SD, CVTSD2SS.</summary>
     private void SseConvert(Instr i) => EmitW(MOp.CvtFToF, FWidth(i.Dest!.Type), X(i.Dest!), X(i.Operands[0])).ZeroFirst = CpuModel.BreaksMerge(FWidth(i.Dest!.Type));
 
-    /// <summary>A signed 32-bit integer to a float or a double: CVTSI2SS, CVTSI2SD, from a register or memory.</summary>
-    private void SseFromInt(Instr i) => EmitW(MOp.CvtIntToF, FWidth(i.Dest!.Type), X(i.Dest!), R(i.Operands[0])).ZeroFirst = CpuModel.BreaksMerge(FWidth(i.Dest!.Type));
+    /// <summary>A signed integer in one register -- thirty-two bits, and long mode's sixty-four (the source's width says which form) -- to a float or a double: CVTSI2SS, CVTSI2SD.</summary>
+    private void SseFromInt(Instr i)
+        => Emit(new MInstr(MOp.CvtIntToF, X(i.Dest!), R(i.Operands[0])) { Width = FWidth(i.Dest!.Type), SourceWidth = WordOf(i.Operands[0].Type) })
+            .ZeroFirst = CpuModel.BreaksMerge(FWidth(i.Dest!.Type));
 
     /// <summary>
     /// A FLOAT TO A SIGNED 32-BIT INTEGER, the way .NET's JIT has it: CVTTSS2SI

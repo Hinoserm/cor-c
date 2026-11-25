@@ -294,12 +294,6 @@ internal sealed partial class Selector
     {
         switch (i.Op)
         {
-            case Opcode.IToF:
-                Emit(new MInstr(MOp.CvtIntToF, V(i.Dest!), RL(i.Operands[0])) { Width = Width(i.Dest!.Type), SourceWidth = Width(i.Operands[0].Type) });
-                break;
-            case Opcode.UToF:
-                SelectUnsignedToFloat(i);
-                break;
             case Opcode.FToI:
             case Opcode.FToU:
                 SelectFloatToInteger(i);

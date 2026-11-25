@@ -91,14 +91,20 @@ public static class X86FamilyTests
                 });
                 Corsac.Lang.X64.Allocator.Run(m);
                 Peephole.Run(m);
-                bool loads = false;
+                bool marked = false, loads = false;
                 foreach (MBlock block in m.Blocks)
                     foreach (MInstr i in block.Instrs)
-                        if (i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MMem { Device: true }) loads = true;
-                // The plain read-back is what the peephole may forward: the
-                // case that shows the device one is kept by its mark, not by chance.
-                Expect(loads == device, device ? "long mode: a device load read back after a store to its address is still a marked load"
-                    : "long mode: a plain load read back carries no device mark");
+                        if (i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MMem read2)
+                        {
+                            loads = true;
+                            marked |= read2.Device;
+                        }
+                // THE PLAIN READ-BACK IS FORWARDED from the register stored --
+                // no load of it is left -- which shows the rule reaches this
+                // code, and that the device one is kept by its mark and not
+                // by chance.
+                if (device) Expect(marked, "long mode: a device load read back after a store to its address is still a marked load");
+                else Expect(!loads, "long mode: a plain load read back after a store to its address is the register stored");
             }
             Console.WriteLine("x86 family: a device load keeps its mark, and stays a load, through long mode's allocator and peephole");
         }

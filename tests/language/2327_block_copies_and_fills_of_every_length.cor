@@ -3,6 +3,7 @@
 // expect-output:
 // 2590327996
 // 3729887210
+// 1943560215
 //
 // Fills, clears and copies of lengths around every boundary the selection
 // has (a word, the lengths written as moves, the string instructions' whole
@@ -61,10 +62,45 @@ static class Program
         return h;
     }
 
+    // The fill and copy instructions themselves: a byte not known until it
+    // runs (above 127 among them), lengths not known and known, with and
+    // without bytes left over after the whole words.
+    static unsafe uint Blocks(int seed)
+    {
+        uint h = 2166136261u;
+        int[] sizes = { 0, 1, 7, 8, 9, 127, 128, 129, 300, 1027 };
+        foreach (int n in sizes)
+        {
+            byte[] a = new byte[n + 16];
+            for (int k = 0; k < a.Length; k++) a[k] = (byte)(k * 5 + 3);
+            fixed (byte* at = a) System.Runtime.CompilerServices.Unsafe.InitBlock(at + 8, (byte)(n + seed + 0x81), (uint)n);
+            h = Hash(h, HashBytes(a));
+            byte[] b = new byte[n + 16];
+            fixed (byte* from = a) fixed (byte* to = b) System.Runtime.CompilerServices.Unsafe.CopyBlock(to + 3, from + 5, (uint)n);
+            h = Hash(h, HashBytes(b));
+        }
+        byte[] c = new byte[256], d = new byte[256];
+        fixed (byte* at = c)
+        {
+            System.Runtime.CompilerServices.Unsafe.InitBlock(at + 1, 0xA5, 200);
+            System.Runtime.CompilerServices.Unsafe.InitBlock(at + 204, 0x5A, 43);
+            System.Runtime.CompilerServices.Unsafe.InitBlock(at + 250, (byte)seed, 3);
+        }
+        h = Hash(h, HashBytes(c));
+        fixed (byte* from = c) fixed (byte* to = d)
+        {
+            System.Runtime.CompilerServices.Unsafe.CopyBlock(to + 2, from, 203);
+            System.Runtime.CompilerServices.Unsafe.CopyBlock(to + 210, from + 190, 31);
+        }
+        h = Hash(h, HashBytes(d));
+        return h;
+    }
+
     static int Main()
     {
         Console.WriteLine(Fills());
         Console.WriteLine(Structs());
+        Console.WriteLine(Blocks(Environment.TickCount == int.MinValue ? 1 : 0));
         return 0;
     }
 }

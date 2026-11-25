@@ -1690,7 +1690,8 @@ internal sealed partial class Selector
             or Opcode.LabelAddr or Opcode.StackPointer or Opcode.FramePointer or Opcode.Trunc64 or Opcode.SExt32 or Opcode.ZExt32
             or Opcode.Add or Opcode.Sub or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Mul or Opcode.Copy
             or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas) or Opcode.FAdd or Opcode.FSub or Opcode.FMul or Opcode.FDiv or Opcode.FNeg
-            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store or Opcode.DivS or Opcode.DivU or Opcode.RemS or Opcode.RemU or Opcode.MemCopy or Opcode.MemSet;
+            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store or Opcode.DivS or Opcode.DivU or Opcode.RemS or Opcode.RemU or Opcode.MemCopy or Opcode.MemSet
+            or Opcode.IToF or Opcode.UToF;
 
     private void SelectInstr(Instr i)
     {
@@ -1850,7 +1851,12 @@ internal sealed partial class Selector
                 break;
             case Opcode.IToF:
             case Opcode.UToF:
-                if (i.Op == Opcode.IToF && InXmm(i.Dest!.Type) && i.Operands[0].Type == IrType.I32) SseFromInt(i);
+                // A signed integer of one register to a float of the XMM class
+                // is the one instruction. An unsigned one is long mode's own
+                // (a 64-bit conversion, halved where its top bit is set), and
+                // i386's the x87's with its pairs.
+                if (i.Op == Opcode.IToF && InXmm(i.Dest!.Type) && !Pairs(i.Operands[0].Type)) SseFromInt(i);
+                else if (X86Mode.Long) SelectUnsignedToFloat(i);
                 else SelectIntToFloat(i);
                 break;
             case Opcode.FToI:
