@@ -32,6 +32,7 @@ public static class LinuxCall
     public const int Brk = 12;
     /// mmap(2): the offset is in BYTES here, where i386's mmap2 takes pages.
     public const int Mmap = 9;         // (addr, len, prot, flags, fd, offset) -> address
+    public const int Getrlimit = 97;   // (resource, struct rlimit *): two words, soft then hard
     public const int MmapOffsetShift = 12;
     public const int ExitGroup = 231;  // (status): every thread, not just this one
     /// arch_prctl(2): where this thread's FS base, and so its block, is.
@@ -156,6 +157,8 @@ public static class LinuxCall
     public const int Sysinfo = 116;    // (struct sysinfo)
     public const int Brk = 45;         // (address) -> the break now; unused
     public const int Mmap2 = 192;      // (addr, len, prot, flags, fd, pgoff) -> address
+    /// ugetrlimit: the one whose limits are whole words (getrlimit, 76, caps them at 2^31 - 1).
+    public const int Getrlimit = 191;  // (resource, struct rlimit *): two words, soft then hard
     /// The one this library calls: mmap2, whose offset is in pages.
     public const int Mmap = 192;
     public const int MmapOffsetShift = 0;

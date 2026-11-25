@@ -282,7 +282,8 @@ public sealed class X64Backend : IBackend
                     {
                         if (m.Frame.Size > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
                         if (mapBase is null) { mapBase = f.Name; mapBaseAt = start; }
-                        slotWords = ObjectWords(m);
+                        // Every IR slot word, where the liveness left the function whole: only then.
+                        slotWords = m.SlotLiveness is null ? ObjectWords(m) : new List<int>();
                         record = Corsac.Lang.Frames.StackMapRecords.Function(StackMapLayout.X64, start - mapBaseAt, m.Frame.Size,
                             m.FramePointerFree ? 0 : SavedMask(m), slotWords, m.SlotLiveness);
                         mapFunctions.Add(record);

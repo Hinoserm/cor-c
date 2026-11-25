@@ -4515,6 +4515,8 @@ public static partial class Scheduler
     static partial void PoolWorkerBlocks();
     static partial void PoolWorkerUnblocks();
     static partial void StackRoom(ref nuint room);
+    /// What the platform says a process's first thread has for a stack, where it can say (Linux: its limit); left as it is elsewhere.
+    static partial void FirstStack(ref nuint bytes);
     static partial void PoolForked();
 
     /// Set where work was posted with a spin lock held before there was a
@@ -4587,8 +4589,11 @@ public static partial class Scheduler
 
     /// THE LOWEST ADDRESS OF THIS THREAD'S STACK THAT IS SURELY ITS OWN, a
     /// page above its end: by the room left as MayRunInline counts it -- what
-    /// the platform knows of a thread it started (StackRoom), else the least
-    /// stack a first thread is given, less what is used. 0 where nothing is
+    /// the platform knows of a thread it started (StackRoom), else the first
+    /// thread's stack (FirstStack; the least one is given where the platform
+    /// does not say), less what is used. A thread something else started,
+    /// on a stack smaller than that, is cleared only until sixteen clean
+    /// pages (Gc.ScrubStack), as any thread is. 0 where nothing is
     /// known: no thread block, or a platform that runs its own threads on
     /// stacks of its own sizes (a kernel, Platform.PostHook). What clears the
     /// dead stack below a frame (Gc.ScrubStack) stops here.
@@ -4615,7 +4620,12 @@ public static partial class Scheduler
             return 0;
         }
         nuint used = top - here;
-        nuint room = used < AssumedStack ? AssumedStack - used : 0;
+        // The first thread's stack as the platform limits it, where it says
+        // (a megabyte assumed otherwise): a front end run on it goes deeper
+        // than a megabyte, and its dead frames are what is to be cleared.
+        nuint whole = AssumedStack;
+        FirstStack(ref whole);
+        nuint room = used < whole ? whole - used : 0;
         StackRoom(ref room);
         if (room <= 8192)
         {

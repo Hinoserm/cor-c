@@ -679,9 +679,9 @@ public static class Platform
     /// Whether a mapping costs only the pages that are touched: false alone
     /// on the machine -- the collector keeps no card table and collects the
     /// whole heap -- and true for an image whose kernel commits its memory
-    /// on first touch, which turns generations on: two card tables of four
-    /// megabytes each and the held-block tables reserved, a few pages of
-    /// them committed (Gc.StartGenerations). Set before the first
+    /// on first touch, which turns generations on: the card tables (four megabytes
+    /// each on a 32-bit machine, Gc.CardTableBytes) and the held-block
+    /// tables reserved, a few pages of them committed (Gc.StartGenerations). Set before the first
     /// allocation, which is when the collector starts and reads it.
     public static bool MapsCommitLazily;
 

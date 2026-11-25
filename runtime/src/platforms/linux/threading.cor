@@ -551,3 +551,28 @@ public partial class Thread
     }
 }
 }
+
+/// Linux's part of the scheduler's stack arithmetic (Scheduler.StackFloor).
+public static partial class Scheduler
+{
+    static nuint _firstStack;
+
+    /// The first thread's stack as the kernel limits it: getrlimit's soft
+    /// RLIMIT_STACK (resource 3), which is how far the kernel lets that
+    /// mapping grow. Asked once. Unlimited, or refused, leaves the
+    /// assumption as it is; a limit under it is taken too.
+    static partial void FirstStack(ref nuint bytes)
+    {
+        if (_firstStack == 0)
+        {
+            nuint at = Sys.ThreadBlock() + Tls.Scratch;
+            Sys.WriteAddress(at, 0);
+            Sys.WriteAddress(at + WordSize.Bytes, 0);
+            SyscallWord got = Sys.Syscall(LinuxCall.Getrlimit, 3, (SyscallWord)at, 0);
+            nuint limit = Err.Failed(got) ? 0 : Sys.ReadAddress(at);
+            // RLIM_INFINITY is every bit set; anything past a gigabyte is no bound worth trusting.
+            _firstStack = limit == 0 || limit > 1073741824 ? 1 : limit;
+        }
+        if (_firstStack > 1) bytes = _firstStack;
+    }
+}

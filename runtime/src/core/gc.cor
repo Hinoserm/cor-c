@@ -1020,7 +1020,11 @@ public static class Gc
         // (The ceiling is a 32-bit process's, known once the platform has said
         // how much address space there is; long mode has none to wait for.)
 #if TARGET_64BIT
-        if (!Platform.MapsCommitLazily)
+        // And only where everything a reference can be stored into lies in
+        // the 47 bits the table covers (CardTableBytes): a kernel linked in
+        // the upper half would index past it at its first store into a
+        // static, so it keeps whole collections.
+        if (!Platform.MapsCommitLazily || (Sys.DataEnd() >> 47) != 0 || (Sys.Stack() >> 47) != 0)
 #else
         if (HeapCeiling == 0 || !Platform.MapsCommitLazily)
 #endif
@@ -1028,11 +1032,13 @@ public static class Gc
             return;
         }
         // THE CARDS COMMITTED ON FIRST TOUCH (Platform.MapLazy): a card is a
-        // byte for every kilobyte of the address space, and only the heap's
-        // are ever read or written. The held-block tables are not: a single
+        // byte for every kilobyte of the address space (CardTableBytes: four
+        // megabytes of table on a 32-bit machine, reserved address space in
+        // long mode), and only the heap's, the statics' and the stacks' are
+        // ever read or written. The held-block tables are not: a single
         // collection may write the whole of one, in bursts no page fault
         // should have to keep up with (a kernel's lazy faults take frames set
-        // aside beforehand), and they are a sixteenth of the cards' size.
+        // aside beforehand), and they are half a megabyte or so.
         nuint cards = Platform.MapLazy((nuint)CardTableBytes);
         nuint taken = Platform.MapLazy((nuint)CardTableBytes);
         nuint held = Platform.Map(HeldBytes);
