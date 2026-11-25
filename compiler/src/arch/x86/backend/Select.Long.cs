@@ -68,7 +68,7 @@ internal sealed partial class Selector
     public static MFunction RunLong(Function f, List<string> errors, Func<string, bool>? isExternal = null)
     {
         Selector s = new(f, errors, isExternal);
-        s.SelectL();
+        s.Select();
         return s._m;
     }
 
@@ -241,61 +241,7 @@ internal sealed partial class Selector
         }
     }
 
-    // ---- the walk -------------------------------------------------------------
-
-    private void SelectL()
-    {
-        foreach (Block b in _f.Blocks)
-        {
-            _heads[b] = _m.NewBlock(b.Label, null, b);
-        }
-        foreach (Block b in _f.Blocks)
-        {
-            foreach (Instr i in b.Instrs)
-            {
-                foreach (Operand o in i.Operands)
-                {
-                    if (o is RegOperand r)
-                    {
-                        _useCount.Count(r.Reg.Id);
-                    }
-                }
-            }
-        }
-
-        _cur = _heads[_f.Entry];
-        Emit(MOp.Prologue);
-        LoadParamsL();
-
-        foreach (Block b in _f.Blocks)
-        {
-            _cur = _heads[b];
-            _constants.Clear();
-            for (int n = 0; n < b.Instrs.Count; n++)
-            {
-                Instr i = b.Instrs[n];
-                _line = i.Line;
-                NoteConstant(i);
-                // An asm block and its results, as one (Select.InlineAsm).
-                if (TryInlineAsmL(b.Instrs, n, out int asmTaken))
-                {
-                    n += asmTaken - 1;
-                    continue;
-                }
-                if (IsCompare(i.Op) && i.Dest is not null && n + 1 < b.Instrs.Count && FusesInto(i, b.Instrs[n + 1]))
-                {
-                    SelectFusedBranchL(i, b.Instrs[n + 1]);
-                    n++;
-                    continue;
-                }
-                SelectInstrL(i);
-            }
-            if (b.Terminator is null)
-            {
-                Error($"block {b.Label} has no terminator");
-            }
-        }
-    }
+    // ---- the walk (Select, Select.cs) -----------------------------------------
 
     /// <summary>
     /// The parameters, from where the convention put them: the first six

@@ -1373,20 +1373,26 @@ internal sealed partial class Selector
         // is taken -- goes through the packed registers, which then hold
         // XMM4 to XMM7 (PackedFree) and the class XMM0 to XMM3 (X86Target),
         // so neither knows of the other.
-        if (_xmm32 && UsesPackedRegisters(_f)) PackedFindValues();
-        if (PackedValueMode) _m.XmmSpillWidth = 16;
-        if (PackedValueMode ? PackedOperationsOutside() : _xmm32 && UsesPackedRegisters(_f))
+        // (Long mode selects no packed operation yet: its packed state is
+        // none, in every block, and nothing below finds one to hold.)
+        bool longMode = X86Mode.Long;
+        if (!longMode)
         {
-            _packedXmmFirst = MFunction.XmmShared;
-            _m.XmmClassCount = MFunction.XmmShared;
+            if (_xmm32 && UsesPackedRegisters(_f)) PackedFindValues();
+            if (PackedValueMode) _m.XmmSpillWidth = 16;
+            if (PackedValueMode ? PackedOperationsOutside() : _xmm32 && UsesPackedRegisters(_f))
+            {
+                _packedXmmFirst = MFunction.XmmShared;
+                _m.XmmClassCount = MFunction.XmmShared;
+            }
         }
 
         _cur = _heads[_f.Entry];
         Emit(MOp.Prologue);
-        LoadParams();
+        if (longMode) LoadParamsL(); else LoadParams();
 
-        Dictionary<Block, int>? packedIn = _automaticPacked ? null : PackedRegions(_f);
-        Dictionary<Block, bool>? dirtyIn = PackedDirty(_f);
+        Dictionary<Block, int>? packedIn = longMode || _automaticPacked ? null : PackedRegions(_f);
+        Dictionary<Block, bool>? dirtyIn = longMode ? null : PackedDirty(_f);
         foreach (Block b in _f.Blocks)
         {
             _cur = _heads[b];
@@ -1403,6 +1409,25 @@ internal sealed partial class Selector
                 Instr i = b.Instrs[n];
                 _line = i.Line;
                 NoteConstant(i);
+                // LONG MODE'S METHODS, where a method is not yet the family's
+                // one (Select.Long.cs): its asm blocks, its fused branches and
+                // its instructions.
+                if (longMode)
+                {
+                    if (TryInlineAsmL(b.Instrs, n, out int asmTakenL))
+                    {
+                        n += asmTakenL - 1;
+                        continue;
+                    }
+                    if (IsCompare(i.Op) && i.Dest is not null && n + 1 < b.Instrs.Count && FusesInto(i, b.Instrs[n + 1]))
+                    {
+                        SelectFusedBranchL(i, b.Instrs[n + 1]);
+                        n++;
+                        continue;
+                    }
+                    SelectInstrL(i);
+                    continue;
+                }
                 PackedRegistersBefore(i);
                 if (_mmxDirty && WantsX87(i))
                 {
