@@ -87,6 +87,7 @@ public sealed class RegionTypes
     // compiler's own link is past its budget before its first node is
     // taken, and held each of its twenty million values twice.
     private readonly List<ValueSet?> _delta = new();
+    // (A byte a node: beside the sets it spares, nothing.)
     private readonly List<bool> _settled = new();
     // What else a node is, made only for the nodes that are anything more
     // than held: copied into others as it is, or as addresses into what it
@@ -623,7 +624,9 @@ public sealed class RegionTypes
         int f = _instF[i];
         int[] targets = _routed[c] >= 0 ? new[] { _routed[c] } : _targets[f][k]!;
         HashSet<int>? instances = _boundInst[c];
-        // In the targets' order, those not bound before.
+        // In the targets' order, those not bound before. NO TARGET IS LISTED
+        // TWICE (RegionSolver's targets are a set, in order; a routed call
+        // has the one): each is bound here once, with no set to say it was.
         foreach (int g in targets)
             if (instances is null || !instances.Contains(g)) BindRest(i, _functions[f].Calls[k], g);
         // From here the call's being full says so (Bound).
@@ -636,7 +639,11 @@ public sealed class RegionTypes
     }
 
     // Whether call c is yet to be bound to instance gi, which it then is.
-    // Instance g below the functions' count is function g's own.
+    // Instance g below the functions' count is function g's own (the
+    // constructor makes them first, in order), and a full call is bound to
+    // every one of those it can be asked for: WHAT A CALL RUNS IS AMONG ITS
+    // TARGETS (Received: the dispatch answers from them, or they all, or
+    // the one it is routed to), which are what BindAll bound.
     private bool Unbound(int c, int gi)
         => !(_full[c] && gi < _functions.Count) && (_boundInst[c] ??= new()).Add(gi);
 
@@ -722,7 +729,7 @@ public sealed class RegionTypes
     /// <summary>For a report: what the solve holds, table by table.</summary>
     public string Sizes()
     {
-        long held = 0, small = 0, large = 0, blocks = 0, pending = 0, succ = 0, moved = 0, loads = 0, stores = 0, receives = 0, uses = 0, readers = 0, bound = 0;
+        long held = 0, small = 0, large = 0, blocks = 0, pending = 0, succ = 0, moved = 0, loads = 0, stores = 0, receives = 0, uses = 0, readers = 0, bound = 0, copies = 0;
         for (int n = 0; n < _pts.Count; n++)
         {
             if (_pts[n] is not { } set) continue;
@@ -738,10 +745,10 @@ public sealed class RegionTypes
             }
         foreach (HashSet<int>? r in _allReaders) readers += r?.Count ?? 0;
         foreach (HashSet<int>? b in _bound) bound += b?.Count ?? 0;
-        foreach (HashSet<int>? b in _boundInst) bound += b?.Count ?? 0;
+        foreach (HashSet<int>? b in _boundInst) copies += b?.Count ?? 0;
         return $"{_pts.Count} nodes ({small} small sets, {large} large of {blocks} blocks, {held} values held, {pending} yet to hand on), {uses} with uses "
             + $"({succ} copies, {moved} moved, {loads} loads, {stores} stores, {receives} receivers), {_objects.Count} objects, {_cells.Count} cells, "
-            + $"{readers} readers of whole objects, {_calls.Count} calls watched ({bound} bound by name), {_dispatched.Count} dispatch answers over {_kinds.Count} kinds, "
+            + $"{readers} readers of whole objects, {_calls.Count} calls watched ({bound} functions and {copies} instances bound by name), {_dispatched.Count} dispatch answers over {_kinds.Count} kinds, "
             + $"{_instBase.Count - _functions.Count} instances";
     }
 

@@ -763,13 +763,6 @@ public static class RegionSolver
         }
 
         /// <summary>
-        /// What virtual call k of function f runs on an object stamped with
-        /// <paramref name="table"/>, its method table <paramref name="at"/>
-        /// bytes in, among <paramref name="those"/> (sorted): nothing for a
-        /// descriptor not of the call's type, the method the descriptor holds
-        /// at the slot where it is one of them, null where it cannot say.
-        /// </summary>
-        /// <summary>
         /// ONLY THE TYPES REACHABLE CODE MAKES (rapid type analysis): from the
         /// roots, the functions calls reach, the descriptors their sites stamp,
         /// and of a virtual call's overrides only those a made descriptor
@@ -922,6 +915,13 @@ public static class RegionSolver
             }
         }
 
+        /// <summary>
+        /// What virtual call k of function f runs on an object stamped with
+        /// <paramref name="table"/>, its method table <paramref name="at"/>
+        /// bytes in, among <paramref name="those"/> (sorted): nothing for a
+        /// descriptor not of the call's type, the method the descriptor holds
+        /// at the slot where it is one of them, null where it cannot say.
+        /// </summary>
         private int[]? RunsOn(int f, int k, int[] those, string table, long at)
         {
             string callee = _functions[f].Calls[k].Callee!;

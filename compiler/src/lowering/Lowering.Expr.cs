@@ -4357,13 +4357,20 @@ public sealed partial class Lowering
         // Nothing matched: the binder refused this unless there is a `_`, so
         // this path is unreachable, but the register needs a definition.
         // The block of a struct result defines the register already.
+        // A FLOAT'S ZERO IS ITS BITS' (Bits of an integer zero of its size): an
+        // integer zero copied into the float register first was a copy of
+        // one type into another, which the verifier of a debug-built
+        // compiler refuses -- no such compiler could build this one.
         if (made is null)
         {
-            _e.CopyTo(result, Imm(0, result.Type.IsFloat() ? IrType.I32 : result.Type));
             if (result.Type.IsFloat())
             {
                 VReg z = _e.Const(0, result.Type == IrType.F32 ? IrType.I32 : IrType.I64);
                 _e.CopyTo(result, R(_e.Unary(Opcode.Bits, R(z), result.Type)));
+            }
+            else
+            {
+                _e.CopyTo(result, Imm(0, result.Type));
             }
         }
         _e.Jump(end);
