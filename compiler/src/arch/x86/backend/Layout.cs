@@ -140,17 +140,17 @@ internal static class Layout
     }
 
     /// <summary>
-    /// The segment to lay out after <paramref name="current"/>, which ends in
-    /// <paramref name="block"/>, or -1. Segments are numbered in the old
-    /// order, so one ahead of it has a larger number.
-    /// </summary>
-    /// <summary>
     /// Whether an instruction is the trap after a call that never returns:
     /// `ud2`, or `int3` with no operand (one with an operand is a breakpoint
     /// the program runs on from, MInstr.EndsFlow).
     /// </summary>
     private static bool EndsInTrap(MInstr i) => i.Op == MOp.Ud2 || i is { Op: MOp.Int3, Operands.Count: 0 };
 
+    /// <summary>
+    /// The segment to lay out after <paramref name="current"/>, which ends in
+    /// <paramref name="block"/>, or -1. Segments are numbered in the old
+    /// order, so one ahead of it has a larger number.
+    /// </summary>
     private static int Follower(MBlock block, int current, Dictionary<MBlock, int> index, int[] segmentOf, bool[] placed, bool[] cold)
     {
         List<MInstr> instrs = block.Instrs;

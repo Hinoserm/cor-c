@@ -426,6 +426,9 @@ internal sealed class Encoder
             case MOp.Div: Op(w, 6, i.Operands[0], 0, 0xF7); break;
             case MOp.Idiv: Op(w, 7, i.Operands[0], 0, 0xF7); break;
             case MOp.Neg: Op(w, 3, i.Operands[0], 0, w == 1 ? 0xF6 : 0xF7); break;
+            // (FE/FF /0 and /1: long mode has no one-byte forms, their bytes its REX prefixes.)
+            case MOp.Inc: Op(w, 0, i.Operands[0], 0, w == 1 ? 0xFE : 0xFF); break;
+            case MOp.Dec: Op(w, 1, i.Operands[0], 0, w == 1 ? 0xFE : 0xFF); break;
             case MOp.Not: Op(w, 2, i.Operands[0], 0, w == 1 ? 0xF6 : 0xF7); break;
             case MOp.Cwd:
                 if (w == 8) Byte(0x48);

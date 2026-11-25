@@ -2,60 +2,42 @@
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// LONG MODE'S PART OF THE PEEPHOLE (Peephole.Run's, where X86Mode.Long).
+/// LONG MODE'S PART OF THE PEEPHOLE (Peephole.Run's, where X86Mode.Long):
+/// what no 32-bit machine has, and what its encoder leaves to this pass.
 ///
-/// The control-flow tidying after allocation, where the blocks are final:
-///
+///   - `mov r32, r32` onto itself, the zero-extension of a register's
+///     upper half: gone where the register's last write in the block was
+///     already a 32-bit one (ZeroExtended), or where nothing reads its
+///     upper half before it is written again (UpperRead). To every rule
+///     of the family's a move of four bytes is no copy (Peephole.IsMov),
+///     so what is left of these is safe among them.
 ///   - a jump to a block that holds nothing but another jump goes straight
-///     to that jump's target (threading), however long the chain;
-///   - `jcc next; jmp other` becomes `j!cc other` and falls through;
-///   - a jump to the very next block is dropped: control falls into it;
-///   - a block nothing reaches goes (Unreachable).
-///
-/// And one move no 32-bit machine has: `mov r32, r32` onto itself, the
-/// zero-extension of a register's upper half, where the register's last
-/// write in the block was already a 32-bit one (ZeroExtended), or where
-/// nothing reads its upper half before it is written again (UpperRead).
+///     to that jump's target, however long the chain (Thread; Layout's own
+///     threading stops at eight and runs before the loops are rotated).
+///   - a jump to the very next block is dropped: control falls into it
+///     (DropJumpsToNext; i386's encoder leaves that jump out itself).
 /// </summary>
 internal static partial class Peephole
 {
-    private static void RunLong(MFunction m)
+    private static void DropExtensions(MFunction m)
     {
         foreach (MBlock b in m.Blocks)
         {
             DropZeroExtensions(b.Instrs);
         }
         DropUnreadZeroExtensions(m);
-        Thread(m);
-        for (int i = 0; i < m.Blocks.Count; i++)
+    }
+
+    private static void DropJumpsToNext(MFunction m)
+    {
+        for (int i = 0; i + 1 < m.Blocks.Count; i++)
         {
-            MBlock b = m.Blocks[i];
-            MBlock? next = i + 1 < m.Blocks.Count ? m.Blocks[i + 1] : null;
-            List<MInstr> s = b.Instrs;
-            if (next is null || s.Count == 0)
-            {
-                continue;
-            }
-            MInstr last = s[^1];
-            if (last.Op == MOp.Jmp && ((MLabel)last.Operands[0]).Target == next)
+            List<MInstr> s = m.Blocks[i].Instrs;
+            if (s.Count > 0 && s[^1].Op == MOp.Jmp && ReferenceEquals(((MLabel)s[^1].Operands[0]).Target, m.Blocks[i + 1]))
             {
                 s.RemoveAt(s.Count - 1);
-                if (s.Count == 0)
-                {
-                    continue;
-                }
-                last = s[^1];
-            }
-            if (s.Count >= 2 && last.Op == MOp.Jmp && s[^2].Op == MOp.Jcc
-                && ((MLabel)s[^2].Operands[0]).Target == next)
-            {
-                MInstr jcc = s[^2];
-                MBlock other = ((MLabel)last.Operands[0]).Target;
-                s.RemoveRange(s.Count - 2, 2);
-                s.Add(new MInstr(MOp.Jcc, new MLabel(other)) { Cond = jcc.Cond.Negate(), Line = jcc.Line });
             }
         }
-        Unreachable(m);
     }
 
     /// <summary>

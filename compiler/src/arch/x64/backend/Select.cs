@@ -1707,11 +1707,14 @@ internal sealed partial class Selector
         }
         else
         {
-            // R11 is a scratch register no argument uses; the target goes
-            // there so no argument register has to be kept away from it.
-            MReg r11 = MReg.Of(Gpr.R11);
-            Mov(r11, target, 8);
-            Emit(new MInstr(MOp.CallInd, r11) { IntArgs = ints, FloatArgs = floats, NativeAl = native });
+            // The target as the register it is in, as i386's: the allocation
+            // keeps it out of the registers the arguments are moved into
+            // (they are written while it is live), may leave it in memory
+            // (Allocator.Foldable), and a target loaded only to be called is
+            // called where it lies (AddressFold's step 5) -- a virtual
+            // method's slot, a delegate's target. Copied to a fixed scratch
+            // register first, none of that was seen.
+            Emit(new MInstr(MOp.CallInd, target) { IntArgs = ints, FloatArgs = floats, NativeAl = native });
         }
         if (pushed + pad > 0)
         {

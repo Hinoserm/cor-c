@@ -60,7 +60,25 @@ them (GcRoots.Enter in runtime/src/core/gc.cor).
 
 ## Selection, allocation, encoding
 
-`compiler/src/arch/x64/backend`:
+ONE MACHINE IR FOR THE FAMILY. The two backends share the classes in
+`compiler/src/arch/x86/backend` -- `MReg`, `MMem`, `MImm`, `MInstr`, `MBlock`,
+`MFunction`, `Frame`, the opcode set `MOp` and what each operand does to its
+register (`Roles.Of`) -- which know the mode they are in from `X86Mode`
+(`Long`, `Word`, `Gprs`): the backend that generates says it, once a
+process, as `Target.Current` is said. Registers are numbered alike in both
+modes: the general ones below sixteen (eight of them on i386), the XMM ones
+from sixteen (`MReg.XmmBase`), virtual ones from thirty-two.
+
+Passes with a single implementation, in `x86/backend`, used by both modes:
+`AddressFold`, `IfConvert`, `Layout`, `LoopRotate`, `SpillCount`,
+`FrameSlotLiveness` (the adapter of `arch/shared/frames`), the inline
+assembly record `InlineAsmCode`, and `Peephole` -- whose long-mode part
+(`Peephole.Long.cs`: the zero-extensions `mov r32, r32`, jump threading, the
+jump to the next block) is what i386 has no need of. Long mode's calling
+conventions and the registers its instructions touch unnamed are
+`LongAbi` and `Implicit` (`x86/backend/Implicit.cs`).
+
+What is still x86-64's own, in `compiler/src/arch/x64/backend`:
 
 - **Select.cs** -- every value one register: I32 in the 32-bit forms (which
   zero the upper half), I64 and addresses in the 64-bit forms, F32/F64 in XMM.
@@ -68,7 +86,8 @@ them (GcRoots.Enter in runtime/src/core/gc.cor).
   Division uses the hardware and its trap, as on i386. Float-to-integer
   conversion follows .NET's saturating rule from the IEEE bits, exactly as
   the i386 backend does. The thread block is `gs:[0]`: FS is left to glibc, whose thread pointer C code needs.
-- **RegAlloc.cs** -- the i386 linear scan with two register classes. A value
+- **RegAlloc.cs, X64Target.cs** -- the function lowered into the one
+  allocator's form (`Corsac.Lang.RegAlloc`), with two register classes. A value
   live across a call cannot sit in a caller-saved register; a float across a
   call is always spilled. Spill slots are eight bytes and reloads are whole
   words, so a sub-word integer definition is never folded into its slot (the
@@ -77,8 +96,8 @@ them (GcRoots.Enter in runtime/src/core/gc.cor).
 - **Encoder.cs** -- REX, ModRM/SIB (with the SIB form for an absolute
   `[disp32]`, since mod 00 r/m 101 is RIP-relative in long mode), SSE2 with
   its mandatory prefix before REX, and branch relaxation to a fixed point.
-- **Peephole.cs** -- jump threading, and dropping jumps the block order makes
-  redundant.
+- **FramePointerFree.cs** -- a leaf that gives RBP a value addresses its
+  frame off RSP.
 
 ## Objects and linking
 

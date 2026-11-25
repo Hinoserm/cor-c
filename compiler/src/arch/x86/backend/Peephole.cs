@@ -4,7 +4,12 @@ using Corsac.Lang.Frames;
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// Clean-up after register allocation, on physical registers.
+/// Clean-up after register allocation, on physical registers. ONE PASS FOR
+/// BOTH MODES of the family: a "word" below is the mode's (X86Mode.Word),
+/// a whole move one of that width (IsMov), the registers the mode's eight
+/// or sixteen (All), and what an instruction touches unnamed the mode's
+/// (Unnamed). Long mode adds its own rules for the upper half of a
+/// register (Peephole.Long.cs).
 ///
 /// The selector writes straightforward code and the allocator adds spill
 /// traffic without looking at its neighbours; what is left over is local
@@ -20,10 +25,14 @@ internal static partial class Peephole
 {
     public static void Run(MFunction m)
     {
+        // Long mode's own, first: the zero-extensions nothing needs
+        // (Peephole.Long.cs). What is left of them is an instruction like
+        // any other to the rules below, which take only whole moves for
+        // copies.
         if (X86Mode.Long)
         {
-            RunLong(m);
-            return;
+            DropExtensions(m);
+            Thread(m);
         }
         ParameterHomes(m);
         foreach (MBlock block in m.Blocks) StoredAgainAtOnce(block.Instrs);
@@ -46,9 +55,9 @@ internal static partial class Peephole
         {
             int live = 0;
             if (i.Op is MOp.Jcc or MOp.Jmp && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to })
-                live = at.TryGetValue(to, out int t) ? liveIn[t] : 0xFF;
+                live = at.TryGetValue(to, out int t) ? liveIn[t] : All;
             else if (i.Op == MOp.JmpTable && i.Table is { } table)
-                foreach (MBlock each in table) live |= at.TryGetValue(each, out int e) ? liveIn[e] : 0xFF;
+                foreach (MBlock each in table) live |= at.TryGetValue(each, out int e) ? liveIn[e] : All;
             return live;
         }
         for (int b = 0; b < m.Blocks.Count; b++)
@@ -106,19 +115,69 @@ internal static partial class Peephole
             {
                 int live = 0;
                 if (i.Op is MOp.Jcc or MOp.Jmp && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to })
-                    live = where.TryGetValue(to, out int t) ? ins[t] : 0xFF;
+                    live = where.TryGetValue(to, out int t) ? ins[t] : All;
                 else if (i.Op == MOp.JmpTable && i.Table is { } table)
-                    foreach (MBlock each in table) live |= where.TryGetValue(each, out int e) ? ins[e] : 0xFF;
+                    foreach (MBlock each in table) live |= where.TryGetValue(each, out int e) ? ins[e] : All;
                 return live;
             }
             for (int b = 0; b < m.Blocks.Count; b++) ForwardCopies(m.Blocks[b].Instrs, outs[b], Goes);
             for (int b = 0; b < m.Blocks.Count; b++) RenameCopies(m.Blocks[b].Instrs, outs[b], Goes);
         }
         Unreachable(m);
+        // Long mode's again, over what the rules left: a copy forwarded or a
+        // register renamed may have left a zero-extension nothing reads.
+        if (X86Mode.Long) DropExtensions(m);
         // LAST: it leaves flags live into a block, which every rule above
         // takes as never so (ZeroWithXor, ChooseForCpu's xor).
         CompareAgainAfterJump(m);
+        // (The jump to the block laid next is i386's encoder's to leave
+        // out; long mode's writes every jump it is given.)
+        if (X86Mode.Long) DropJumpsToNext(m);
     }
+
+    // ---- a callee-saved register nothing names any more -------------------------------
+
+    /// <summary>
+    /// A CALLEE-SAVED REGISTER NOTHING NAMES ANY MORE, no longer saved: the
+    /// allocator gave it a value and the prologue saves it, and the rules
+    /// here made that value go -- a load, an operation and a store back
+    /// become one read-modify-write of the memory, the register with them.
+    /// A save and a restore of every call for nothing. Not in a function
+    /// that catches (a throw restores only the stack and frame pointers, so
+    /// it saves them all: i386 by its landing pads, long mode by
+    /// MFunction.SavesEverything, which a system call and Sys.SaveRegisters
+    /// set too), nor where an asm block, Sys.SaveRegisters or a read of a
+    /// caller's register names the saves; never the frame's base, which a
+    /// leaf's frame logic owns. The saves lie outside the frame's slots, so
+    /// no slot moves; the saves after one dropped are a word nearer, as
+    /// every reader of them reads from SavedRegs. Run after Run, before
+    /// anything that lays the frame out.
+    /// </summary>
+    internal static void UnusedSaves(MFunction m)
+    {
+        if (m.SavedRegs.Count == 0 || m.SavesEverything || m.Source.Blocks.Any(b => b.IsLandingPad)) return;
+        long named = 0;
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+            {
+                if (i.Op is MOp.InlineAsm or MOp.SaveRegs or MOp.CallerReg) return;
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MReg { IsPhys: true } r) named |= 1L << r.Id;
+                    else if (o is MMem mem)
+                    {
+                        if (mem.Base is { IsPhys: true } mb) named |= 1L << mb.Id;
+                        if (mem.Index is { IsPhys: true } mx) named |= 1L << mx.Id;
+                    }
+                }
+                Unnamed(i, out long uses, out long defs);
+                named |= uses | defs;
+            }
+        m.SavedRegs.RemoveAll(g => KeptByCallee(g) && (named & (1L << (int)g)) == 0);
+    }
+
+    /// <summary>The registers a call keeps, the frame's base aside: i386's three, long mode's five (LongAbi).</summary>
+    private static bool KeptByCallee(Gpr g) => X86Mode.Long ? Array.IndexOf(LongAbi.CalleeSaved, g) >= 0 : g is Gpr.Ebx or Gpr.Esi or Gpr.Edi;
 
     // ---- a compare made again on the way a jump fell through --------------------------
 
@@ -260,6 +319,9 @@ internal static partial class Peephole
     private static void ParameterHomes(MFunction m)
     {
         if (m.Blocks.Count == 0) return;
+        // The first parameter's word lies past the saved base and the return
+        // address; a write is taken as two words wide, the widest there is.
+        int word = X86Mode.Word, first = 2 * word;
         static bool Ebp(MMem mem) => mem.Base is { IsPhys: true, Phys: Gpr.Ebp } && mem.Index is null && mem.Symbol is null && mem.Label is null;
         HashSet<int> mapped = new();
         foreach (Safepoint sp in m.Safepoints.Values) foreach (int at in sp.SlotOffsets) mapped.Add(at);
@@ -286,7 +348,7 @@ internal static partial class Peephole
                     if (i.Operands[k] is MReg { IsPhys: true, Phys: Gpr.Ebp }) return;
                     if (i.Operands[k] is not MMem mem || mem.Base is not { IsPhys: true, Phys: Gpr.Ebp }) continue;
                     bool writes = (Roles.Of(i.Op, k) & Roles.Role.Def) != 0 || !Understood(i);
-                    if (mem.Disp >= 8)
+                    if (mem.Disp >= first)
                     {
                         // A parameter's address taken, or reached by index: nothing moves.
                         if (i.Op == MOp.Lea || !Ebp(mem)) return;
@@ -298,7 +360,7 @@ internal static partial class Peephole
                         if (writes || !ReadsOnly(i, k)) paramWritten.Add(mem.Disp);
                         continue;
                     }
-                    bool whole = i.Op != MOp.Lea && Ebp(mem) && i.Width == 4 && Understood(i)
+                    bool whole = i.Op != MOp.Lea && Ebp(mem) && i.Width == word && Understood(i)
                         && (IsMov(i) || i.Op is MOp.Push or MOp.Cmp or MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Test);
                     if (!whole) { other.Add(mem.Disp); continue; }
                     plain.Add(mem.Disp);
@@ -309,7 +371,7 @@ internal static partial class Peephole
         for (int k = 1; k < entry.Count; k++)
         {
             MInstr store = entry[k], load = entry[k - 1];
-            if (!IsMov(load) || !IsMov(store) || load.Operands[0] is not MReg r || load.Operands[1] is not MMem p || !Ebp(p) || p.Disp < 8
+            if (!IsMov(load) || !IsMov(store) || load.Operands[0] is not MReg r || load.Operands[1] is not MMem p || !Ebp(p) || p.Disp < first
                 || store.Operands[0] is not MMem { IsSpill: true } s || !Ebp(s) || s.Disp >= 0 || store.Operands[1] is not MReg r2 || r2.Id != r.Id)
             {
                 continue;
@@ -317,12 +379,12 @@ internal static partial class Peephole
             if (mapped.Contains(s.Disp) || slotWrites.GetValueOrDefault(s.Disp) != 1) continue;
             bool clear = true;
             // A write of eight bytes starting from P-7 to P+3 reaches P's four.
-            for (int b = p.Disp - 7; b < p.Disp + 4 && clear; b++) clear = !paramWritten.Contains(b);
+            for (int b = p.Disp - (2 * word - 1); b < p.Disp + word && clear; b++) clear = !paramWritten.Contains(b);
             // Nothing else within reach of the slot's four bytes: no other
             // plain word overlapping it, and nothing reached any other way
             // from eight below it (a quadword at S-4 covers it) to its end.
-            for (int b = s.Disp - 7; b < s.Disp + 4 && clear; b++) clear = !other.Contains(b);
-            for (int b = s.Disp - 3; b < s.Disp + 4 && clear; b++) clear = b == s.Disp || !plain.Contains(b);
+            for (int b = s.Disp - (2 * word - 1); b < s.Disp + word && clear; b++) clear = !other.Contains(b);
+            for (int b = s.Disp - (word - 1); b < s.Disp + word && clear; b++) clear = b == s.Disp || !plain.Contains(b);
             if (!clear) continue;
             home[s.Disp] = p.Disp;
             entry.RemoveAt(k);
@@ -370,7 +432,7 @@ internal static partial class Peephole
                     k--;
                     break;
                 }
-                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe
+                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallKeepRax or MOp.CallKeepCas or MOp.CallSafe or MOp.Syscall or MOp.SoftInt or MOp.SyscallTrap
                     or MOp.Jmp or MOp.Jcc or MOp.JmpTable or MOp.JmpInd or MOp.Ret or MOp.Epilogue or MOp.InlineAsm or MOp.Lea or MOp.Push or MOp.Pop) break;
                 bool reaches = false;
                 foreach (MOperand o in i.Operands)
@@ -380,8 +442,8 @@ internal static partial class Peephole
                     if (mem.Index is { IsPhys: true, Phys: Gpr.Ebp }) reaches = true;
                     if (mem.Base is not { IsPhys: true, Phys: Gpr.Ebp }) continue;
                     // Any reach of the frame but a plain word elsewhere.
-                    if (mem.Index is not null || mem.Symbol is not null || mem.Label is not null || i.Width != 4
-                        || mem.Disp > slot.Disp - 4 && mem.Disp < slot.Disp + 4) reaches = true;
+                    if (mem.Index is not null || mem.Symbol is not null || mem.Label is not null || i.Width != X86Mode.Word
+                        || mem.Disp > slot.Disp - X86Mode.Word && mem.Disp < slot.Disp + X86Mode.Word) reaches = true;
                 }
                 if (reaches) break;
             }
@@ -420,14 +482,15 @@ internal static partial class Peephole
     private static Dictionary<int, int>? TwinSlots(MFunction m)
     {
         if (m.Blocks.Count == 0) return null;
-        // A home is eight bytes, a long's two words or a word and nothing:
-        // each word of one a place a spill slot may be the twin of.
+        // A home is a word or two (i386: a long's two words, or a word and
+        // nothing): each word of one a place a spill slot may be the twin of.
+        int word = X86Mode.Word;
         HashSet<int> homes = new();
         foreach ((int offset, int bytes) in m.Frame.SlotRanges())
         {
-            if (offset >= 0 || bytes is not (4 or 8)) continue;
+            if (offset >= 0 || bytes != word && bytes != 2 * word) continue;
             homes.Add(offset);
-            if (bytes == 8) homes.Add(offset + 4);
+            if (bytes == 2 * word) homes.Add(offset + word);
         }
         if (homes.Count == 0) return null;
         static bool Ebp(MMem mem) => mem.Base is { IsPhys: true, Phys: Gpr.Ebp } && mem.Index is null && mem.Symbol is null && mem.Label is null;
@@ -456,7 +519,7 @@ internal static partial class Peephole
                     if (i.Operands[k] is not MMem mem) continue;
                     if (mem.Index is { IsPhys: true, Phys: Gpr.Ebp }) return null;
                     if (mem.Base is not { IsPhys: true, Phys: Gpr.Ebp }) continue;
-                    bool whole = i.Op != MOp.Lea && Ebp(mem) && i.Width == 4 && !i.Lock && Understood(i);
+                    bool whole = i.Op != MOp.Lea && Ebp(mem) && i.Width == word && !i.Lock && Understood(i);
                     if (!whole)
                     {
                         // Taken as sixteen bytes from where it starts, whatever its width says.
@@ -468,7 +531,7 @@ internal static partial class Peephole
                         : k == 0 && i.Op is MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Inc or MOp.Dec or MOp.Neg or MOp.Not ? changes : null;
                     if (kind is null)
                     {
-                        for (int b = mem.Disp; b < mem.Disp + 4; b++) other.Add(b);
+                        for (int b = mem.Disp; b < mem.Disp + word; b++) other.Add(b);
                         continue;
                     }
                     if (!kind.TryGetValue(mem.Disp, out var list)) kind[mem.Disp] = list = new();
@@ -477,9 +540,9 @@ internal static partial class Peephole
             }
         bool Clear(int slot)
         {
-            for (int b = slot; b < slot + 4; b++) if (other.Contains(b)) return false;
+            for (int b = slot; b < slot + word; b++) if (other.Contains(b)) return false;
             // No other word's write overlapping it.
-            for (int b = slot - 3; b < slot + 4; b++) if (b != slot && (stores.ContainsKey(b) || changes.ContainsKey(b))) return false;
+            for (int b = slot - (word - 1); b < slot + word; b++) if (b != slot && (stores.ContainsKey(b) || changes.ContainsKey(b))) return false;
             return true;
         }
         // `mov [ebp+d], r` at `at`, for the r it stores; -1 for anything else.
@@ -589,10 +652,12 @@ internal static partial class Peephole
     private static void BeforeTrap(List<MInstr> instrs)
     {
         int n = instrs.Count;
-        if (n < 2 || instrs[n - 1].Op != MOp.Int3 || instrs[n - 1].Operands.Count != 0) return;
+        // (The trap: INT3 with no operand, or long mode's UD2.)
+        static bool Trap(MInstr i) => i.Op == MOp.Ud2 || i.Op == MOp.Int3 && i.Operands.Count == 0;
+        if (n < 2 || !Trap(instrs[n - 1])) return;
         int k = n - 2;
-        while (k >= 0 && (instrs[k].Op == MOp.Int3 && instrs[k].Operands.Count == 0
-            || instrs[k].Op == MOp.Add && instrs[k].Width == 4 && instrs[k].Operands.Count == 2
+        while (k >= 0 && (Trap(instrs[k])
+            || instrs[k].Op == MOp.Add && instrs[k].Width == X86Mode.Word && instrs[k].Operands.Count == 2
                && instrs[k].Operands[0] is MReg { IsPhys: true, Phys: Gpr.Esp } && instrs[k].Operands[1] is MImm { IsPlain: true }))
         {
             instrs.RemoveAt(k);
@@ -676,6 +741,7 @@ internal static partial class Peephole
                 {
                     if (o is MImm { Label: { } label }) taken.Add(label);
                     else if (o is MMem { Label: { } table }) taken.Add(table);
+                    else if (o is MLabel { Target: var named } && i.Op is not (MOp.Jmp or MOp.Jcc)) taken.Add(named);
                 }
         bool changed = true;
         int rounds = 0;
@@ -701,7 +767,7 @@ internal static partial class Peephole
                     }
                     if (i.Op == MOp.JmpTable && i.Table is { } table)
                         foreach (MBlock t in table) { if (index.TryGetValue(t, out int ta)) live |= liveIn[ta]; else known = false; }
-                    if (!Understood(i)) { live = 0xFF; continue; }
+                    if (!Understood(i)) { live = All; continue; }
                     Masks(i, out long reads, out long writes);
                     live = (live & ~(int)writes) | (int)reads;
                 }
@@ -743,7 +809,7 @@ internal static partial class Peephole
                     foreach (MBlock way in ways)
                     {
                         if (Back(way)) { if (!wanted) way.Instrs.RemoveAt(Last(way)); }
-                        else way.Instrs.Insert(way.EndsUnconditionally ? way.Instrs.Count - 1 : way.Instrs.Count, new MInstr(MOp.Mov, a, x) { Width = 4, Line = join.Instrs[0].Line });
+                        else way.Instrs.Insert(way.EndsUnconditionally ? way.Instrs.Count - 1 : way.Instrs.Count, new MInstr(MOp.Mov, a, x) { Line = join.Instrs[0].Line });
                     }
                     join.Instrs.RemoveAt(0);
                     changed = true;
@@ -835,9 +901,9 @@ internal static partial class Peephole
 
     /// <summary>
     /// A bit per register, live at the end of each block. The same
-    /// use/def dataflow the allocator ran, now over the eight hardware
-    /// registers, so dead-definition removal can see past a block's end
-    /// instead of assuming everything is wanted there.
+    /// use/def dataflow the allocator ran, now over the mode's general
+    /// registers (eight, or sixteen), so dead-definition removal can see
+    /// past a block's end instead of assuming everything is wanted there.
     /// </summary>
     private static int[] LiveOut(MFunction m, out int[] liveInOut)
     {
@@ -894,16 +960,16 @@ internal static partial class Peephole
                     {
                         foreach (MBlock t in table) if (index.TryGetValue(t, out int ta)) live |= liveIn[ta];
                     }
-                    // THE SELECTOR'S UNREACHABLE (INT3, no operand): nothing
-                    // runs after it, so nothing is live before it. A trap the
-                    // program may run on from (INT3 1) reads and writes
-                    // nothing: what is live after it is live before it. Taken
+                    // THE SELECTOR'S UNREACHABLE (INT3 with no operand; long
+                    // mode's UD2): nothing runs after it, so nothing is live
+                    // before it. A trap the program may run on from (INT3 1)
+                    // reads and writes nothing: what is live after it is live before it. Taken
                     // for everything read, every block a bounds check or a
                     // throw ends in -- `call ...; int3; int3` -- kept EBX, ESI
                     // and EDI live into it from wherever they were set, and a
                     // read-modify-write or a dead store through one of them
                     // on the way there stayed what it was.
-                    if (i.Op == MOp.Int3)
+                    if (i.Op is MOp.Int3 or MOp.Ud2)
                     {
                         if (i.Operands.Count == 0) live = 0;
                         continue;
@@ -911,13 +977,13 @@ internal static partial class Peephole
                     if (!Understood(i))
                     {
                         // Everything it might read is read; the pessimistic view.
-                        live = 0xFF;
+                        live = All;
                         continue;
                     }
                     Masks(i, out long reads, out long writes);
                     live = (live & ~(int)writes) | (int)reads;
                 }
-                live &= 0xFF;
+                live &= All;
                 if (live != liveIn[b])
                 {
                     liveIn[b] = live;
@@ -946,7 +1012,7 @@ internal static partial class Peephole
     {
         reads = 0;
         writes = 0;
-        if (i.Op == MOp.Xor && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id)
+        if (i.Op is MOp.Xor or MOp.XorPs or MOp.XorF && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id)
         {
             writes = Bit(x.Id);
         }
@@ -970,9 +1036,52 @@ internal static partial class Peephole
                 }
             }
         }
-        foreach (Gpr g in Roles.ImplicitUses(i)) reads |= Bit(MReg.Of(g).Id);
-        foreach (Gpr g in Roles.ImplicitDefs(i)) writes |= Bit(MReg.Of(g).Id);
+        Unnamed(i, out long uses, out long defs);
+        reads |= uses;
+        writes |= defs;
     }
+
+    /// <summary>
+    /// What an instruction reads and writes WITHOUT NAMING IT, as masks by
+    /// register id, in the mode's own terms: i386's tables (Roles), long
+    /// mode's (Implicit) -- its calls read the registers their arguments are
+    /// in and write every register the convention lets a callee change.
+    /// General registers are the low sixteen bits, XMM ones the next.
+    /// </summary>
+    private static void Unnamed(MInstr i, out long uses, out long defs)
+    {
+        if (X86Mode.Long)
+        {
+            Implicit.Masks(i, out uses, out defs);
+            return;
+        }
+        uses = 0;
+        defs = 0;
+        foreach (Gpr g in Roles.ImplicitUses(i)) uses |= 1L << (int)g;
+        foreach (Gpr g in Roles.ImplicitDefs(i)) defs |= 1L << (int)g;
+    }
+
+    /// <summary>
+    /// What is dead above an instruction the roles describe (Understood),
+    /// from what is dead below it: a general machine register it writes
+    /// becomes dead, one it reads is live -- writes first, so one both
+    /// read and written is live above.
+    /// </summary>
+    private static int DeadBefore(MInstr i, int dead)
+    {
+        Unnamed(i, out long uses, out long defs);
+        foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.IsPhys) dead |= 1 << r.Id;
+        dead |= (int)defs & All;
+        foreach ((MReg r, bool isDef) in Regs(i)) if (!isDef && r.IsPhys) dead &= ~(1 << r.Id);
+        dead &= ~(int)uses;
+        return dead;
+    }
+
+    /// <summary>Every general register of the mode, a bit each: what a rule that knows nothing takes for live.</summary>
+    private static int All => (1 << X86Mode.Gprs) - 1;
+
+    /// <summary>The stack pointer and the frame's base: never a rule's to take or to write.</summary>
+    private const int FrameRegs = (1 << (int)Gpr.Esp) | (1 << (int)Gpr.Ebp);
 
     /// <summary>
     /// A register's bit in this file's masks. EBP HOLDING A VALUE
@@ -1002,8 +1111,8 @@ internal static partial class Peephole
     {
         for (int k = 0; k < i.Operands.Count; k++)
             if (i.Operands[k] is MReg { Id: (int)Gpr.Ebp } && (Roles.Of(i.Op, k) & Roles.Role.Def) != 0) return true;
-        foreach (Gpr g in Roles.ImplicitDefs(i)) if (g == Gpr.Ebp) return true;
-        return false;
+        Unnamed(i, out _, out long defs);
+        return (defs & (1L << (int)Gpr.Ebp)) != 0;
     }
 
     // ---- store, then reload from the same slot ----------------------------------
@@ -1011,10 +1120,22 @@ internal static partial class Peephole
     // A DEVICE'S REGISTER IS NEVER THE SAME READ TWICE (MMem.Device): no
     // rule that reads one for two may match it.
     private static bool SameMem(MMem a, MMem b)
-        => !a.Device && !b.Device && a.Disp == b.Disp && a.Scale == b.Scale && a.Symbol == b.Symbol && a.Reloc == b.Reloc && a.Label == b.Label
+        => !a.Device && !b.Device && a.Disp == b.Disp && a.Scale == b.Scale && a.Symbol == b.Symbol && a.Reloc == b.Reloc && a.Got == b.Got && a.Segment == b.Segment && a.Label == b.Label
            && (a.Base?.Id ?? -1) == (b.Base?.Id ?? -1) && (a.Index?.Id ?? -1) == (b.Index?.Id ?? -1);
 
-    private static bool IsMov(MInstr i) => i.Op == MOp.Mov && i.Width == 4;
+    /// <summary>
+    /// A WHOLE MOVE: a MOV of the mode's word, which copies a register or a
+    /// slot entire. In long mode a four-byte MOV is not one -- it clears
+    /// its destination's upper half, and stores half a slot -- and no rule
+    /// that takes a move for a copy takes it.
+    /// </summary>
+    private static bool IsMov(MInstr i) => i.Op == MOp.Mov && i.Width == X86Mode.Word;
+
+    /// <summary>A MOV of `width` bytes: the word, or four (which in long mode a rule may pair with its like).</summary>
+    private static bool IsMovOf(MInstr i, int width) => i.Op == MOp.Mov && i.Width == width;
+
+    /// <summary>Whether a width is one a rule on whole results takes: four bytes, or the mode's word.</summary>
+    private static bool Wide(int width) => width == 4 || width == X86Mode.Word;
 
     /// <summary>
     /// `mov [slot], r` followed at once by `mov r2, [slot]` reads back what
@@ -1087,7 +1208,7 @@ internal static partial class Peephole
             // the slots stored again further on with no read between. Only
             // where the block makes no call, whose stack map may read a slot,
             // and the function has no handler.
-            if (handlers || b.Instrs.Any(i => i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe)) continue;
+            if (handlers || b.Instrs.Any(i => i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.Syscall or MOp.SoftInt)) continue;
             HashSet<int> written = new();
             for (int k = b.Instrs.Count - 1; k >= 0; k--)
             {
@@ -1182,7 +1303,7 @@ internal static partial class Peephole
                     continue;
                 }
                 if (m.Safepoints.TryGetValue(i, out Safepoint? map)) live.UnionWith(map.SlotOffsets);
-                else if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe) live.UnionWith(all);
+                else if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.Syscall or MOp.SoftInt) live.UnionWith(all);
                 foreach (MOperand o in i.Operands)
                     if (o is MMem mem)
                     {
@@ -1269,7 +1390,7 @@ internal static partial class Peephole
                         break;
                     }
                     // Be conservative about partial overlaps, including unusual frames.
-                    if (Math.Abs((long)memory.Disp - slot.Disp) < 4) break;
+                    if (Math.Abs((long)memory.Disp - slot.Disp) < X86Mode.Word) break;
                 }
                 else if (prev.Operands.Any(o => o is MMem) || !SpillTransparent(prev.Op)) break;
                 Masks(prev, out _, out long written);
@@ -1409,10 +1530,10 @@ internal static partial class Peephole
     {
         int Held(MMem slot) => state.TryGetValue(slot.Disp, out int regs) ? regs : 0;
         static int Lowest(int regs) { int r = 0; while ((regs & (1 << r)) == 0) r++; return r; }
-        if (rewrite && !i.Lock && i.Width == 4)
+        if (rewrite && !i.Lock && i.Width == X86Mode.Word)
         {
             // A reload of a value a register holds.
-            if (IsMov(i) && i.Operands[0] is MReg dest && dest.Id < 8 && i.Operands[1] is MMem from && PrivateSpill(from) && Held(from) is var held && held != 0)
+            if (IsMov(i) && i.Operands[0] is MReg dest && dest.IsPhys && i.Operands[1] is MMem from && PrivateSpill(from) && Held(from) is var held && held != 0)
             {
                 if ((held & (1 << dest.Id)) != 0) return null;
                 i = new MInstr(MOp.Mov, MReg.Of(dest.Id), MReg.Of(Lowest(held))) { Line = i.Line };
@@ -1423,9 +1544,9 @@ internal static partial class Peephole
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     if (i.Operands[k] is not MMem mem || !PrivateSpill(mem) || Roles.Of(i.Op, k) != Roles.Role.Use || Held(mem) is not (not 0 and var h)) continue;
-                    MInstr copy = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
-                    for (int j = 0; j < i.Operands.Count; j++) copy.Operands.Add(j == k ? MReg.Of(Lowest(h)) : i.Operands[j]);
-                    i = copy;
+                    MOperand[] with = i.Operands.ToArray();
+                    with[k] = MReg.Of(Lowest(h));
+                    i = i.WithOperands(with);
                     break;
                 }
             }
@@ -1433,9 +1554,10 @@ internal static partial class Peephole
         // Its effect: a call, an asm block (which may write any memory) or
         // anything moving the frame lets go of everything. EBP's value
         // written is a register written like any other, which no slot here
-        // is held in (holders are ids below 8, and EbpData is 32): it lets
-        // go of nothing.
-        if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.InlineAsm) { state.Clear(); return i; }
+        // is held in (holders are general machine registers, and EbpData is
+        // 32): it lets go of nothing. (A system call in long mode is where
+        // the collector is entered: taken with the calls.)
+        if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.InlineAsm or MOp.Syscall or MOp.SoftInt) { state.Clear(); return i; }
         Masks(i, out _, out long written);
         if (WritesFrame(i)) { state.Clear(); return i; }
         // A write to an allocator slot: what held it holds it no more.
@@ -1445,10 +1567,10 @@ internal static partial class Peephole
             if ((Roles.Of(i.Op, k) & Roles.Role.Def) == 0) continue;
             if (!PrivateSpill(mem)) continue;
             int lo = mem.Disp, hi = mem.Disp + Math.Max(i.Width, 1);
-            foreach (int slot in state.Keys.ToList()) if (slot < hi && lo < slot + 4) state.Remove(slot);
+            foreach (int slot in state.Keys.ToList()) if (slot < hi && lo < slot + X86Mode.Word) state.Remove(slot);
         }
         // Registers written hold nothing they held.
-        int regsWritten = (int)(written & 0xFF);
+        int regsWritten = (int)written & All;
         if (regsWritten != 0)
             foreach (int slot in state.Keys.ToList())
             {
@@ -1458,12 +1580,12 @@ internal static partial class Peephole
         // Then what it leaves held: a load or a store of a whole slot by a move.
         if (IsMov(i) && !i.Lock)
         {
-            if (i.Operands[0] is MReg to && to.Id < 8 && i.Operands[1] is MMem src && PrivateSpill(src))
+            if (i.Operands[0] is MReg to && to.IsPhys && i.Operands[1] is MMem src && PrivateSpill(src))
                 state[src.Disp] = (state.TryGetValue(src.Disp, out int h1) ? h1 : 0) | (1 << to.Id);
-            else if (i.Operands[0] is MMem dst && PrivateSpill(dst) && i.Operands[1] is MReg value && value.Id < 8)
+            else if (i.Operands[0] is MMem dst && PrivateSpill(dst) && i.Operands[1] is MReg value && value.IsPhys)
                 state[dst.Disp] = 1 << value.Id;
             // A move between registers copies whatever its source held.
-            else if (i.Operands[0] is MReg d2 && d2.Id < 8 && i.Operands[1] is MReg s2 && s2.Id < 8)
+            else if (i.Operands[0] is MReg d2 && d2.IsPhys && i.Operands[1] is MReg s2 && s2.IsPhys)
                 foreach (int slot in state.Keys.ToList())
                     if ((state[slot] & (1 << s2.Id)) != 0) state[slot] |= 1 << d2.Id;
         }
@@ -1530,14 +1652,14 @@ internal static partial class Peephole
     /// <summary>An instruction whose register writes are all its operands' (Roles), and which writes memory only through them.</summary>
     private static bool XmmSpillTransparent(MOp op) => SpillTransparent(op)
         || op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.CvtIntToF
-            or MOp.XorPs or MOp.MovdToX or MOp.MovdFromX or MOp.Punpckldq
+            or MOp.XorPs or MOp.XorF or MOp.MovGx or MOp.CvtFToInt or MOp.MovdToX or MOp.MovdFromX or MOp.Punpckldq
             or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV;
 
     private static bool SpillTransparent(MOp op) => op is MOp.Mov or MOp.Movsx or MOp.Movzx
         or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor
         or MOp.Cmp or MOp.Test or MOp.Imul or MOp.Imul3 or MOp.Mul
         or MOp.Neg or MOp.Not or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Shld or MOp.Shrd
-        or MOp.Cdq or MOp.Setcc or MOp.Cmov or MOp.Nop;
+        or MOp.Cdq or MOp.Cwd or MOp.MulWide or MOp.Rol or MOp.Setcc or MOp.Cmov or MOp.Nop;
 
     /// <summary>
     /// A side-effect-free instruction whose result register is overwritten
@@ -1564,14 +1686,16 @@ internal static partial class Peephole
     private static int Usable(MFunction m)
     {
         int usable = 1 << (int)Gpr.Eax | 1 << (int)Gpr.Ecx | 1 << (int)Gpr.Edx;
+        // (Long mode's convention lets a callee change six more.)
+        if (X86Mode.Long) foreach (int r in LongAbi.CallerSaved) usable |= 1 << r;
         foreach (Gpr g in m.SavedRegs) usable |= 1 << (int)g;
-        return usable;
+        return usable & ~FrameRegs;
     }
 
     private static void RepeatedStores(List<MInstr> instrs, int liveOut, int usable, Func<MInstr, int> jumped)
     {
         int[] deadBefore = new int[instrs.Count];
-        int dead = ~liveOut & 0xFF & ~(1 << (int)Gpr.Esp) & ~(1 << (int)Gpr.Ebp);
+        int dead = ~liveOut & All & ~FrameRegs;
         for (int k = instrs.Count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
@@ -1579,18 +1703,19 @@ internal static partial class Peephole
             if (!Understood(i)) dead = 0;
             else
             {
-                foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.IsPhys) dead |= 1 << r.Id;
-                foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
-                foreach ((MReg r, bool isDef) in Regs(i)) if (!isDef && r.IsPhys) dead &= ~(1 << r.Id);
-                foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
-                dead &= ~(1 << (int)Gpr.Esp) & ~(1 << (int)Gpr.Ebp);
+                dead = DeadBefore(i, dead);
+                dead &= ~FrameRegs;
             }
             deadBefore[k] = dead;
         }
-        static bool ConstantStore(MInstr i, out long value)
+        // (Of four bytes or of the word: a run is of one width, which its
+        // register's load is of too -- a four-byte load in long mode clears
+        // the half no store of the run reads.)
+        static bool ConstantStore(MInstr i, out long value, out int width)
         {
             value = 0;
-            if (i.Op != MOp.Mov || i.Width != 4 || i.Operands.Count != 2 || i.Operands[0] is not MMem
+            width = i.Width;
+            if (i.Op != MOp.Mov || !Wide(i.Width) || i.Lock || i.Operands.Count != 2 || i.Operands[0] is not MMem
                 || i.Operands[1] is not MImm { IsPlain: true } imm) return false;
             value = imm.Value;
             return true;
@@ -1600,9 +1725,9 @@ internal static partial class Peephole
         List<(int Start, int End, long Value)> runs = new();
         for (int k = 0; k < instrs.Count; k++)
         {
-            if (!ConstantStore(instrs[k], out long value)) continue;
+            if (!ConstantStore(instrs[k], out long value, out int width)) continue;
             int end = k + 1;
-            while (end < instrs.Count && ConstantStore(instrs[end], out long next) && next == value) end++;
+            while (end < instrs.Count && ConstantStore(instrs[end], out long next, out int nextWidth) && next == value && nextWidth == width) end++;
             if (end - k >= 2) runs.Add((k, end, value));
             k = end - 1;
         }
@@ -1619,7 +1744,7 @@ internal static partial class Peephole
             if (free == 0) continue;
             Gpr reg = (Gpr)System.Numerics.BitOperations.TrailingZeroCount(free);
             for (int j = k; j < end; j++) instrs[j].Operands[1] = MReg.Of(reg);
-            MInstr load = new(MOp.Mov, MReg.Of(reg), new MImm(value)) { Line = instrs[k].Line };
+            MInstr load = new(MOp.Mov, MReg.Of(reg), new MImm(value)) { Width = instrs[k].Width, Line = instrs[k].Line };
             instrs.Insert(k, load);
         }
     }
@@ -1639,10 +1764,13 @@ internal static partial class Peephole
         static bool Pop(MInstr i, out long bytes)
         {
             bytes = 0;
-            if (i.Op != MOp.Add || i.Width != 4 || i.Operands.Count != 2 || i.Operands[0] is not MReg { IsPhys: true } r
+            if (i.Op != MOp.Add || i.Width != X86Mode.Word || i.Operands.Count != 2 || i.Operands[0] is not MReg { IsPhys: true } r
                 || r.Phys != Gpr.Esp || i.Operands[1] is not MImm { IsPlain: true } imm) return false;
             bytes = imm.Value;
-            return true;
+            // LONG MODE'S STACK IS SIXTEEN-ALIGNED AT EVERY CALL: a drop left
+            // for later moves the next call's stack by as much, so only one
+            // that is whole sixteens may wait.
+            return !X86Mode.Long || bytes % 16 == 0;
         }
         static bool Neutral(MInstr i)
         {
@@ -1650,7 +1778,8 @@ internal static partial class Peephole
             if (i.Op is MOp.Push or MOp.Call or MOp.CallInd) return i.Operands.All(o => !Names(o));
             if (!Understood(i) || i.Op is MOp.Pop or MOp.Prologue or MOp.Epilogue or MOp.Ret) return false;
             if (i.Operands.Any(Names)) return false;
-            return !Roles.ImplicitUses(i).Contains(Gpr.Esp) && !Roles.ImplicitDefs(i).Contains(Gpr.Esp);
+            Unnamed(i, out long uses, out long defs);
+            return ((uses | defs) & (1L << (int)Gpr.Esp)) == 0;
         }
         static bool Names(MOperand o) => o is MReg { IsPhys: true, Phys: Gpr.Esp }
             || o is MMem m && (m.Base is { IsPhys: true, Phys: Gpr.Esp } || m.Index is { IsPhys: true, Phys: Gpr.Esp });
@@ -1679,7 +1808,7 @@ internal static partial class Peephole
     private static void DeadDefs(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
     {
         HashSet<int> dead = new();
-        for (int r = 0; r < 8; r++)
+        for (int r = 0; r < X86Mode.Gprs; r++)
         {
             if ((liveOut & (1 << r)) == 0 && r != (int)Gpr.Esp && r != (int)Gpr.Ebp)
             {
@@ -1690,7 +1819,7 @@ internal static partial class Peephole
         {
             MInstr i = instrs[k];
             int needed = jumped(i);
-            if (needed != 0) for (int r = 0; r < 8; r++) if ((needed & (1 << r)) != 0) dead.Remove(r);
+            if (needed != 0) for (int r = 0; r < X86Mode.Gprs; r++) if ((needed & (1 << r)) != 0) dead.Remove(r);
             if (Removable(i) && i.Operands[0] is MReg d && dead.Contains(d.Id))
             {
                 instrs.RemoveAt(k);
@@ -1728,14 +1857,15 @@ internal static partial class Peephole
             // liveness has it, in EBP's bit (Bit).
             foreach ((MReg r, bool isDef) in Regs(i))
             {
-                if (isDef && r.Id < 8)
+                if (isDef && r.IsPhys)
                 {
                     dead.Add(r.Id);
                 }
             }
-            foreach (Gpr g in Roles.ImplicitDefs(i))
+            Unnamed(i, out long uses, out long defs);
+            for (int g = 0; g < X86Mode.Gprs; g++)
             {
-                dead.Add((int)g);
+                if ((defs & (1L << g)) != 0) dead.Add(g);
             }
             foreach ((MReg r, bool isDef) in Regs(i))
             {
@@ -1744,9 +1874,9 @@ internal static partial class Peephole
                     dead.Remove(r.Id);
                 }
             }
-            foreach (Gpr g in Roles.ImplicitUses(i))
+            for (int g = 0; g < X86Mode.Gprs; g++)
             {
-                dead.Remove((int)g);
+                if ((uses & (1L << g)) != 0) dead.Remove(g);
             }
         }
     }
@@ -1793,7 +1923,7 @@ internal static partial class Peephole
     private static bool ForwardCopy(MInstr copy, MInstr user, HashSet<int> deadAfter)
     {
         if (!IsMov(copy) || copy.Operands[0] is not MReg a || copy.Operands[1] is not MReg b || a.Id == b.Id
-            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe)
+            || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallKeepRax or MOp.CallKeepCas or MOp.CallSafe)
         {
             return false;
         }
@@ -1814,12 +1944,14 @@ internal static partial class Peephole
                     break;
             }
         }
-        if (!reads || Roles.ImplicitUses(user).Any(g => (int)g == a.Id))
+        Unnamed(user, out long unnamed, out _);
+        if (!reads || a.Id < 64 && (unnamed & (1L << a.Id)) != 0)
         {
             return false;
         }
-        // Width-1 operands need a register with a byte form.
-        if (user.Width == 1 && b.Id > (int)Gpr.Ebx)
+        // Width-1 operands need a register with a byte form: on i386 the
+        // first four alone (long mode gives every register one).
+        if (!X86Mode.Long && user.Width == 1 && b.Id > (int)Gpr.Ebx)
         {
             return false;
         }
@@ -1836,16 +1968,7 @@ internal static partial class Peephole
                     // into an absolute address, which a shared object can only
                     // honour with a text relocation -- and the whole point of
                     // position-independent code is not needing one.
-                    user.Operands[k] = new MMem(m.Base?.Id == a.Id ? MReg.Of(b.Id) : m.Base, m.Disp)
-                    {
-                        Index = m.Index?.Id == a.Id ? MReg.Of(b.Id) : m.Index,
-                        Scale = m.Scale,
-                        Symbol = m.Symbol,
-                        Reloc = m.Reloc,
-                        Label = m.Label,
-                        IsSpill = m.IsSpill,
-                        Device = m.Device,
-                    };
+                    user.Operands[k] = m.WithRegisters(m.Base?.Id == a.Id ? MReg.Of(b.Id) : m.Base, m.Index?.Id == a.Id ? MReg.Of(b.Id) : m.Index);
                     break;
             }
         }
@@ -1860,14 +1983,17 @@ internal static partial class Peephole
     /// </summary>
     private static bool FixedByEncoding(MOp op, int operand) => op switch
     {
-        MOp.Shl or MOp.Shr or MOp.Sar => operand == 1,
+        MOp.Shl or MOp.Shr or MOp.Sar or MOp.Rol or MOp.Ror => operand == 1,
         MOp.Shld or MOp.Shrd => operand == 2,
         // A stub's registers are its calling convention: the slot in EAX,
         // the value in EDX (X86Backend.CardStub, BarrierStub).
-        MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe => operand > 0,
+        MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallKeepRax or MOp.CallKeepCas or MOp.CallSafe => operand > 0,
         // So are a call's that passes its arguments in registers (RegisterArgs):
         // EAX, EDX and ECX, each the argument of its place.
         MOp.Call or MOp.CallInd => operand > 0,
+        // A move between a general and an XMM register is told which way by
+        // its operands' classes; neither is another's to take.
+        MOp.MovGx => true,
         _ => false,
     };
 
@@ -1921,13 +2047,15 @@ internal static partial class Peephole
     private static bool Understood(MInstr i) => i.Op switch
     {
         // An unwind jump carries the exception in EAX by convention, unnamed.
-        MOp.JmpInd or MOp.Ret or MOp.Prologue or MOp.Int or MOp.Int3 => false,
+        // (UD2, long mode's trap after what never returns, is read where
+        // INT3 is: nothing runs after it.)
+        MOp.JmpInd or MOp.Ret or MOp.Prologue or MOp.Int or MOp.Int3 or MOp.Ud2 or MOp.Swapgs => false,
         _ => true,
     };
 
     private static IEnumerable<(MReg Reg, bool IsDef)> Regs(MInstr i)
     {
-        if (i.Op is MOp.Xor or MOp.XorPs && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id)
+        if (i.Op is MOp.Xor or MOp.XorPs or MOp.XorF && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id)
         {
             // Zeroing a register reads nothing that matters.
             yield return (x, true);
@@ -1991,15 +2119,18 @@ internal static partial class Peephole
             // reads -- not a load that may fault (CannotFault: DeadDefs' rule),
             // which may be the NullReferenceException the program must raise.
             if ((i.Op == MOp.MovF && (i.Operands[1] is not MMem from || CannotFault(from))
-                 || i.Op == MOp.XorPs && i.Operands[1] is MReg same && same.Id == ((MReg)i.Operands[0]).Id)
+                 || i.Op is MOp.XorPs or MOp.XorF && i.Operands[1] is MReg same && same.Id == ((MReg)i.Operands[0]).Id)
                 && i.Operands[0] is MReg { IsXmm: true } to && (dead & (1 << to.XmmNumber)) != 0)
             {
                 instrs.RemoveAt(k);
                 continue;
             }
-            if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe)
+            if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallKeepRax or MOp.CallKeepCas or MOp.CallSafe)
             {
-                dead = 0xFF;
+                // None survives it; what it reads unnamed -- long mode's
+                // float arguments, in the registers XMM0 on -- is read.
+                Unnamed(i, out long passed, out _);
+                dead = (X86Mode.Long ? 0xFFFF : 0xFF) & ~(int)(passed >> MReg.XmmBase);
                 continue;
             }
             if (i.Op is MOp.Jcc or MOp.Jmp or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Epilogue)
@@ -2041,9 +2172,9 @@ internal static partial class Peephole
         for (int k = 1; k < instrs.Count; k++)
         {
             MInstr test = instrs[k], before = instrs[k - 1];
-            if (test.Op != MOp.Test || test.Width != 4 || test.Operands.Count != 2
+            if (test.Op != MOp.Test || !Wide(test.Width) || test.Operands.Count != 2
                 || test.Operands[0] is not MReg r || test.Operands[1] is not MReg r2 || r.Id != r2.Id
-                || before.Width != 4 || before.Lock || before.Operands.Count < 1 || before.Operands[0] is not MReg written || written.Id != r.Id)
+                || before.Width != test.Width || before.Lock || before.Operands.Count < 1 || before.Operands[0] is not MReg written || written.Id != r.Id)
                 continue;
             bool logical = before.Op is MOp.And or MOp.Or or MOp.Xor && before.Operands.Count == 2;
             bool arithmetic = before.Op is MOp.Add or MOp.Sub && before.Operands.Count == 2
@@ -2096,20 +2227,20 @@ internal static partial class Peephole
         for (int k = 1; k < instrs.Count; k++)
         {
             MInstr exchange = instrs[k];
-            if (exchange.Op != MOp.Cmpxchg || exchange.Width != 4 || exchange.Operands.Count != 2 || exchange.Operands[0] is not MMem
+            if (exchange.Op != MOp.Cmpxchg || !Wide(exchange.Width) || exchange.Operands.Count != 2 || exchange.Operands[0] is not MMem
                 || exchange.Operands[1] is not MReg { Id: not (int)Gpr.Eax }) continue;
             // What EAX was set to, just before: nothing between that names it.
-            if (instrs[k - 1] is not { Op: MOp.Mov, Width: 4, Lock: false, Operands: [MReg { Id: (int)Gpr.Eax }, MImm { IsPlain: true } expected] }) continue;
+            if (instrs[k - 1] is not { Op: MOp.Mov, Lock: false, Operands: [MReg { Id: (int)Gpr.Eax }, MImm { IsPlain: true } expected] } set || set.Width != exchange.Width) continue;
             int at = k + 1;
             int answer = (int)Gpr.Eax;
-            if (at < instrs.Count && instrs[at] is { Op: MOp.Mov, Width: 4, Lock: false, Operands: [MReg moved, MReg { Id: (int)Gpr.Eax }] } && moved.Id != (int)Gpr.Eax)
+            if (at < instrs.Count && instrs[at] is { Op: MOp.Mov, Lock: false, Operands: [MReg moved, MReg { Id: (int)Gpr.Eax }] } carried && (carried.Width == exchange.Width || IsMov(carried)) && moved.Id != (int)Gpr.Eax)
             {
                 answer = moved.Id;
                 at++;
             }
             if (at >= instrs.Count) continue;
             MInstr test = instrs[at];
-            bool asks = test.Width == 4 && !test.Lock && test.Operands.Count == 2 && test.Operands[0] is MReg tested && (tested.Id == answer || tested.Id == (int)Gpr.Eax)
+            bool asks = test.Width == exchange.Width && !test.Lock && test.Operands.Count == 2 && test.Operands[0] is MReg tested && (tested.Id == answer || tested.Id == (int)Gpr.Eax)
                 && (test.Op == MOp.Test && expected.Value == 0 && test.Operands[1] is MReg again && again.Id == tested.Id
                     || test.Op == MOp.Cmp && test.Operands[1] is MImm { IsPlain: true } against && against.Value == expected.Value);
             if (!asks) continue;
@@ -2145,7 +2276,7 @@ internal static partial class Peephole
         bool any = false;
         for (int k = 2; k + 1 < instrs.Count; k++)
         {
-            if (instrs[k] is not { Op: MOp.Test, Width: 4, Lock: false } test || test.Operands.Count != 2
+            if (instrs[k] is not { Op: MOp.Test, Lock: false } test || !Wide(test.Width) || test.Operands.Count != 2
                 || test.Operands[0] is not MReg r || test.Operands[1] is not MReg r2 || r.Id != r2.Id
                 || instrs[k + 1] is not { Op: MOp.Jcc, Cond: Cond.E or Cond.Ne } jump
                 || instrs[k - 1] is not { Op: MOp.Movzx, Width: 1 } widen || widen.Operands.Count != 2
@@ -2181,13 +2312,13 @@ internal static partial class Peephole
         bool any = false;
         for (int k = 0; k + 1 < instrs.Count; k++)
         {
-            if (instrs[k] is not { Op: MOp.Mov, Width: 4, Lock: false } probe || probe.Operands.Count != 2
+            if (instrs[k] is not { Op: MOp.Mov, Lock: false } probe || !Wide(probe.Width) || probe.Operands.Count != 2
                 || probe.Operands[0] is not MReg dead || probe.Operands[1] is not MMem { Device: false } probed
                 || !NullPage(probed) || probed.Base is not MReg b || b.Id == dead.Id) continue;
             MInstr next = instrs[k + 1];
             // The load that follows writes the whole register (a narrow
             // `mov` would leave the probe's upper bytes to be read).
-            if (next.Op is not (MOp.Mov or MOp.Movzx or MOp.Movsx) || next.Lock || next.Operands.Count != 2 || next.Op == MOp.Mov && next.Width != 4
+            if (next.Op is not (MOp.Mov or MOp.Movzx or MOp.Movsx) || next.Lock || next.Operands.Count != 2 || next.Op == MOp.Mov && !Wide(next.Width)
                 || next.Operands[0] is not MReg written || written.Id != dead.Id
                 || next.Operands[1] is not MMem { Device: false } read || !NullPage(read) || read.Base is not MReg b2 || b2.Id != b.Id) continue;
             instrs.RemoveAt(k);
@@ -2198,7 +2329,7 @@ internal static partial class Peephole
     }
 
     /// <summary>A plain `[base + d]`, d within the page a null base faults in.</summary>
-    private static bool NullPage(MMem m) => m.Base is not null && m.Index is null && m.Label is null && m.Symbol is null && m.Disp >= 0 && m.Disp < 4096 && !m.IsSpill;
+    private static bool NullPage(MMem m) => m.Base is not null && m.Index is null && m.Label is null && m.Symbol is null && m.Segment == 0 && m.Disp >= 0 && m.Disp < 4096 && !m.IsSpill;
 
     /// <summary>
     /// A TEST WHOSE FLAGS NOTHING READS, GONE -- and a conditional jump right
@@ -2259,7 +2390,7 @@ internal static partial class Peephole
         : WritesFlagsAlways(i);
 
     private static bool WritesFlagsAlways(MInstr i) => i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or
-        or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg
+        or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.MulWide or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg
         or MOp.Xadd or MOp.Cmpxchg or MOp.LockOrEsp or MOp.Sahf
         or MOp.Fucomipp or MOp.UcomiF or MOp.Bsf or MOp.Bsr or MOp.WriteFlags or MOp.Cmpxchg8b or MOp.PackedSaveX87 or MOp.PackedRestoreX87 or MOp.PackedSaveFxsr;
 
@@ -2283,9 +2414,11 @@ internal static partial class Peephole
             {
                 flagsLive = false;
             }
-            else if (!flagsLive && IsMov(i) && i.Operands[0] is MReg r && i.Operands[1] is MImm { IsPlain: true, Value: 0 })
+            else if (!flagsLive && i.Op == MOp.Mov && Wide(i.Width) && i.Operands[0] is MReg r && i.Operands[1] is MImm { IsPlain: true, Value: 0 })
             {
-                instrs[k] = new MInstr(MOp.Xor, MReg.Of(r.Id), MReg.Of(r.Id));
+                // Four bytes wide in either mode: long mode's clears the
+                // whole register, and needs no prefix for it.
+                instrs[k] = new MInstr(MOp.Xor, MReg.Of(r.Id), MReg.Of(r.Id)) { Width = 4 };
             }
         }
     }
@@ -2305,24 +2438,26 @@ internal static partial class Peephole
     /// </summary>
     private static void ReadModifyWrite(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
     {
-        const int Frame = (1 << (int)Gpr.Esp) | (1 << (int)Gpr.Ebp);
-        int dead = ~liveOut & 0xFF & ~Frame;
+        const int Frame = FrameRegs;
+        int dead = ~liveOut & All & ~Frame;
         for (int k = instrs.Count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
             dead &= ~jumped(i);
             // dead says what holds after instruction k.
-            if (k >= 2 && IsMov(i) && i.Operands[0] is MMem m && i.Operands[1] is MReg { IsPhys: true } r
-                && r.Id < 8 && (dead & (1 << r.Id)) != 0 && m.Base?.Id != r.Id && m.Index?.Id != r.Id)
+            // (All three of one width, four bytes or the word: the store
+            // writes what the operation made of what the load read.)
+            if (k >= 2 && i.Op == MOp.Mov && Wide(i.Width) && !i.Lock && i.Operands[0] is MMem m && i.Operands[1] is MReg { IsPhys: true } r
+                && (dead & (1 << r.Id)) != 0 && m.Base?.Id != r.Id && m.Index?.Id != r.Id)
             {
                 MInstr op = instrs[k - 1], load = instrs[k - 2];
-                if (op.Op is MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor && op.Width == 4 && !op.Lock
+                if (op.Op is MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor && op.Width == i.Width && !op.Lock
                     && op.Operands.Count == 2 && op.Operands[0] is MReg o0 && o0.Id == r.Id
                     && (op.Operands[1] is MReg x && x.Id != r.Id || op.Operands[1] is MImm { IsPlain: true })
-                    && IsMov(load) && load.Operands[0] is MReg l0 && l0.Id == r.Id
+                    && IsMovOf(load, i.Width) && !load.Lock && load.Operands[0] is MReg l0 && l0.Id == r.Id
                     && load.Operands[1] is MMem lm && SameMem(lm, m))
                 {
-                    MInstr rmw = new(op.Op, m, op.Operands[1]) { Width = 4, Line = op.Line, Probed = op.Probed, OwnsState = op.OwnsState, Native = op.Native };
+                    MInstr rmw = new(op.Op, m, op.Operands[1]) { Width = i.Width, Line = op.Line, Probed = op.Probed, OwnsState = op.OwnsState, Native = op.Native };
                     instrs.RemoveRange(k - 2, 3);
                     instrs.Insert(k - 2, rmw);
                     k -= 2;
@@ -2342,14 +2477,14 @@ internal static partial class Peephole
             // pairs with nothing there (Agner Fog, "Pentium", imperfect
             // pairing), two clocks alone against a load and a test that each
             // pair -- the test with the jump after it.
-            if (k >= 1 && i.Op == MOp.Test && i.Width == 4 && !i.Lock && i.Operands.Count == 2
-                && i.Operands[0] is MReg { IsPhys: true } t0 && i.Operands[1] is MReg t1 && t0.Id == t1.Id && t0.Id < 8
+            if (k >= 1 && i.Op == MOp.Test && Wide(i.Width) && !i.Lock && i.Operands.Count == 2
+                && i.Operands[0] is MReg { IsPhys: true } t0 && i.Operands[1] is MReg t1 && t0.Id == t1.Id
                 && (dead & (1 << t0.Id)) != 0
-                && instrs[k - 1] is { Lock: false } reload && IsMov(reload) && reload.Operands.Count == 2
+                && instrs[k - 1] is { Lock: false } reload && IsMovOf(reload, i.Width) && reload.Operands.Count == 2
                 && reload.Operands[0] is MReg into && into.Id == t0.Id && reload.Operands[1] is MMem asked
                 && !(CpuModel.P5 && (asked.Disp != 0 || asked.Symbol is not null || asked.Label is not null)))
             {
-                MInstr compare = new(MOp.Cmp, asked, new MImm(0)) { Width = 4, Line = reload.Line, Probed = reload.Probed, OwnsState = reload.OwnsState, Native = reload.Native };
+                MInstr compare = new(MOp.Cmp, asked, new MImm(0)) { Width = i.Width, Line = reload.Line, Probed = reload.Probed, OwnsState = reload.OwnsState, Native = reload.Native };
                 instrs.RemoveRange(k - 1, 2);
                 instrs.Insert(k - 1, compare);
                 k -= 1;
@@ -2360,10 +2495,7 @@ internal static partial class Peephole
                 dead = 0;
                 continue;
             }
-            foreach ((MReg rr, bool isDef) in Regs(i)) if (isDef && rr.Id < 8) dead |= 1 << rr.Id;
-            foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
-            foreach ((MReg rr, bool isDef) in Regs(i)) if (!isDef && rr.Id < 8) dead &= ~(1 << rr.Id);
-            foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
+            dead = DeadBefore(i, dead);
             dead &= ~Frame;
         }
     }
@@ -2382,19 +2514,20 @@ internal static partial class Peephole
     /// </summary>
     private static void PostStepTest(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
     {
-        int dead = ~liveOut & 0xFF;
+        int dead = ~liveOut & All;
         for (int k = instrs.Count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
             dead &= ~jumped(i);
             // dead says what holds after instruction k.
-            if (k >= 2 && k + 1 < instrs.Count && i.Op == MOp.Test && i.Width == 4 && i.Operands.Count == 2
-                && i.Operands[0] is MReg { IsPhys: true } t && i.Operands[1] is MReg t2 && t2.Id == t.Id && t.Id < 8
+            if (k >= 2 && k + 1 < instrs.Count && i.Op == MOp.Test && Wide(i.Width) && i.Operands.Count == 2
+                && i.Operands[0] is MReg { IsPhys: true } t && i.Operands[1] is MReg t2 && t2.Id == t.Id
                 && (dead & (1 << t.Id)) != 0
                 && instrs[k + 1] is { Op: MOp.Jcc } jump
                 && (k + 2 >= instrs.Count || !ReadsFlags(instrs[k + 2]) && Understood(instrs[k + 2]))
-                && instrs[k - 1] is var step && Step(step) is var (x, down) && x.Id != t.Id
-                && instrs[k - 2] is var copy && IsMov(copy) && copy.Operands[0] is MReg c0 && c0.Id == t.Id
+                && instrs[k - 1] is var step && Step(step, i.Width) is var (x, down) && x.Id != t.Id
+                // (The copy whole, or of the width tested: what the test reads of it is what the step read.)
+                && instrs[k - 2] is var copy && (IsMov(copy) || IsMovOf(copy, i.Width)) && copy.Operands[0] is MReg c0 && c0.Id == t.Id
                 && copy.Operands[1] is MReg c1 && c1.Id == x.Id
                 && (down ? jump.Cond is Cond.G or Cond.Le : jump.Cond is Cond.L or Cond.Ge))
             {
@@ -2411,16 +2544,13 @@ internal static partial class Peephole
                 dead = 0;
                 continue;
             }
-            foreach ((MReg rr, bool isDef) in Regs(i)) if (isDef && rr.Id < 8) dead |= 1 << rr.Id;
-            foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
-            foreach ((MReg rr, bool isDef) in Regs(i)) if (!isDef && rr.Id < 8) dead &= ~(1 << rr.Id);
-            foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
+            dead = DeadBefore(i, dead);
         }
 
-        // A step of one on a register: which, and whether down.
-        static (MReg Reg, bool Down)? Step(MInstr i)
+        // A step of one on a register, of the width asked: which, and whether down.
+        static (MReg Reg, bool Down)? Step(MInstr i, int width)
         {
-            if (i.Width != 4 || i.Lock || i.Operands.Count == 0 || i.Operands[0] is not MReg { IsPhys: true } r || r.Id >= 8) return null;
+            if (i.Width != width || i.Lock || i.Operands.Count == 0 || i.Operands[0] is not MReg { IsPhys: true } r) return null;
             if (i.Op == MOp.Dec && i.Operands.Count == 1) return (r, true);
             if (i.Op == MOp.Inc && i.Operands.Count == 1) return (r, false);
             if (i.Op is MOp.Sub or MOp.Add && i.Operands.Count == 2 && i.Operands[1] is MImm { IsPlain: true } one && one.Value is 1 or -1)
@@ -2445,23 +2575,26 @@ internal static partial class Peephole
         int count = instrs.Count;
         if (count < 2) return;
         int[] after = new int[count];
-        int live = liveOut & 0xFF;
+        int live = liveOut & All;
         for (int k = count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
             live |= jumped(i);
             after[k] = live;
-            if (!Understood(i)) { live = 0xFF; continue; }
+            if (!Understood(i)) { live = All; continue; }
             Masks(i, out long reads, out long writes);
-            live = (live & ~(int)writes | (int)reads) & 0xFF;
+            live = (live & ~(int)writes | (int)reads) & All;
         }
         bool[] gone = new bool[count];
         for (int k = 0; k + 1 < count; k++)
         {
             MInstr op = instrs[k], move = instrs[k + 1];
-            if (gone[k] || op.Op is not (MOp.Add or MOp.And or MOp.Or or MOp.Xor or MOp.Imul) || op.Width != 4 || op.Lock || op.Operands.Count != 2
-                || op.Operands[0] is not MReg { IsPhys: true } c || op.Operands[1] is not MReg { IsPhys: true } a || c.Id >= 8 || a.Id >= 8 || c.Id == a.Id
-                || !IsMov(move) || move.Operands[0] is not MReg m0 || m0.Id != a.Id || move.Operands[1] is not MReg m1 || m1.Id != c.Id
+            // (The operation of four bytes or the word; the move after it
+            // whole, or of the operation's width -- in long mode a four-byte
+            // move of a wider result would keep half of it, and is not this.)
+            if (gone[k] || op.Op is not (MOp.Add or MOp.And or MOp.Or or MOp.Xor or MOp.Imul) || !Wide(op.Width) || op.Lock || op.Operands.Count != 2
+                || op.Operands[0] is not MReg { IsPhys: true } c || op.Operands[1] is not MReg { IsPhys: true } a || c.Id == a.Id
+                || !(IsMov(move) || IsMovOf(move, op.Width)) || move.Lock || move.Operands[0] is not MReg m0 || m0.Id != a.Id || move.Operands[1] is not MReg m1 || m1.Id != c.Id
                 || (after[k + 1] & (1 << c.Id)) != 0) continue;
             // The flags: the move sets none, so what reads them after reads
             // the same operation's, made into the other register.
@@ -2472,7 +2605,7 @@ internal static partial class Peephole
             int load = k - 1;
             while (load >= 0 && gone[load]) load--;
             // (Read before a is written, so an address through a is as good.)
-            if (load >= 0 && IsMov(instrs[load]) && instrs[load].Operands[0] is MReg l0 && l0.Id == c.Id && instrs[load].Operands[1] is MMem mem
+            if (load >= 0 && (IsMov(instrs[load]) || IsMovOf(instrs[load], op.Width)) && instrs[load].Operands[0] is MReg l0 && l0.Id == c.Id && instrs[load].Operands[1] is MMem mem
                 && mem.Base?.Id != c.Id && mem.Index?.Id != c.Id && !instrs[load].Lock)
             {
                 source = mem;
@@ -2484,7 +2617,7 @@ internal static partial class Peephole
                 native |= instrs[load].Native;
                 gone[load] = true;
             }
-            instrs[k] = new MInstr(op.Op, a, source) { Width = 4, Line = line, Probed = probed, OwnsState = owns, Native = native };
+            instrs[k] = new MInstr(op.Op, a, source) { Width = op.Width, Line = line, Probed = probed, OwnsState = owns, Native = native };
             gone[k + 1] = true;
         }
         for (int k = count - 1; k >= 0; k--) if (gone[k]) instrs.RemoveAt(k);
@@ -2515,22 +2648,22 @@ internal static partial class Peephole
         int count = instrs.Count;
         if (count < 2) return false;
         int[] after = new int[count];
-        int live = liveOut & 0xFF;
+        int live = liveOut & All;
         for (int k = count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
             live |= jumped(i);
             after[k] = live;
-            if (!Understood(i)) { live = 0xFF; continue; }
+            if (!Understood(i)) { live = All; continue; }
             Masks(i, out long reads, out long writes);
-            live = (live & ~(int)writes | (int)reads) & 0xFF;
+            live = (live & ~(int)writes | (int)reads) & All;
         }
         const int ByteForm = (1 << (int)Gpr.Eax) | (1 << (int)Gpr.Ecx) | (1 << (int)Gpr.Edx) | (1 << (int)Gpr.Ebx);
         for (int k = 0; k + 1 < instrs.Count; k++)
         {
             MInstr copy = instrs[k];
             if (!IsMov(copy) || copy.Lock || copy.Operands[0] is not MReg { IsPhys: true } b || copy.Operands[1] is not MReg { IsPhys: true } a
-                || a.Id >= 8 || b.Id >= 8 || a.Id == b.Id || a.Id is (int)Gpr.Esp or (int)Gpr.Ebp || b.Id is (int)Gpr.Esp or (int)Gpr.Ebp
+                || a.Id == b.Id || a.Id is (int)Gpr.Esp or (int)Gpr.Ebp || b.Id is (int)Gpr.Esp or (int)Gpr.Ebp
                 || (after[k] & (1 << a.Id)) != 0) continue;
             long bitA = 1L << a.Id, bitB = 1L << b.Id;
             // b's value from here to where it dies, every instruction of it.
@@ -2539,13 +2672,14 @@ internal static partial class Peephole
             for (int j = k + 1; j < instrs.Count && ok; j++)
             {
                 MInstr i = instrs[j];
-                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe
+                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallKeepRax or MOp.CallKeepCas or MOp.CallSafe or MOp.Syscall or MOp.SoftInt
                     or MOp.InlineAsm or MOp.Jmp or MOp.JmpTable or MOp.JmpInd or MOp.Epilogue) { ok = false; break; }
                 Masks(i, out long reads, out long writes);
                 if (((reads | writes) & bitA) != 0) { ok = false; break; }
-                foreach (Gpr g in Roles.ImplicitUses(i)) if ((int)g == b.Id) ok = false;
-                foreach (Gpr g in Roles.ImplicitDefs(i)) if ((int)g == b.Id) ok = false;
-                if (!ok) break;
+                // (Nor b where the instruction takes it unnamed: a divide's
+                // pair, a count in CL the roles do not show.)
+                Unnamed(i, out long uses, out long defs);
+                if (((uses | defs) & bitB) != 0) { ok = false; break; }
                 bool readsB = (reads & bitB) != 0, writesB = (writes & bitB) != 0;
                 // A new value of b: the old one's life ended before it.
                 if (writesB && !readsB) { end = j - 1; break; }
@@ -2553,9 +2687,11 @@ internal static partial class Peephole
                 // A register an instruction's form fixes: a shift's count (CL),
                 // a port's DX or AL, an exchange's pair.
                 if ((readsB || writesB) && (i.Op is MOp.In or MOp.Out or MOp.Xchg or MOp.Cmpxchg or MOp.Xadd
-                    || i.Op is MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd && i.Operands.Count > 0 && i.Operands[^1] is MReg)) { ok = false; break; }
-                // Where a has no byte form, b only as a whole word.
-                if ((readsB || writesB) && (ByteForm & (int)bitA) == 0 && (i.Width != 4 || i.Op is MOp.Movzx or MOp.Movsx or MOp.Setcc)) { ok = false; break; }
+                    || i.Op is MOp.Shl or MOp.Shr or MOp.Sar or MOp.Rol or MOp.Ror or MOp.Shld or MOp.Shrd && i.Operands.Count > 0 && i.Operands[^1] is MReg
+                    || i.Op == MOp.MovGx)) { ok = false; break; }
+                // Where a has no byte form, b only as a whole word (i386: long
+                // mode gives every register a byte form).
+                if (!X86Mode.Long && (readsB || writesB) && (ByteForm & (int)bitA) == 0 && (i.Width != 4 || i.Op is MOp.Movzx or MOp.Movsx or MOp.Setcc)) { ok = false; break; }
                 if ((after[j] & (int)bitB) == 0) { end = j; break; }
             }
             if (!ok || end < 0) continue;
@@ -2577,19 +2713,13 @@ internal static partial class Peephole
             if (op is MReg { IsPhys: true } r && r.Id == from) { op = to; any = true; }
             else if (op is MMem mem && (mem.Base?.Id == from || mem.Index?.Id == from))
             {
-                op = new MMem(mem.Base?.Id == from ? to : mem.Base, mem.Disp)
-                {
-                    Index = mem.Index?.Id == from ? to : mem.Index, Scale = mem.Scale, Symbol = mem.Symbol, Reloc = mem.Reloc,
-                    Label = mem.Label, IsSpill = mem.IsSpill, Device = mem.Device, Aligned = mem.Aligned,
-                };
+                op = mem.WithRegisters(mem.Base?.Id == from ? to : mem.Base, mem.Index?.Id == from ? to : mem.Index);
                 any = true;
             }
             ops[o] = op;
         }
         if (!any) return i;
-        MInstr made = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
-        made.Operands.AddRange(ops);
-        return made;
+        return i.WithOperands(ops);
     }
 
     // ---- a copy and an operation on it, one LEA -----------------------------------
@@ -2614,7 +2744,7 @@ internal static partial class Peephole
         {
             MInstr copy = instrs[k], op = instrs[k + 1];
             if (!IsMov(copy) || copy.Operands[0] is not MReg { IsPhys: true } d || copy.Operands[1] is not MReg { IsPhys: true } a
-                || d.Id >= 8 || a.Id >= 8 || d.Id == a.Id || d.Id == (int)Gpr.Esp || op.Width != 4 || op.Lock
+                || d.Id == a.Id || d.Id == (int)Gpr.Esp || op.Width != X86Mode.Word || op.Lock
                 || op.Operands.Count == 0 || op.Operands[0] is not MReg o0 || o0.Id != d.Id || !FlagsDeadAfter(instrs, k + 1)) continue;
             if (a.Id == (int)Gpr.Ebp) continue;
             MMem? address = op.Op switch
@@ -2625,7 +2755,7 @@ internal static partial class Peephole
                 // ESP added: the base (it may be no index).
                 MOp.Add when op.Operands[1] is MReg { IsPhys: true, Id: (int)Gpr.Esp } && a.Id != (int)Gpr.Esp
                     => new MMem(MReg.Of(Gpr.Esp), 0) { Index = MReg.Of((Gpr)a.Id), Scale = 1 },
-                MOp.Add when op.Operands[1] is MReg { IsPhys: true } b && b.Id < 8 && b.Id != (int)Gpr.Esp
+                MOp.Add when op.Operands[1] is MReg { IsPhys: true } b && b.IsPhys && b.Id != (int)Gpr.Esp
                     => new MMem(MReg.Of((Gpr)a.Id), 0) { Index = MReg.Of((Gpr)b.Id), Scale = 1 },
                 MOp.Add when op.Operands[1] is MImm { IsPlain: true } n && n.Value is >= int.MinValue and <= int.MaxValue
                     => new MMem(MReg.Of((Gpr)a.Id), (int)n.Value),
@@ -2641,7 +2771,7 @@ internal static partial class Peephole
                 Masks(instrs[k - 1], out _, out long written);
                 if ((written & ((1L << address.Base!.Id) | (1L << address.Index.Id))) != 0) continue;
             }
-            instrs[k] = new MInstr(MOp.Lea, d, address) { Width = 4, Line = op.Line };
+            instrs[k] = new MInstr(MOp.Lea, d, address) { Line = op.Line };
             instrs.RemoveAt(k + 1);
         }
     }
@@ -2693,6 +2823,7 @@ internal static partial class Peephole
                     {
                         if (o is MImm { Label: { } taken } && index.TryGetValue(taken, out int t)) pinned[t] = true;
                         else if (o is MMem { Label: { } table } && index.TryGetValue(table, out int u)) pinned[u] = true;
+                        else if (o is MLabel { Target: var named } && i.Op is not (MOp.Jmp or MOp.Jcc) && index.TryGetValue(named, out int x)) pinned[x] = true;
                     }
                 foreach (MInstr i in block.Instrs)
                     if (i.Op == MOp.JmpTable && i.Table is { } targets)
@@ -2772,15 +2903,15 @@ internal static partial class Peephole
         if (count < 2) return;
         // What is live after each instruction.
         int[] after = new int[count];
-        int live = liveOut & 0xFF;
+        int live = liveOut & All;
         for (int k = count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
             live |= jumped(i);
             after[k] = live;
-            if (!Understood(i)) { live = 0xFF; continue; }
+            if (!Understood(i)) { live = All; continue; }
             Masks(i, out long reads, out long writes);
-            live = (live & ~(int)writes | (int)reads) & 0xFF;
+            live = (live & ~(int)writes | (int)reads) & All;
         }
         bool[] gone = new bool[count];
         for (int j = 1; j < count; j++)
@@ -2789,7 +2920,7 @@ internal static partial class Peephole
             // (Never ESP or EBP on either side: a push or a pop moves ESP
             // with no operand that says so.)
             if (!IsMov(second) || second.Operands[0] is not MReg { IsPhys: true } r2 || second.Operands[1] is not MReg { IsPhys: true } r1
-                || r1.Id >= 8 || r2.Id >= 8 || r1.Id == r2.Id || (after[j] & (1 << r1.Id)) != 0
+                || !r1.IsPhys || !r2.IsPhys || r1.Id == r2.Id || (after[j] & (1 << r1.Id)) != 0
                 || r1.Id is (int)Gpr.Esp or (int)Gpr.Ebp || r2.Id is (int)Gpr.Esp or (int)Gpr.Ebp) continue;
             int k = j - 1;
             for (; k >= 0; k--)
@@ -2807,7 +2938,7 @@ internal static partial class Peephole
             MOperand x = first.Operands[1];
             if (x is MReg { IsPhys: true } xr)
             {
-                if (xr.Id >= 8 || xr.Id is (int)Gpr.Esp or (int)Gpr.Ebp) continue;
+                if (!xr.IsPhys || xr.Id is (int)Gpr.Esp or (int)Gpr.Ebp) continue;
                 bool written = false;
                 for (int b = k + 1; b < j && !written; b++)
                 {
@@ -2819,7 +2950,7 @@ internal static partial class Peephole
                 if (xr.Id == r2.Id) { gone[j] = true; gone[k] = true; continue; }
             }
             else if (x is not MImm) continue;
-            instrs[j] = new MInstr(MOp.Mov, r2, x) { Width = 4, Line = second.Line };
+            instrs[j] = new MInstr(MOp.Mov, r2, x) { Line = second.Line };
             gone[k] = true;
         }
         for (int k = count - 1; k >= 0; k--) if (gone[k]) instrs.RemoveAt(k);
@@ -2843,7 +2974,7 @@ internal static partial class Peephole
         for (int k = 0; k < instrs.Count; k++)
         {
             MInstr i = instrs[k];
-            if (i.Op is not (MOp.Add or MOp.Sub) || i.Width != 4 || i.Lock || i.Operands.Count != 2
+            if (i.Op is not (MOp.Add or MOp.Sub) || !Wide(i.Width) || i.Lock || i.Operands.Count != 2
                 || i.Operands[1] is not MImm { IsPlain: true, Value: 1 or -1 } one
                 || i.Operands[0] is not (MReg or MMem))
             {
@@ -2867,7 +2998,7 @@ internal static partial class Peephole
             }
             if (!safe) continue;
             bool up = (i.Op == MOp.Add) == (one.Value == 1);
-            instrs[k] = new MInstr(up ? MOp.Inc : MOp.Dec, i.Operands[0]) { Width = 4, Line = i.Line };
+            instrs[k] = new MInstr(up ? MOp.Inc : MOp.Dec, i.Operands[0]) { Width = i.Width, Line = i.Line };
         }
     }
 
@@ -2903,8 +3034,8 @@ internal static partial class Peephole
     private static void ChooseForCpu(List<MInstr> instrs, int liveOut, int usable, Func<MInstr, int> jumped)
     {
         bool p5 = CpuModel.P5, scalar = CpuModel.Scalar, k6 = CpuModel.K6, i486 = CpuModel.I486;
-        const int Frame = (1 << (int)Gpr.Esp) | (1 << (int)Gpr.Ebp);
-        int dead = ~liveOut & 0xFF & ~Frame;
+        const int Frame = FrameRegs;
+        int dead = ~liveOut & All & ~Frame;
         bool flagsLive = false;
         // What holds above instruction i, from what holds below it.
         void Step(MInstr i)
@@ -2917,10 +3048,7 @@ internal static partial class Peephole
             }
             if (MayReadFlags(i)) flagsLive = true;
             else if (WritesFlags(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe) flagsLive = false;
-            foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.Id < 8) dead |= 1 << r.Id;
-            foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
-            foreach ((MReg r, bool isDef) in Regs(i)) if (!isDef && r.Id < 8) dead &= ~(1 << r.Id);
-            foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
+            dead = DeadBefore(i, dead);
             dead &= ~Frame;
         }
         for (int k = instrs.Count - 1; k >= 0; k--)
@@ -2929,9 +3057,9 @@ internal static partial class Peephole
             dead &= ~jumped(i);
             // dead and flagsLive say what holds AFTER instruction k.
             MInstr[]? with = null;
-            if (i.Op == MOp.Shl && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg sr && i.Operands[1] is MImm { IsPlain: true, Value: 1 })
+            if (i.Op == MOp.Shl && Wide(i.Width) && i.Operands.Count == 2 && i.Operands[0] is MReg sr && i.Operands[1] is MImm { IsPlain: true, Value: 1 })
             {
-                with = [new MInstr(MOp.Add, MReg.Of(sr.Id), MReg.Of(sr.Id)) { Line = i.Line }];
+                with = [new MInstr(MOp.Add, MReg.Of(sr.Id), MReg.Of(sr.Id)) { Width = i.Width, Line = i.Line }];
             }
             else if ((p5 || scalar) && !flagsLive && i.Op == MOp.Movzx && i.Width == 1 && i.Operands.Count == 2
                 && i.Operands[0] is MReg { IsPhys: true } zd && zd.Id < 4)

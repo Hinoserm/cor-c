@@ -144,4 +144,22 @@ public sealed class MInstr : MOperandList
     }
 
     public MReg Reg(int i) => (MReg)Operands[i];
+
+    /// <summary>
+    /// The same instruction on other operands: every property kept. What a
+    /// pass that renames a register or folds an operand makes, so that
+    /// nothing an instruction carries -- of either mode -- is dropped by a
+    /// list of properties written out where it is rebuilt.
+    /// </summary>
+    public MInstr WithOperands(IReadOnlyList<MOperand> operands)
+    {
+        MInstr made = new(Op)
+        {
+            Width = Width, SourceWidth = SourceWidth, TableSymbol = TableSymbol, FloatArgs = FloatArgs, IntArgs = IntArgs, NativeAl = NativeAl,
+            Line = Line, Cond = Cond, ZeroFirst = ZeroFirst, Native = Native, Lock = Lock, Probed = Probed, OwnsState = OwnsState, Asm = Asm,
+            Table = Table, CallReloc = CallReloc,
+        };
+        for (int k = 0; k < operands.Count; k++) made.Operands.Add(operands[k]);
+        return made;
+    }
 }

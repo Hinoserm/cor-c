@@ -160,12 +160,12 @@ internal sealed class X64Target : ITarget
 
     public int ClassOf(int reg) => reg < MReg.FirstVirtual
         ? (reg >= MReg.XmmBase ? Xmms : Gprs)
-        : (_m.FloatRegs.Contains(reg) ? Xmms : Gprs);
+        : (_m.XmmRegs.Contains(reg) ? Xmms : Gprs);
 
     /// <summary>Every general register has a byte form under REX.</summary>
     public bool ByteOnly(int vreg) => false;
     public int NewSlot(int vreg) => _m.Frame.Spill();
-    public int NewVRegLike(int like) => _m.FloatRegs.Contains(like) ? _m.NewFloat().Id : _m.NewReg().Id;
+    public int NewVRegLike(int like) => _m.XmmRegs.Contains(like) ? _m.NewFloat().Id : _m.NewReg().Id;
     public string RegName(int reg) => new MReg(reg).ToString();
     /// <summary>A constant any operand carries: one that fits 32 bits signed (an instruction's immediate, sign-extended).</summary>
     public bool PlainConstant(object constant) => constant is MImm { FitsInt32: true };
@@ -215,7 +215,7 @@ internal sealed class X64Target : ITarget
                 // A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a
                 // reload is the whole eight bytes: a general register written
                 // at less than eight bytes is written in a register.
-                if (i.Width == 8 || i.Operands[k] is MReg r && (r.IsFloat || _m.FloatRegs.Contains(r.Id))) mayMemoryWrite |= 1u << k;
+                if (i.Width == 8 || i.Operands[k] is MReg r && (r.IsFloat || _m.XmmRegs.Contains(r.Id))) mayMemoryWrite |= 1u << k;
             }
             if (i.Operands[k] is MMem) isMemory |= 1u << k;
         }

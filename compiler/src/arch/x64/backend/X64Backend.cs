@@ -472,10 +472,13 @@ public sealed class X64Backend : IBackend
         {
             AddressFold.Run(m, absolute: false, compareMemory: true);
             IfConvert.Run(m);
+            XmmLocalSplit.Run(m);
             Allocator.Run(m);
             Layout.Run(m);
             LoopRotate.Run(m);
             Peephole.Run(m);
+            Peephole.UnusedSaves(m);
+            FrameCompact.Run(m);
             FramePointerFree.Run(m);
             // Last, over the code as it will be encoded: which IR frame slot
             // words each call's map names (FrameSlotLiveness), and the

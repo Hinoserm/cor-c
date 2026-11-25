@@ -3,7 +3,7 @@ namespace Corsac.Lang.X86;
 
 /// <summary>
 /// AN XMM VARIABLE'S VALUES INSIDE A BLOCK, EACH ITS OWN REGISTER but the
-/// last. A variable is one register wherever it is live, so where a value
+/// last (one pass for both modes of the family). A variable is one register wherever it is live, so where a value
 /// of it is made in two-address form -- `b = t1 | t2` selected as `movaps
 /// b, t1 ; por b, t2` -- the move stays unless the allocator happened to
 /// give b the register t1 dies in: ChaCha20's quarter round, b's twelfth
@@ -137,9 +137,9 @@ internal static class XmmLocalSplit
         return read;
     }
 
-    /// <summary>XORPS of a register with itself: a write of all of it that reads nothing.</summary>
+    /// <summary>XORPS of a register with itself (long mode's XorF): a write of all of it that reads nothing.</summary>
     private static bool Zeroing(MInstr i)
-        => i.Op == MOp.XorPs && i.Operands.Count == 2 && i.Operands[0] is MReg a && i.Operands[1] is MReg b && a.Id == b.Id;
+        => i.Op is MOp.XorPs or MOp.XorF && i.Operands.Count == 2 && i.Operands[0] is MReg a && i.Operands[1] is MReg b && a.Id == b.Id;
 
     /// <summary>The XMM-class virtual registers an instruction writes whole: a Def it does not also read.</summary>
     private static void WrittenWhole(MFunction m, MInstr i, List<int> whole)

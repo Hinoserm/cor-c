@@ -1023,7 +1023,9 @@ public static class Gc
         // And only where everything a reference can be stored into lies in
         // the 47 bits the table covers (CardTableBytes): a kernel linked in
         // the upper half would index past it at its first store into a
-        // static, so it keeps whole collections.
+        // static, so it keeps whole collections. (Asked here of the image
+        // and this stack; of every chunk, stack and arena named later, as it
+        // is named: CommitCards.)
         if (!Platform.MapsCommitLazily || (Sys.DataEnd() >> 47) != 0 || (Sys.Stack() >> 47) != 0)
 #else
         if (HeapCeiling == 0 || !Platform.MapsCommitLazily)
@@ -1038,7 +1040,8 @@ public static class Gc
         // ever read or written. The held-block tables are not: a single
         // collection may write the whole of one, in bursts no page fault
         // should have to keep up with (a kernel's lazy faults take frames set
-        // aside beforehand), and they are half a megabyte or so.
+        // aside beforehand), and they are a quarter of a megabyte each on a
+        // 32-bit machine, half a megabyte in long mode.
         nuint cards = Platform.MapLazy((nuint)CardTableBytes);
         nuint taken = Platform.MapLazy((nuint)CardTableBytes);
         nuint held = Platform.Map(HeldBytes);
@@ -1078,6 +1081,23 @@ public static class Gc
     {
         nuint cards = Runtime.Cards;
         if (cards == 0 || bytes == 0) return;
+#if TARGET_64BIT
+        // WHAT THE TABLE COVERS IS THE 47 BITS BELOW (CardTableBytes). The
+        // image and the first stack were asked before there were cards
+        // (StartGenerations); every chunk the heap grows by, and every stack
+        // or arena a platform names, is asked here: memory above them would
+        // have its stores mark past the table's end, into whatever is
+        // mapped there. Said and stopped -- a platform that maps so keeps
+        // whole collections by saying so before the first (its data or its
+        // stack up there), not after.
+        if (((at + bytes - 1) >> 47) != 0)
+        {
+            Runtime.WriteLiteral(2, "gc: memory the card table does not cover");
+            SayNumber(" -- at ", at);
+            SayNumber("gc:   bytes ", bytes);
+            Platform.Exit(92);
+        }
+#endif
         nuint first = at >> Runtime.CardShift;
         nuint last = (at + bytes - 1) >> Runtime.CardShift;
         Platform.Commit(cards + first, last - first + 1);

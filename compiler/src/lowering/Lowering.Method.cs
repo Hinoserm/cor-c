@@ -1734,7 +1734,9 @@ public sealed partial class Lowering
     /// (CardMarkBefore, CardMarkAhead).
     /// Where the Marking test is omitted -- the collector's own code, a
     /// runtime without Cards -- so is this. (The table is there on both
-    /// targets where the kernel commits memory on first touch: Gc.StartGenerations.)
+    /// targets where the kernel commits memory on first touch -- and, in long
+    /// mode, the image and its stack lie in the 47 bits a table covers:
+    /// Gc.StartGenerations.)
     /// </summary>
     private void CardMark(MemPlace m, VReg value)
     {

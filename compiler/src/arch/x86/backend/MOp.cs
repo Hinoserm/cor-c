@@ -350,7 +350,6 @@ public enum MOp : byte
     /// <summary>A call into a store-sequence stub that keeps every register (RAX the answer for the Rax and Cas ones): never a safepoint.</summary>
     CallKeepRax, CallKeepCas,
     /// <summary>cmovcc r, r/m.</summary>
-    Cmovcc,
     /// <summary>cvttss2si / cvttsd2si r, xmm/m.</summary>
     CvtFToInt,
     /// <summary>cwd / cdq / cqo by Width: the accumulator's sign into the data register.</summary>

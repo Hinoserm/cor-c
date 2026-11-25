@@ -237,4 +237,132 @@ internal static class Implicit
                 break;
         }
     }
+
+    // ---- the same two answers as masks, a bit per register id -------------------
+    //
+    // For the passes that ask of every instruction, often (Peephole.Masks):
+    // no iterator made, no register an object. General registers are bits
+    // 0 to 15, XMM ones 16 to 31. WHAT THESE SAY IS WHAT Uses AND Defs SAY,
+    // register for register (ImplicitTests holds the two together).
+
+    private const long Rax = 1L << (int)Gpr.Rax, Rcx = 1L << (int)Gpr.Rcx, Rdx = 1L << (int)Gpr.Rdx, Rbx = 1L << (int)Gpr.Rbx,
+        Rsi = 1L << (int)Gpr.Rsi, Rdi = 1L << (int)Gpr.Rdi, R11 = 1L << (int)Gpr.R11;
+    private const long AllXmm = 0xFFFFL << MReg.XmmBase;
+    private static readonly long CallerSavedMask = MaskOf(LongAbi.CallerSaved);
+    private static readonly long[] IntArgMasks = Prefixes(Array.ConvertAll(LongAbi.IntArgRegs, r => (int)r));
+    private static readonly long[] SyscallArgMasks = Prefixes(LongAbi.SyscallArgs);
+
+    private static long MaskOf(int[] ids)
+    {
+        long mask = 0;
+        foreach (int id in ids) mask |= 1L << id;
+        return mask;
+    }
+
+    /// <summary>For each count n, the first n registers of a list as a mask.</summary>
+    private static long[] Prefixes(int[] ids)
+    {
+        long[] masks = new long[ids.Length + 1];
+        for (int n = 1; n <= ids.Length; n++) masks[n] = masks[n - 1] | 1L << ids[n - 1];
+        return masks;
+    }
+
+    /// <summary>What the instruction reads and writes without naming it, as masks by register id.</summary>
+    public static void Masks(MInstr i, out long uses, out long defs)
+    {
+        uses = 0;
+        defs = 0;
+        switch (i.Op)
+        {
+            case MOp.InlineAsm:
+                foreach (Gpr r in i.Asm!.Uses) uses |= 1L << (int)r;
+                foreach (Gpr r in i.Asm.Defs) defs |= 1L << (int)r;
+                defs |= (long)(i.Asm.XmmClobbers & 0xFFFF) << MReg.XmmBase;
+                break;
+            case MOp.Cwd:
+                uses = Rax; defs = Rdx;
+                break;
+            case MOp.MulWide:
+            case MOp.ImulWide:
+                uses = Rax; defs = Rax | Rdx;
+                break;
+            case MOp.Cmpxchg:
+                uses = Rax; defs = Rax;
+                break;
+            case MOp.Div:
+            case MOp.Idiv:
+                uses = Rax | Rdx; defs = Rax | Rdx;
+                break;
+            case MOp.RepMovsb:
+            case MOp.RepMovsq:
+                uses = Rsi | Rdi | Rcx; defs = Rsi | Rdi | Rcx;
+                break;
+            case MOp.RepStosb:
+            case MOp.RepStosq:
+                uses = Rax | Rdi | Rcx; defs = Rdi | Rcx;
+                break;
+            case MOp.In:
+                uses = Rdx; defs = Rax;
+                break;
+            case MOp.Out:
+                uses = Rdx | Rax;
+                break;
+            case MOp.RepInsw:
+                uses = Rdi | Rcx | Rdx; defs = Rdi | Rcx;
+                break;
+            case MOp.RepOutsw:
+                uses = Rsi | Rcx | Rdx; defs = Rsi | Rcx;
+                break;
+            case MOp.LoadSegments:
+                uses = Rax;
+                break;
+            case MOp.LoadCs:
+                defs = Rax;
+                break;
+            case MOp.Rdmsr:
+                uses = Rcx; defs = Rax | Rdx;
+                break;
+            case MOp.Rdtsc:
+                defs = Rax | Rdx;
+                break;
+            case MOp.Wrmsr:
+                uses = Rcx | Rax | Rdx;
+                break;
+            case MOp.Cpuid:
+                uses = Rax | Rcx; defs = Rax | Rbx | Rcx | Rdx;
+                break;
+            case MOp.CallKeep:
+                uses = Rax | Rdx;
+                break;
+            case MOp.CallKeepRax:
+                uses = Rax | Rdx; defs = Rax;
+                break;
+            case MOp.CallKeepCas:
+                uses = Rax | Rcx | Rdx; defs = Rax;
+                break;
+            case MOp.CallSafe:
+                defs = AllXmm;
+                break;
+            case MOp.Call:
+            case MOp.CallInd:
+                if (i.NativeAl) uses |= Rax;
+                uses |= IntArgMasks[i.IntArgs];
+                uses |= ((1L << i.FloatArgs) - 1) << MReg.XmmBase;
+                defs = CallerSavedMask | AllXmm;
+                break;
+            case MOp.Syscall:
+            case MOp.SoftInt:
+                uses = Rax | SyscallArgMasks[i.IntArgs];
+                defs = Rax | Rcx | R11;
+                break;
+            case MOp.JmpInd:
+                // Unwind's exception travels in RAX to the landing pad.
+                uses = Rax;
+                break;
+            case MOp.Epilogue:
+                if (i.IntArgs > 0) uses |= Rax;
+                if (i.FloatArgs > 0) uses |= 1L << MReg.XmmBase;
+                break;
+        }
+    }
 }

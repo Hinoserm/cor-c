@@ -155,6 +155,10 @@ internal static class AddressFold
     /// -- gives up the V pipe, at most a clock; the register it frees is a
     /// spill's store and reload saved on a machine of six. One image runs on
     /// the 486, the Pentium and the K6 alike (--cpu 486), so it is done for all.
+    /// Long mode's processors take it as one operation where the load and
+    /// the compare are two (Agner Fog's instruction tables: the K8's `CMP
+    /// r,m` one macro-operation, ALU and AGU; Core 2's `CMP m,r/i` one fused
+    /// micro-operation), so it is done there too.
     /// </summary>
     public static void Run(MFunction m, bool absolute = false, bool compareMemory = false)
     {
@@ -172,6 +176,7 @@ internal static class AddressFold
                 Count(ins[k], occurrences, defs, writes, b, k);
             }
         }
+        FrameBlocks frame = new(m.Frame);
         for (int b = 0; b < m.Blocks.Count; b++)
         {
             // AGAIN WHILE A ROUND FOLDS SOMETHING: one fold makes another --
@@ -182,7 +187,7 @@ internal static class AddressFold
             // round only removes instructions; four at most.
             for (int round = 0; round < 4; round++)
             {
-                if (!FoldBlock(m.Blocks[b], occurrences, defs, writes, b, absolute, compareMemory, m.Frame)) break;
+                if (!FoldBlock(m.Blocks[b], occurrences, defs, writes, b, absolute, compareMemory, frame)) break;
                 List<MInstr> ins = m.Blocks[b].Instrs;
                 ins.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
                 // Where each register this block writes is written, as the
@@ -419,7 +424,7 @@ internal static class AddressFold
         return counted + found.Count == occurrences[t.Id] ? found : null;
     }
 
-    private static bool FoldBlock(MBlock b, int[] occurrences, int[] defs, WriteSites writes, int block, bool absolute, bool compareMemory, Frame frameOf)
+    private static bool FoldBlock(MBlock b, int[] occurrences, int[] defs, WriteSites writes, int block, bool absolute, bool compareMemory, FrameBlocks frameOf)
     {
         List<MInstr> ins = b.Instrs;
         bool any = false;
@@ -635,7 +640,7 @@ internal static class AddressFold
                         // an indexed one it can place nowhere, and takes every
                         // slot for live -- the LEA names one.
                         case MMem m2 when m2.Base?.Id == t.Id && (!Plain(m2) || m2.Index is not null || !FitsDisp(m2.Disp, frame.Disp)
-                            || !SameAllocation(frameOf, frame.Disp, frame.Disp + m2.Disp)):
+                            || !frameOf.Same(frame.Disp, frame.Disp + m2.Disp)):
                             ok = false;
                             break;
                         case MMem mem when mem.Base?.Id == t.Id:
@@ -656,7 +661,7 @@ internal static class AddressFold
             {
                 beyond = Beyond(writes, t, ebp, null, frame.Disp, block, q, 1 + uses.Count, occurrences);
                 if (beyond is null || beyond.Exists(u => u.I.Operands[u.K] is MMem far
-                        && (far.Index is not null || !SameAllocation(frameOf, frame.Disp, frame.Disp + far.Disp))))
+                        && (far.Index is not null || !frameOf.Same(frame.Disp, frame.Disp + far.Disp))))
                 {
                     continue;
                 }
@@ -684,7 +689,9 @@ internal static class AddressFold
         // symbol, no segment) whose t is read nowhere but as the base of
         // plain memory operands, after it in this block or in the blocks
         // this one dominates: each becomes [X + Y*s + d + disp] -- keeping
-        // its own index where the LEA has none -- and the LEA goes. Long
+        // its own index where the LEA has none -- and the LEA goes. (Not the
+        // frame's base: an LEA of a frame word is F's, which folds it under
+        // no index, for the frame's liveness.) Long
         // mode's selector names an element's and a field's address so:
         // `lea t, [s+y] ; movzx r, [t+24]` is `movzx r, [s+y+24]`. Last
         // first, so an LEA of an LEA's address is folded before the first
@@ -1160,18 +1167,52 @@ internal static class AddressFold
 
     private static MInstr Gone() => new(MOp.Nop, new MImm(Removed));
 
-    /// <summary>Whether two frame displacements lie in one of the frame's allocations (FrameCompact's blocks).</summary>
-    private static bool SameAllocation(Frame frame, int a, int b)
+    /// <summary>
+    /// The frame's allocations in order of their offsets, for asking which
+    /// one a displacement lies in: made once a function, read by a binary
+    /// search (a function of thousands of locals asks of each of thousands
+    /// of frame LEAs' uses).
+    /// </summary>
+    private sealed class FrameBlocks
     {
-        foreach (var block in frame.Allocations)
+        private readonly int[] _starts, _ends;
+
+        public FrameBlocks(Frame frame)
         {
-            int end = block.Offset + Math.Max(block.Bytes, 1);
-            if (a >= block.Offset && a < end) return b >= block.Offset && b < end;
+            var blocks = frame.Allocations.OrderBy(b => b.Offset).ToArray();
+            _starts = new int[blocks.Length];
+            _ends = new int[blocks.Length];
+            for (int k = 0; k < blocks.Length; k++)
+            {
+                _starts[k] = blocks[k].Offset;
+                _ends[k] = blocks[k].Offset + Math.Max(blocks[k].Bytes, 1);
+            }
         }
-        return false;
+
+        /// <summary>
+        /// Whether two frame displacements name one thing: both in one of
+        /// the frame's allocations (FrameCompact's blocks, the liveness's
+        /// slots), or both at or above the base -- the saved base, the
+        /// return address and the arguments, which nothing moves and no
+        /// map names (a `ref` to a parameter is `lea t, [ebp+8]`).
+        /// </summary>
+        public bool Same(int a, int b)
+        {
+            if (a >= 0) return b >= 0;
+            int lo = 0, hi = _starts.Length - 1;
+            while (lo <= hi)
+            {
+                int mid = (lo + hi) >>> 1;
+                if (a < _starts[mid]) hi = mid - 1;
+                else if (a >= _ends[mid]) lo = mid + 1;
+                else return b >= _starts[mid] && b < _ends[mid];
+            }
+            return false;
+        }
     }
 
-    private static bool FitsDisp(int disp, long add) => disp + add is >= int.MinValue and <= int.MaxValue;
+    /// <summary>Whether a displacement moved by `add` is still one, and `add` itself a number of thirty-two bits (what moves it is cast to one).</summary>
+    private static bool FitsDisp(int disp, long add) => add is >= int.MinValue and <= int.MaxValue && disp + add is >= int.MinValue and <= int.MaxValue;
 
     private static bool Touches(MInstr i, int v)
     {

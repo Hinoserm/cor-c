@@ -103,7 +103,6 @@ public static class Roles
             case MOp.FsSehChain:
                 return Role.Def;
             case MOp.Cmov:
-            case MOp.Cmovcc:
                 // A CONDITIONAL WRITE READS WHAT IT MAY KEEP: where the
                 // condition fails the register's old value is the result, so
                 // that value is live into the instruction.

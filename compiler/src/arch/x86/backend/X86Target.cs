@@ -168,7 +168,7 @@ internal sealed class X86Target : ITarget
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
     /// <summary>A slot of a word, or one an XMM value's moves fill -- eight bytes, sixteen for a Packed128's (MFunction.XmmSpillWidth).</summary>
     public int NewSlot(int vreg) => _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(Math.Max(8, _m.XmmSpillWidth), 8) : _m.Frame.Spill();
-    public string RegName(int reg) => reg >= MReg.XmmBase ? $"xmm{reg - MReg.XmmBase}" : ((Gpr)reg).ToString();
+    public string RegName(int reg) => reg >= MReg.XmmBase ? $"xmm{reg - MReg.XmmBase}" : X86Mode.GprName(reg);
     public bool PlainConstant(object constant) => constant is MImm { IsPlain: true };
     public bool Immediate(object constant) => constant is MImm;
 

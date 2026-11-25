@@ -43,9 +43,11 @@ public sealed class MReg : MOperand
     public int Hw => Id & 15;
 
     /// <summary>
-    /// A general machine register. Before allocation every register a pass
-    /// meets is this or virtual -- no selection names an XMM register then --
-    /// so `!IsPhys` there means virtual; after it, test IsVirtual.
+    /// A general machine register of the mode. NOT "not virtual": an XMM
+    /// machine register is neither this nor virtual, and long mode's
+    /// selector names those before allocation (its float arguments'). A
+    /// pass that means a register still to be placed asks IsVirtual; one
+    /// that means any machine register, IsMachine.
     /// </summary>
     public bool IsPhys => Id < X86Mode.Gprs;
     /// <summary>A register the allocator has still to place.</summary>

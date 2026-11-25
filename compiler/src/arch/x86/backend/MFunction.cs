@@ -153,13 +153,16 @@ public sealed class MFunction
 
     // ---- long mode's (X64's selector, target and encoder) -------------------------------
 
-    /// <summary>Which virtual registers are floating point, by id (long mode; i386 keeps XmmRegs).</summary>
-    public HashSet<int> FloatRegs { get; } = new();
-
+    /// <summary>
+    /// A new virtual register of the XMM class: in XmmRegs, the one record
+    /// both modes keep of which virtual registers are (an operand's own
+    /// IsFloat is a note for a listing, and a pass that renames a register
+    /// makes operands without it).
+    /// </summary>
     public MReg NewFloat()
     {
         MReg r = new(NextVReg++, true);
-        FloatRegs.Add(r.Id);
+        XmmRegs.Add(r.Id);
         return r;
     }
 

@@ -7,7 +7,8 @@ namespace Corsac.Lang.X86;
 using Block = Corsac.Lang.Ir.Block;
 
 /// <summary>
-/// THE BUSIEST LOCALS NEAREST EBP. A frame's blocks are handed out as the
+/// THE BUSIEST LOCALS NEAREST THE FRAME'S BASE (EBP; RBP in long mode --
+/// one pass for both). A frame's blocks are handed out as the
 /// selector and the allocator first ask for them, so in a big function the
 /// loop counter spilled last lands a kilobyte below EBP, and every access to
 /// it carries a four-byte displacement where one byte would do: three bytes
@@ -68,7 +69,7 @@ internal static class FrameCompact
         int[] placed = new int[allocations.Count];
         foreach (int k in order)
         {
-            int align = Math.Max(allocations[k].Align, 4);
+            int align = Math.Max(allocations[k].Align, X86Mode.Word);
             size = (size + allocations[k].Bytes + align - 1) / align * align;
             placed[k] = -size;
         }
@@ -96,7 +97,7 @@ internal static class FrameCompact
                     i.Operands[n] = new MMem(mem.Base, to)
                     {
                         IsSpill = mem.IsSpill, Index = mem.Index, Scale = mem.Scale,
-                        Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, Device = mem.Device,
+                        Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, Device = mem.Device, Segment = mem.Segment,
                     };
                 }
         foreach (Safepoint point in m.Safepoints.Values)

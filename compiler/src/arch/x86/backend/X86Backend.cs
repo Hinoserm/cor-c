@@ -243,6 +243,10 @@ public sealed class X86Backend : IBackend
     public ObjectFile Generate(Module module, List<string> errors)
     {
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
+        // i386, for the machine IR the two backends share (X86Mode): said
+        // by whichever backend generates, as Target.Current is said once a
+        // process -- one target a process, both of them.
+        X86Mode.Long = false;
         // The runtime's streaming copy and fill, where the module has them to
         // call (Module.RuntimeHelpers: lowering kept them) and its code owns
         // the x87 state (Selector.StreamedOr).
@@ -1051,42 +1055,6 @@ public sealed class X86Backend : IBackend
         return sb.ToString();
     }
 
-    /// <summary>
-    /// A CALLEE-SAVED REGISTER NOTHING NAMES ANY MORE, no longer saved: the
-    /// allocator gave EBX, ESI or EDI a value and the prologue pushes it, and
-    /// the peepholes after made that value go -- a load, an operation and a
-    /// store back become one read-modify-write of the memory, the register
-    /// with them. A push and a pop of every call for nothing. Not in a
-    /// function that catches (a throw restores only ESP and EBP, so it saves
-    /// them all), nor where an asm block or Sys.SaveRegisters names the
-    /// saves; not EBP, which a leaf's frame logic owns. The saves lie below
-    /// the frame's slots (above them in a frameless leaf, addressed off ESP
-    /// after this), so no frame slot moves; the saves after one dropped are
-    /// a word nearer, as every reader of them reads from SavedRegs.
-    /// </summary>
-    private static void UnusedSaves(MFunction m)
-    {
-        if (m.SavedRegs.Count == 0 || m.Source.Blocks.Any(b => b.IsLandingPad)) return;
-        int named = 0;
-        foreach (MBlock b in m.Blocks)
-            foreach (MInstr i in b.Instrs)
-            {
-                if (i.Op is MOp.InlineAsm or MOp.SaveRegs or MOp.CallerReg) return;
-                foreach (MOperand o in i.Operands)
-                {
-                    if (o is MReg { IsPhys: true } r && r.Id < 8) named |= 1 << r.Id;
-                    else if (o is MMem mem)
-                    {
-                        if (mem.Base is { IsPhys: true } mb && mb.Id < 8) named |= 1 << mb.Id;
-                        if (mem.Index is { IsPhys: true } mx && mx.Id < 8) named |= 1 << mx.Id;
-                    }
-                }
-                foreach (Gpr g in Roles.ImplicitUses(i)) named |= 1 << (int)g;
-                foreach (Gpr g in Roles.ImplicitDefs(i)) named |= 1 << (int)g;
-            }
-        m.SavedRegs.RemoveAll(g => g is Gpr.Ebx or Gpr.Esi or Gpr.Edi && (named & (1 << (int)g)) == 0);
-    }
-
     /// <summary>This module's functions that never touch the FPU's state, and the names it defines (FpuFree.Compute), for its selection.</summary>
     private HashSet<string>? _fpuFree, _fpuDefined;
 
@@ -1130,7 +1098,7 @@ public sealed class X86Backend : IBackend
             Layout.Run(m);
             LoopRotate.Run(m);
             Peephole.Run(m);
-            UnusedSaves(m);
+            Peephole.UnusedSaves(m);
             AlignedSlots.Run(m);
             FrameCompact.Run(m);
             FramePointerFree.Run(m);

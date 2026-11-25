@@ -4589,9 +4589,10 @@ public static partial class Scheduler
 
     /// THE LOWEST ADDRESS OF THIS THREAD'S STACK THAT IS SURELY ITS OWN, a
     /// page above its end: by the room left as MayRunInline counts it -- what
-    /// the platform knows of a thread it started (StackRoom), else the first
-    /// thread's stack (FirstStack; the least one is given where the platform
-    /// does not say), less what is used. A thread something else started,
+    /// the platform knows of a thread it started (StackRoom), else, on the
+    /// first thread's own stack, that stack as the platform limits it
+    /// (FirstStack), else the least stack a thread is given anywhere, less
+    /// what is used. A thread something else started,
     /// on a stack smaller than that, is cleared only until sixteen clean
     /// pages (Gc.ScrubStack), as any thread is. 0 where nothing is
     /// known: no thread block, or a platform that runs its own threads on
@@ -4623,8 +4624,19 @@ public static partial class Scheduler
         // The first thread's stack as the platform limits it, where it says
         // (a megabyte assumed otherwise): a front end run on it goes deeper
         // than a megabyte, and its dead frames are what is to be cleared.
+        // ONLY WHERE THIS IS THAT STACK: the frame lies within the limit below
+        // where the process was entered. A thread something else started
+        // runs on a stack of its maker's size, of which nothing is known
+        // but the megabyte assumed for any (MayRunInline's): taken for the
+        // first thread's eight, a scrub below it ran off its end.
         nuint whole = AssumedStack;
-        FirstStack(ref whole);
+        nuint entry = Sys.EntryStack();
+        if (entry != 0 && here <= entry)
+        {
+            nuint first = AssumedStack;
+            FirstStack(ref first);
+            if (entry - here < first) whole = first;
+        }
         nuint room = used < whole ? whole - used : 0;
         StackRoom(ref room);
         if (room <= 8192)

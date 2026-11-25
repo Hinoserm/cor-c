@@ -64,6 +64,13 @@ public sealed class MMem : MOperand
     public MMem Addressed(MReg? @base, int disp, MReg? index = null, int scale = 1)
         => new(@base, disp) { Index = index, Scale = scale, Device = Device, Segment = Segment };
 
+    /// <summary>The same reference through other registers: everything else about it kept.</summary>
+    public MMem WithRegisters(MReg? @base, MReg? index) => new(@base, Disp)
+    {
+        Index = index, Scale = Scale, Symbol = Symbol, Reloc = Reloc, Got = Got, Label = Label, IsSpill = IsSpill, Device = Device,
+        Aligned = Aligned, Segment = Segment,
+    };
+
     /// <summary>The same reference, its displacement moved.</summary>
     public MMem WithDisp(int delta) => new(Base, Disp + delta)
     {
