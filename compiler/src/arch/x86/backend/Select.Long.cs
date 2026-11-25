@@ -58,6 +58,9 @@ internal sealed partial class Selector
         _hi = new ByRegister<MReg>(f.RegCount);
         _useCount = new UseCounts(f.RegCount);
         NoteDefinitions();
+        // EVERY FLOAT IS OF THE XMM CLASS (Select.Sse): long mode's processor
+        // has SSE2, and nothing here is the x87's.
+        _xmm32 = _xmm64 = true;
     }
 
     /// <summary>
@@ -297,29 +300,6 @@ internal sealed partial class Selector
             case Opcode.RemU:
                 SelectDivL(i);
                 break;
-            case Opcode.FAdd:
-            case Opcode.FSub:
-            case Opcode.FMul:
-            case Opcode.FDiv:
-                SelectFloatAluL(i);
-                break;
-            case Opcode.FNeg:
-                SelectFloatNeg(i);
-                break;
-            case Opcode.FSqrt:
-                EmitW(MOp.SqrtF, Width(i.Dest!.Type), V(i.Dest), F(i.Operands[0]));
-                break;
-            case Opcode.FEq:
-            case Opcode.FNe:
-            case Opcode.FLt:
-            case Opcode.FLe:
-            case Opcode.FGt:
-            case Opcode.FGe:
-                SelectFloatCompareL(i);
-                break;
-            case Opcode.FConv:
-                Emit(new MInstr(MOp.CvtFToF, V(i.Dest!), F(i.Operands[0])) { Width = Width(i.Dest!.Type), SourceWidth = Width(i.Operands[0].Type) });
-                break;
             case Opcode.IToF:
                 Emit(new MInstr(MOp.CvtIntToF, V(i.Dest!), RL(i.Operands[0])) { Width = Width(i.Dest!.Type), SourceWidth = Width(i.Operands[0].Type) });
                 break;
@@ -329,9 +309,6 @@ internal sealed partial class Selector
             case Opcode.FToI:
             case Opcode.FToU:
                 SelectFloatToInteger(i);
-                break;
-            case Opcode.Bits:
-                SelectBitsL(i);
                 break;
             case Opcode.Load:
                 SelectLoadL(i);
@@ -370,33 +347,6 @@ internal sealed partial class Selector
     }
 
     // ---- moves and arithmetic -----------------------------------------------------
-
-    /// <summary>A float copied in long mode: a register's, or a constant's bits through a general register (zero by XORPS).</summary>
-    private void CopyFloatL(VReg d, Operand s)
-    {
-        if (s is RegOperand r)
-        {
-            EmitW(MOp.MovF, Width(d.Type), V(d), V(r.Reg));
-        }
-        else if (s is ImmOperand imm)
-        {
-            if (imm.Value == 0)
-            {
-                MReg z = V(d);
-                EmitW(MOp.XorF, 8, z, z);
-            }
-            else
-            {
-                MReg bits = Temp();
-                LoadConstant(bits, imm.Value, 8);
-                EmitW(MOp.MovGx, Width(d.Type), V(d), bits);
-            }
-        }
-        else
-        {
-            Error($"copy of {s} into a float");
-        }
-    }
 
     /// <summary>
     /// An integer copied into its one register in long mode, from what is no
@@ -645,122 +595,7 @@ internal sealed partial class Selector
         return (m, p - bits);
     }
 
-    /// <summary>
-    /// The count is masked by the operand width, which is exactly what the
-    /// hardware does with CL at both widths: C#'s rule and the machine's agree.
-    /// </summary>
-    // ---- comparisons -------------------------------------------------------------------
-
-    /// <summary>A 0 or 1 from the flags: SETcc into the low byte, then zero-extended.</summary>
-    private void SetFromFlags(MReg d, Cond c)
-    {
-        MReg b = Temp();
-        Emit(new MInstr(MOp.Setcc, b) { Cond = c, Width = 1 });
-        EmitW(MOp.Movzx, 1, d, b);
-    }
-
-    /// <summary>Long mode's float compare (FloatCompareL), as the family's fused branch reads one.</summary>
-    private FloatCond LongFloatCond(Instr i)
-    {
-        (Cond c, bool parityFalse, bool parityTrue) = FloatCompareL(i);
-        return new FloatCond(c, parityFalse, parityTrue);
-    }
-
-    /// <summary>
-    /// UCOMISS/UCOMISD sets ZF, PF and CF: CF for below, ZF for equal, all
-    /// three for unordered. `a &lt; b` is asked as `b above a`, so that an
-    /// unordered pair -- which sets CF -- answers false as C# requires.
-    /// </summary>
-    private (Cond Cond, bool ParityFalse, bool ParityTrue) FloatCompareL(Instr i)
-    {
-        int w = Width(i.Operands[0].Type);
-        MReg a = F(i.Operands[0]);
-        MReg b = F(i.Operands[1]);
-        switch (i.Op)
-        {
-            case Opcode.FEq:
-                EmitW(MOp.UcomiF, w, a, b);
-                return (Cond.E, true, false);
-            case Opcode.FNe:
-                EmitW(MOp.UcomiF, w, a, b);
-                return (Cond.Ne, false, true);
-            case Opcode.FLt:
-                EmitW(MOp.UcomiF, w, b, a);
-                return (Cond.A, false, false);
-            case Opcode.FLe:
-                EmitW(MOp.UcomiF, w, b, a);
-                return (Cond.Ae, false, false);
-            case Opcode.FGt:
-                EmitW(MOp.UcomiF, w, a, b);
-                return (Cond.A, false, false);
-            default:
-                EmitW(MOp.UcomiF, w, a, b);
-                return (Cond.Ae, false, false);
-        }
-    }
-
-    private void SelectFloatCompareL(Instr i)
-    {
-        MReg d = V(i.Dest!);
-        (Cond c, bool parityFalse, bool parityTrue) = FloatCompareL(i);
-        if (!parityFalse && !parityTrue)
-        {
-            SetFromFlags(d, c);
-            return;
-        }
-        // Equal needs "ZF and not PF"; not-equal "not ZF or PF".
-        MReg x = Temp(), y = Temp();
-        Emit(new MInstr(MOp.Setcc, x) { Cond = c, Width = 1 });
-        Emit(new MInstr(MOp.Setcc, y) { Cond = parityFalse ? Cond.Np : Cond.P, Width = 1 });
-        EmitW(parityFalse ? MOp.And : MOp.Or, 1, x, y);
-        EmitW(MOp.Movzx, 1, d, x);
-    }
-
-    // ---- floating point ------------------------------------------------------------
-
-    private void SelectFloatAluL(Instr i)
-    {
-        VReg d = i.Dest!;
-        int w = Width(d.Type);
-        MOp op = i.Op switch
-        {
-            Opcode.FAdd => MOp.AddF,
-            Opcode.FSub => MOp.SubF,
-            Opcode.FMul => MOp.MulF,
-            _ => MOp.DivF,
-        };
-        MReg a = F(i.Operands[0]);
-        MReg b = F(i.Operands[1]);
-        if (Aliases(d, i.Operands[1]) && !Aliases(d, i.Operands[0]))
-        {
-            MReg t = FTemp();
-            EmitW(MOp.MovF, w, t, b);
-            b = t;
-        }
-        MReg dr = V(d);
-        EmitW(MOp.MovF, w, dr, a);
-        EmitW(op, w, dr, b);
-    }
-
-    /// <summary>Negation flips the sign bit and nothing else, NaN payloads included, as x87's FCHS does.</summary>
-    private void SelectFloatNeg(Instr i)
-    {
-        VReg d = i.Dest!;
-        int w = Width(d.Type);
-        MReg bits = Temp();
-        EmitW(MOp.MovGx, w, bits, F(i.Operands[0]));
-        if (w == 4)
-        {
-            EmitW(MOp.Xor, 4, bits, Imm(int.MinValue));
-        }
-        else
-        {
-            MReg sign = Temp();
-            MovL(sign, Imm(long.MinValue), 8);
-            EmitW(MOp.Xor, 8, bits, sign);
-        }
-        EmitW(MOp.MovGx, w, V(d), bits);
-    }
+    // ---- conversions between integers and floats -----------------------------------------
 
     /// <summary>
     /// Unsigned to float. A 32-bit value is a non-negative 64-bit one, which
@@ -909,21 +744,6 @@ internal sealed partial class Selector
         }
         Jmp(done);
         _cur = done;
-    }
-
-    private void SelectBitsL(Instr i)
-    {
-        VReg d = i.Dest!;
-        Operand s = i.Operands[0];
-        int w = Width(d.Type);
-        if (d.Type.IsFloat())
-        {
-            EmitW(MOp.MovGx, w, V(d), RL(s));
-        }
-        else
-        {
-            EmitW(MOp.MovGx, w, V(d), F(s));
-        }
     }
 
     // ---- memory --------------------------------------------------------------------
@@ -1163,11 +983,6 @@ internal sealed partial class Selector
         Emit(MOp.RepStosb);
     }
 
-    /// <summary>
-    /// Every atomic at 32 or 64 bits: the K8 has the 64-bit LOCK XADD, XCHG
-    /// and CMPXCHG the 486 lacked. And, or and xor have no fetching form, so
-    /// they are a compare-exchange loop.
-    /// </summary>
     // ---- calls -------------------------------------------------------------------------
 
     private void SelectCallL(Instr i)

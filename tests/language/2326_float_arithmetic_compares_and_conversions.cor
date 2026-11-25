@@ -1,0 +1,104 @@
+// test: float_arithmetic_compares_and_conversions
+// expect-exit: 0
+// expect-output:
+// 286693585
+// 3779539750
+// 161172165
+// 4756540486877839361
+//
+// Float and double arithmetic with constants and with values, negation,
+// every comparison (NaN, the infinities and the zeros among the operands),
+// square roots, the conversions between the two widths and to and from
+// integers of both widths, and the bit casts: each line a hash of every
+// result's bits, the same on i386 and x86-64, whose floats are selected by
+// one XMM class.
+
+using System;
+
+static class Program
+{
+    static double[] Doubles = { 0.0, -0.0, 1.0, -1.0, 0.5, 2.0, 3.141592653589793, -2.718281828459045, 1e-300, 1e300, 123456789.125, -987654.5, double.NaN, double.PositiveInfinity, double.NegativeInfinity, double.Epsilon, 4294967296.0, 9007199254740993.0 };
+    static float[] Floats = { 0f, -0f, 1f, -1f, 0.5f, 2f, 3.1415927f, -2.7182817f, 1e-30f, 1e30f, 16777217f, -98765.5f, float.NaN, float.PositiveInfinity, float.NegativeInfinity, float.Epsilon };
+
+    static uint Hash(uint h, long v) { unchecked { h = (h ^ (uint)v) * 16777619u; h = (h ^ (uint)(v >> 32)) * 16777619u; return h; } }
+    static uint HashD(uint h, double d) => Hash(h, BitConverter.DoubleToInt64Bits(d));
+    static uint HashF(uint h, float f) => Hash(h, BitConverter.SingleToInt32Bits(f));
+
+    static uint Arithmetic()
+    {
+        uint h = 2166136261u;
+        foreach (double a in Doubles)
+            foreach (double b in Doubles)
+            {
+                h = HashD(h, a + b); h = HashD(h, a - b); h = HashD(h, a * b); h = HashD(h, a / b); h = HashD(h, b - a); h = HashD(h, b / a);
+                h = HashD(h, -a); h = HashD(h, a + 1.5); h = HashD(h, 2.25 * b); h = HashD(h, a - 0.0); h = HashD(h, 1.0 / b); h = HashD(h, a * a - b);
+                double c = a; c = b - c; h = HashD(h, c); c = a; c = c / b; h = HashD(h, c); c = b; c = a + c; h = HashD(h, c);
+            }
+        foreach (float a in Floats)
+            foreach (float b in Floats)
+            {
+                h = HashF(h, a + b); h = HashF(h, a - b); h = HashF(h, a * b); h = HashF(h, a / b); h = HashF(h, b - a); h = HashF(h, -a);
+                h = HashF(h, a + 1.5f); h = HashF(h, 2.25f * b); h = HashF(h, 1f / b);
+                float c = a; c = b - c; h = HashF(h, c); c = a; c = c / b; h = HashF(h, c);
+            }
+        return h;
+    }
+
+    static uint Compares()
+    {
+        uint h = 2166136261u;
+        foreach (double a in Doubles)
+            foreach (double b in Doubles)
+            {
+                int bits = (a < b ? 1 : 0) | (a <= b ? 2 : 0) | (a > b ? 4 : 0) | (a >= b ? 8 : 0) | (a == b ? 16 : 0) | (a != b ? 32 : 0)
+                    | (a < 0.0 ? 64 : 0) | (a >= 1.5 ? 128 : 0) | (0.5 > b ? 256 : 0) | (a == a ? 512 : 0) | (b != b ? 1024 : 0);
+                h = Hash(h, bits);
+                if (a < b) h = Hash(h, 1); if (a == b) h = Hash(h, 2); if (a != b) h = Hash(h, 3); if (a >= b) h = Hash(h, 4); if (!(a > b)) h = Hash(h, 5);
+            }
+        foreach (float a in Floats)
+            foreach (float b in Floats)
+            {
+                int bits = (a < b ? 1 : 0) | (a <= b ? 2 : 0) | (a > b ? 4 : 0) | (a >= b ? 8 : 0) | (a == b ? 16 : 0) | (a != b ? 32 : 0) | (a < 0f ? 64 : 0);
+                h = Hash(h, bits);
+                if (a < b) h = Hash(h, 1); if (a == b) h = Hash(h, 2); if (a != b) h = Hash(h, 3);
+            }
+        return h;
+    }
+
+    static uint Conversions()
+    {
+        uint h = 2166136261u;
+        foreach (double a in Doubles)
+        {
+            h = HashF(h, (float)a); h = HashD(h, Math.Sqrt(a)); h = HashD(h, Math.Abs(a)); h = Hash(h, BitConverter.DoubleToInt64Bits(a));
+            h = HashD(h, BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(a) ^ 1)); h = Hash(h, (int)a); h = Hash(h, (long)a);
+            h = Hash(h, (uint)a); h = Hash(h, (long)(ulong)a); h = Hash(h, (short)a); h = Hash(h, (byte)a);
+        }
+        foreach (float a in Floats)
+        {
+            h = HashD(h, (double)a); h = HashF(h, MathF.Sqrt(a)); h = Hash(h, BitConverter.SingleToInt32Bits(a));
+            h = HashF(h, BitConverter.Int32BitsToSingle(BitConverter.SingleToInt32Bits(a) ^ 1)); h = Hash(h, (int)a); h = Hash(h, (long)a); h = Hash(h, (uint)a);
+        }
+        int[] ints = { 0, 1, -1, 123456789, int.MaxValue, int.MinValue, 16777217 };
+        long[] longs = { 0, 1, -1, 1L << 40, long.MaxValue, long.MinValue, 9007199254740993L };
+        foreach (int i in ints) { h = HashD(h, i); h = HashF(h, i); h = HashD(h, (uint)i); h = HashF(h, (uint)i); }
+        foreach (long l in longs) { h = HashD(h, l); h = HashF(h, l); h = HashD(h, (ulong)l); h = HashF(h, (ulong)l); }
+        return h;
+    }
+
+    static double Sum(double[] values, double scale)
+    {
+        double total = 0.0;
+        for (int i = 0; i < values.Length; i++) if (values[i] == values[i] && !double.IsInfinity(values[i])) total += values[i] * scale + 0.25;
+        return total;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Arithmetic());
+        Console.WriteLine(Compares());
+        Console.WriteLine(Conversions());
+        Console.WriteLine(BitConverter.DoubleToInt64Bits(Sum(Doubles, 1e-290)));
+        return 0;
+    }
+}

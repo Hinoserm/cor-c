@@ -380,6 +380,26 @@ public sealed class X64Backend : IBackend
             defined.Add(d.Name);
         }
 
+        // The float constants the code reads RIP-relative (the family's pool,
+        // X86Backend.FloatPoolPrefix: Select.Sse's FloatConstant names them by
+        // their bits), each once, eight-byte aligned, as i386's backend lays
+        // its own down.
+        SortedSet<string> pool = new(StringComparer.Ordinal);
+        foreach (Relocation r in text.Relocs)
+            if (r.Symbol.StartsWith(Corsac.Lang.X86.X86Backend.FloatPoolPrefix, StringComparison.Ordinal)) pool.Add(r.Symbol);
+        foreach (string name in pool)
+        {
+            int prefix = Corsac.Lang.X86.X86Backend.FloatPoolPrefix.Length;
+            int width = name[prefix] == '4' ? 4 : 8;
+            ulong bits = Convert.ToUInt64(name[(prefix + 2)..], 16);
+            Pad(rodata, 8, 0);
+            int at = rodata.Bytes.Count;
+            for (int k = 0; k < width; k++) rodata.Bytes.Add((byte)(bits >> (8 * k)));
+            rodata.Align = Math.Max(rodata.Align, 8);
+            obj.Symbols.Add(new Symbol { Name = name, Section = rodata, Offset = at, Size = width, Global = false });
+            defined.Add(name);
+        }
+
         HashSet<string> undefined = new(module.Imports, StringComparer.Ordinal);
         foreach (Section s in obj.Sections)
         {

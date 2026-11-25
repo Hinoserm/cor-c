@@ -1242,7 +1242,6 @@ internal sealed partial class Selector
         return r;
     }
 
-    /// <summary>An I32 operand in a register, loading a constant or address if it is one.</summary>
     /// <summary>
     /// An integer operand in a register: its own, or a temporary made of a
     /// constant, a symbol's address or a frame slot's. Long mode's way with
@@ -1690,7 +1689,8 @@ internal sealed partial class Selector
             or Opcode.ZExt16 or Opcode.Branch or (>= Opcode.Eq and <= Opcode.GeU) or Opcode.ArrayLength or Opcode.InitArrayLength
             or Opcode.LabelAddr or Opcode.StackPointer or Opcode.FramePointer or Opcode.Trunc64 or Opcode.SExt32 or Opcode.ZExt32
             or Opcode.Add or Opcode.Sub or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Mul or Opcode.Copy
-            or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas);
+            or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas) or Opcode.FAdd or Opcode.FSub or Opcode.FMul or Opcode.FDiv or Opcode.FNeg
+            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits;
 
     private void SelectInstr(Instr i)
     {
@@ -1963,16 +1963,10 @@ internal sealed partial class Selector
 
     private void SelectCopy(Instr i)
     {
-        // (Long mode has no Packed128 value of the class yet, and its floats
-        // are its own: CopyFloatL.)
+        // (Long mode has no Packed128 value of the class yet.)
         if (!X86Mode.Long && PackedValueCopy(i)) return;
         VReg d = i.Dest!;
         Operand src = i.Operands[0];
-        if (X86Mode.Long && d.Type.IsFloat())
-        {
-            CopyFloatL(d, src);
-            return;
-        }
         switch (d.Type)
         {
             // One register: a frame slot's address by LEA in both modes; what
@@ -2336,6 +2330,25 @@ internal sealed partial class Selector
         // The recipes that read the source after writing the destination.
         bool copies = dest.Id == src.Id && kind >= 3;
         int cost = body == int.MaxValue ? int.MaxValue : body + (k > 0 ? 1 : 0) + (negate ? 1 : 0) + (copies ? 1 : 0);
+        // LONG MODE'S PROCESSORS, BY LATENCY: each step waits on the last, so
+        // a recipe is its steps' clocks added, and it replaces IMUL only
+        // where that is less than IMUL's. The K8 (and the baseline tuned as
+        // it) and the K10: IMUL three clocks at 32 bits and four at 64, a
+        // LEA with an index two, a shift, an add or a move one -- AMD 25112
+        // 8.2: a replacement only at two clocks or fewer for 32 bits, three
+        // for 64. The Core line and the levels tuned as it: IMUL three at
+        // either width, a LEA of a base and a scaled index one (Agner Fog's
+        // tables; uops.info for IMUL). The Pentium 4's sixty-four-bit Nocona:
+        // IMUL ten, a LEA with an index near three, the rest one.
+        if (X86Mode.Long)
+        {
+            int lea = CpuModel.IntelCore || CpuModel.LevelAboveBaseline ? 1 : CpuModel.NetBurst ? 3 : 2;
+            int imul = CpuModel.NetBurst ? 10 : CpuModel.IntelCore || CpuModel.LevelAboveBaseline ? 3 : width == 8 ? 4 : 3;
+            // The odd part: a move; one LEA; two; a move, a shift and an add or a subtract.
+            int clocks = kind switch { 0 => 1, 1 => lea, 2 or 3 => 2 * lea, 4 or 5 => 3, _ => int.MaxValue };
+            if (clocks != int.MaxValue) clocks += (k > 0 ? 1 : 0) + (negate ? 1 : 0) + (copies ? 1 : 0);
+            cost = clocks < imul ? 0 : int.MaxValue;
+        }
         if (cost > limit)
         {
             EmitW(MOp.Imul3, width, dest, src, Imm(factor));
@@ -3476,12 +3489,13 @@ internal sealed partial class Selector
     {
         FloatCond fc = FloatCompare(i);
         MReg d = Lo(i.Dest!);
-        _m.ByteRegs.Add(d.Id);
+        // (Any of long mode's registers has a low byte.)
+        if (!X86Mode.Long) _m.ByteRegs.Add(d.Id);
         Emit(new MInstr(MOp.Setcc, d) { Cond = fc.Cond, Width = 1 });
         if (fc.ParityFalse || fc.ParityTrue)
         {
             MReg p = Temp();
-            _m.ByteRegs.Add(p.Id);
+            if (!X86Mode.Long) _m.ByteRegs.Add(p.Id);
             Emit(new MInstr(MOp.Setcc, p) { Cond = fc.ParityFalse ? Cond.Np : Cond.P, Width = 1 });
             EmitW(fc.ParityFalse ? MOp.And : MOp.Or, 1, d, p);
         }
@@ -4011,8 +4025,12 @@ internal sealed partial class Selector
         {
             // THE RESULT'S REGISTER IS WRITTEN BEFORE THE MEMORY IS NAMED, so
             // one that is also the address -- `p = swap(*p, v)` -- goes
-            // through a temporary (DestPair, every operand counted): written
-            // first, the instruction addressed through the value.
+            // through a temporary (DestPair, every operand counted, so one
+            // that is the value too: a move the allocator makes nothing of):
+            // written first, the instruction addressed through the value.
+            // The shift's count is masked as the hardware masks CL at either
+            // width, and the 64-bit LOCK XADD, XCHG and CMPXCHG are the
+            // K8's: a 486 had none (the error above).
             case Opcode.AtomicSwap:
             {
                 // xchg with a memory operand locks the bus by itself.
@@ -4289,8 +4307,7 @@ internal sealed partial class Selector
         MBlock f = _heads[br.Targets[1]];
         if (cmp.Op is >= Opcode.FEq and <= Opcode.FGe)
         {
-            // (Long mode's float compare is still its own: FloatCompareL.)
-            FloatCond fc = X86Mode.Long ? LongFloatCond(cmp) : FloatCompare(cmp);
+            FloatCond fc = FloatCompare(cmp);
             if (fc.ParityFalse)
             {
                 Jcc(Cond.P, f);

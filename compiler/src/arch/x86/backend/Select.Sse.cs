@@ -78,9 +78,12 @@ internal sealed partial class Selector
     /// <summary>
     /// A FLOAT CONSTANT, from the object's read-only pool (X86Backend.
     /// FloatPoolName): one load, where its bits stored into the frame and read
-    /// back were two instructions and a store to forward from.
+    /// back were two instructions and a store to forward from. Named by its
+    /// address on i386; RIP-relative in long mode, position-independent or
+    /// not (each backend lays the pool down after its code).
     /// </summary>
-    private static MMem FloatConstant(long bits, int width) => SymbolMem(X86Backend.FloatPoolName(bits, width), 0);
+    private static MMem FloatConstant(long bits, int width)
+        => X86Mode.Long ? MMem.Rip(X86Backend.FloatPoolName(bits, width), 0) : SymbolMem(X86Backend.FloatPoolName(bits, width), 0);
 
     /// <summary>
     /// A float constant as an operand: the pool's word; in position-independent
@@ -346,7 +349,22 @@ internal sealed partial class Selector
         int w = FWidth(d.Type);
         if (KnownBits(src, out long bits))
         {
+            // (Long mode's zero is XORPS of the register with itself: no load,
+            // and nothing waited for.)
+            if (X86Mode.Long && (w == 4 ? bits & 0xFFFFFFFFL : bits) == 0)
+            {
+                MReg zero = X(d);
+                EmitW(MOp.XorF, 8, zero, zero);
+                return;
+            }
             MovF(X(d), FloatConstantOperand(w == 4 ? bits & 0xFFFFFFFFL : bits, w), w);
+            return;
+        }
+        if (X86Mode.Long)
+        {
+            // MOVD or MOVQ from the general register: an integer of the
+            // float's width is one register there.
+            EmitW(MOp.MovGx, w, X(d), R(src));
             return;
         }
         if (w == 4)
@@ -381,6 +399,12 @@ internal sealed partial class Selector
     /// <summary>A float of the XMM class as an integer's bits.</summary>
     private void SseToBits(VReg d, Operand src)
     {
+        if (X86Mode.Long)
+        {
+            // MOVD or MOVQ to the general register.
+            EmitW(MOp.MovGx, FWidth(src.Type), Lo(d), X(src));
+            return;
+        }
         if (d.Type == IrType.I32)
         {
             if (Target.Current.X86Profile.Has(X86Feature.Sse2))

@@ -1,0 +1,67 @@
+// test: atomics_at_both_widths_and_through_their_own_result
+// expect-exit: 0
+// expect-output:
+// 5 9
+// 109 109
+// 109 1
+// 1 1
+// 2 1 1
+// 1 0 12
+// 4294967301 8589934601
+// 12884901897 12884901897
+// 12884901897 7
+// 8 7 7
+// 7 5 274877906949
+// 40 41
+// 59 59
+// 0 77
+// 3 4
+// 34359738369 34359738369
+//
+// The interlocked operations on an int and on a long (one register in long
+// mode, the runtime's way on i386), and an exchange and an add whose
+// result goes into the variable that held the address, or the value: the
+// result's register is written before the instruction names its memory,
+// so an exchange through its own result once addressed the value.
+
+using System;
+using System.Threading;
+
+static unsafe class Program
+{
+    static int Word = 5;
+    static long Wide = 0x100000005L;
+    static nint Cell;
+
+    // The result's variable is also the address the operation goes through.
+    static nint Chase(nint* p, nint v) { p = (nint*)Interlocked.Exchange(ref *p, v); return (nint)p; }
+    static nint ChaseAdd(int* p, int v) { p = (int*)(nint)Interlocked.Add(ref *p, v); return (nint)p; }
+    // And the value it stores.
+    static int Same(ref int at, int v) { v = Interlocked.Exchange(ref at, v); return v; }
+    static long SameWide(ref long at, long v) { v = Interlocked.Add(ref at, v); return v; }
+
+    static int Main()
+    {
+        Console.WriteLine(Interlocked.Exchange(ref Word, 9) + " " + Word);
+        Console.WriteLine(Interlocked.Add(ref Word, 100) + " " + Word);
+        Console.WriteLine(Interlocked.CompareExchange(ref Word, 1, 109) + " " + Word);
+        Console.WriteLine(Interlocked.CompareExchange(ref Word, 2, 109) + " " + Word);
+        Console.WriteLine(Interlocked.Increment(ref Word) + " " + Interlocked.Decrement(ref Word) + " " + Word);
+        Console.WriteLine(Interlocked.And(ref Word, 0xF0) + " " + Interlocked.Or(ref Word, 0x0C) + " " + Word);
+        Console.WriteLine(Interlocked.Exchange(ref Wide, 0x200000009L) + " " + Wide);
+        Console.WriteLine(Interlocked.Add(ref Wide, 0x100000000L) + " " + Wide);
+        Console.WriteLine(Interlocked.CompareExchange(ref Wide, 7, 0x300000009L) + " " + Wide);
+        Console.WriteLine(Interlocked.Increment(ref Wide) + " " + Interlocked.Decrement(ref Wide) + " " + Wide);
+        Console.WriteLine(Interlocked.And(ref Wide, 0xFF00000005L) + " " + Interlocked.Or(ref Wide, 0x4000000000L) + " " + Wide);
+        nint cell = 40;
+        Console.WriteLine(Chase(&cell, 41) + " " + cell);
+        int small = 50;
+        Console.WriteLine(ChaseAdd(&small, 9) + " " + small);
+        fixed (nint* at = &Cell) { Console.WriteLine(Chase(at, 77) + " " + Cell); }
+        int word = 3;
+        Console.WriteLine(Same(ref word, 4) + " " + word);
+        long wide = 0x700000000L;
+        Console.WriteLine(SameWide(ref wide, 0x100000001L) + " " + wide);
+        return 0;
+    }
+}
