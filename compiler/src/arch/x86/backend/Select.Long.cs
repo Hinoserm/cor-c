@@ -57,6 +57,7 @@ internal sealed partial class Selector
         _lo = new ByRegister<MReg>(f.RegCount);
         _hi = new ByRegister<MReg>(f.RegCount);
         _useCount = new UseCounts(f.RegCount);
+        NoteDefinitions();
     }
 
     /// <summary>
@@ -67,6 +68,7 @@ internal sealed partial class Selector
     /// </summary>
     public static MFunction RunLong(Function f, List<string> errors, Func<string, bool>? isExternal = null)
     {
+        if (!X86Mode.Long) throw new InvalidOperationException("long mode's selector was asked for a function outside long mode");
         Selector s = new(f, errors, isExternal);
         s.Select();
         return s._m;
@@ -289,45 +291,12 @@ internal sealed partial class Selector
     {
         switch (i.Op)
         {
-            case Opcode.Copy:
-                SelectCopyL(i);
-                break;
-            case Opcode.Add:
-            case Opcode.Sub:
-            case Opcode.And:
-            case Opcode.Or:
-            case Opcode.Xor:
-                SelectAluL(i);
-                break;
-            case Opcode.Mul:
-                SelectMulL(i);
-                break;
             case Opcode.DivS:
             case Opcode.DivU:
             case Opcode.RemS:
             case Opcode.RemU:
                 SelectDivL(i);
                 break;
-            case Opcode.Shl:
-            case Opcode.ShrS:
-            case Opcode.ShrU:
-                SelectShiftL(i);
-                break;
-            case Opcode.Eq:
-            case Opcode.Ne:
-            case Opcode.LtS:
-            case Opcode.LeS:
-            case Opcode.GtS:
-            case Opcode.GeS:
-            case Opcode.LtU:
-            case Opcode.LeU:
-            case Opcode.GtU:
-            case Opcode.GeU:
-            {
-                Cond c = IntCompareL(i);
-                SetFromFlags(V(i.Dest!), c);
-                break;
-            }
             case Opcode.FAdd:
             case Opcode.FSub:
             case Opcode.FMul:
@@ -348,29 +317,6 @@ internal sealed partial class Selector
             case Opcode.FGe:
                 SelectFloatCompareL(i);
                 break;
-            case Opcode.SExt8:
-            case Opcode.SExt16:
-            case Opcode.ZExt8:
-            case Opcode.ZExt16:
-                SelectNarrowL(i);
-                break;
-            case Opcode.Trunc64:
-                MovL(V(i.Dest!), RML(i.Operands[0], 4), 4);
-                break;
-            case Opcode.SExt32:
-                if (i.Operands[0] is ImmOperand sextImm)
-                {
-                    LoadConstant(V(i.Dest!), unchecked((int)sextImm.Value), 8);
-                }
-                else
-                {
-                    EmitW(MOp.Movsx, 4, V(i.Dest!), RL(i.Operands[0]));
-                }
-                break;
-            case Opcode.ZExt32:
-                // A 32-bit move clears the upper half: that IS the extension.
-                MovL(V(i.Dest!), RML(i.Operands[0], 4), 4);
-                break;
             case Opcode.FConv:
                 Emit(new MInstr(MOp.CvtFToF, V(i.Dest!), F(i.Operands[0])) { Width = Width(i.Dest!.Type), SourceWidth = Width(i.Operands[0].Type) });
                 break;
@@ -390,15 +336,6 @@ internal sealed partial class Selector
             case Opcode.Load:
                 SelectLoadL(i);
                 break;
-            case Opcode.ArrayLength:
-                MovL(V(i.Dest!), AddressL(i.Operands[0], Target.Current.ArrayCountOffset), Width(i.Dest!.Type));
-                break;
-            case Opcode.InitArrayLength:
-            {
-                int w = Width(i.Operands[1].Type);
-                MovL(AddressL(i.Operands[0], Target.Current.ArrayCountOffset), RML(i.Operands[1], w), w);
-                break;
-            }
             case Opcode.Store:
                 SelectStoreL(i);
                 break;
@@ -408,14 +345,6 @@ internal sealed partial class Selector
             case Opcode.MemSet:
                 SelectMemSetL(i);
                 break;
-            case Opcode.AtomicSwap:
-            case Opcode.AtomicAdd:
-            case Opcode.AtomicAnd:
-            case Opcode.AtomicOr:
-            case Opcode.AtomicXor:
-            case Opcode.AtomicCas:
-                SelectAtomicL(i);
-                break;
             case Opcode.Call:
             case Opcode.CallIndirect:
                 SelectCallL(i);
@@ -423,23 +352,11 @@ internal sealed partial class Selector
             case Opcode.Ret:
                 SelectRetL(i);
                 break;
-            case Opcode.Branch:
-                SelectBranchL(i);
-                break;
             case Opcode.Switch:
                 SelectSwitchL(i);
                 break;
             case Opcode.Unwind:
                 SelectUnwindL(i);
-                break;
-            case Opcode.LabelAddr:
-                Emit(MOp.Lea, V(i.Dest!), new MMem(null, 0) { Label = _heads[i.Targets[0]] });
-                break;
-            case Opcode.StackPointer:
-                MovL(V(i.Dest!), Rsp);
-                break;
-            case Opcode.FramePointer:
-                MovL(V(i.Dest!), Rbp);
                 break;
             case Opcode.Syscall:
                 SelectSyscallL(i);
@@ -454,36 +371,41 @@ internal sealed partial class Selector
 
     // ---- moves and arithmetic -----------------------------------------------------
 
-    private void SelectCopyL(Instr i)
+    /// <summary>A float copied in long mode: a register's, or a constant's bits through a general register (zero by XORPS).</summary>
+    private void CopyFloatL(VReg d, Operand s)
     {
-        VReg d = i.Dest!;
-        Operand s = i.Operands[0];
-        if (d.Type.IsFloat())
+        if (s is RegOperand r)
         {
-            if (s is RegOperand r)
+            EmitW(MOp.MovF, Width(d.Type), V(d), V(r.Reg));
+        }
+        else if (s is ImmOperand imm)
+        {
+            if (imm.Value == 0)
             {
-                EmitW(MOp.MovF, Width(d.Type), V(d), V(r.Reg));
-            }
-            else if (s is ImmOperand imm)
-            {
-                if (imm.Value == 0)
-                {
-                    MReg z = V(d);
-                    EmitW(MOp.XorF, 8, z, z);
-                }
-                else
-                {
-                    MReg bits = Temp();
-                    LoadConstant(bits, imm.Value, 8);
-                    EmitW(MOp.MovGx, Width(d.Type), V(d), bits);
-                }
+                MReg z = V(d);
+                EmitW(MOp.XorF, 8, z, z);
             }
             else
             {
-                Error($"copy of {s} into a float");
+                MReg bits = Temp();
+                LoadConstant(bits, imm.Value, 8);
+                EmitW(MOp.MovGx, Width(d.Type), V(d), bits);
             }
-            return;
         }
+        else
+        {
+            Error($"copy of {s} into a float");
+        }
+    }
+
+    /// <summary>
+    /// An integer copied into its one register in long mode, from what is no
+    /// frame slot: zero by a 32-bit XOR, another constant by the shortest
+    /// move that makes it (LoadConstant), a symbol's address RIP-relative or
+    /// from its GOT slot, a register by a move of the value's width.
+    /// </summary>
+    private void CopyWordL(VReg d, Operand s)
+    {
         int w = Width(d.Type);
         switch (s)
         {
@@ -506,83 +428,10 @@ internal sealed partial class Selector
                 }
                 Emit(MOp.Lea, V(d), MMem.Rip(sym.Name, checked((int)sym.Offset)));
                 break;
-            case SlotOperand slot:
-                Emit(MOp.Lea, V(d), MMem.Frame(_m.Frame.SlotOffset(slot.Slot)));
-                break;
             default:
                 MovL(V(d), RL(s), w);
                 break;
         }
-    }
-
-    private void SelectAluL(Instr i)
-    {
-        VReg d = i.Dest!;
-        int w = Width(d.Type);
-        MOp op = i.Op switch
-        {
-            Opcode.Add => MOp.Add,
-            Opcode.Sub => MOp.Sub,
-            Opcode.And => MOp.And,
-            Opcode.Or => MOp.Or,
-            _ => MOp.Xor,
-        };
-        Operand a = i.Operands[0], b = i.Operands[1];
-
-        // An address plus a constant, or two registers added, is one LEA and
-        // no move: the three-operand form x86 has always had.
-        if (op == MOp.Add && w == 8 && a is RegOperand ar && !Aliases(d, a))
-        {
-            if (b is ImmOperand bi && bi.Value is >= int.MinValue and <= int.MaxValue)
-            {
-                Emit(MOp.Lea, V(d), new MMem(V(ar.Reg), (int)bi.Value));
-                return;
-            }
-            if (b is RegOperand br && !Aliases(d, b))
-            {
-                Emit(MOp.Lea, V(d), new MMem(V(ar.Reg), 0) { Index = V(br.Reg) });
-                return;
-            }
-        }
-
-        MOperand rhs = RML(b, w);
-        if (Aliases(d, b) && !Aliases(d, a))
-        {
-            // d = a op d: the right operand would be overwritten by the move.
-            MReg t = Temp();
-            MovL(t, rhs, w);
-            rhs = t;
-        }
-        MReg dr = V(d);
-        MovL(dr, RML(a, w), w);
-        EmitW(op, w, dr, rhs);
-    }
-
-    private void SelectMulL(Instr i)
-    {
-        VReg d = i.Dest!;
-        int w = Width(d.Type);
-        Operand a = i.Operands[0], b = i.Operands[1];
-        if (b is ImmOperand imm && (w == 4 || imm.Value is >= int.MinValue and <= int.MaxValue))
-        {
-            Emit(new MInstr(MOp.Imul3, V(d), RL(a), Imm(w == 4 ? unchecked((int)imm.Value) : imm.Value)) { Width = w });
-            return;
-        }
-        if (a is ImmOperand aimm && (w == 4 || aimm.Value is >= int.MinValue and <= int.MaxValue))
-        {
-            Emit(new MInstr(MOp.Imul3, V(d), RL(b), Imm(w == 4 ? unchecked((int)aimm.Value) : aimm.Value)) { Width = w });
-            return;
-        }
-        MReg rhs = RL(b);
-        if (Aliases(d, b) && !Aliases(d, a))
-        {
-            MReg t = Temp();
-            MovL(t, rhs, w);
-            rhs = t;
-        }
-        MReg dr = V(d);
-        MovL(dr, RL(a), w);
-        EmitW(MOp.Imul, w, dr, rhs);
     }
 
     /// <summary>
@@ -800,93 +649,7 @@ internal sealed partial class Selector
     /// The count is masked by the operand width, which is exactly what the
     /// hardware does with CL at both widths: C#'s rule and the machine's agree.
     /// </summary>
-    private void SelectShiftL(Instr i)
-    {
-        VReg d = i.Dest!;
-        int w = Width(d.Type);
-        MOp op = i.Op switch
-        {
-            Opcode.Shl => MOp.Shl,
-            Opcode.ShrS => MOp.Sar,
-            _ => MOp.Shr,
-        };
-        Operand a = i.Operands[0], count = i.Operands[1];
-        if (count is ImmOperand c)
-        {
-            MReg dr = V(d);
-            MovL(dr, RML(a, w), w);
-            EmitW(op, w, dr, Imm(c.Value & (w * 8 - 1)));
-            return;
-        }
-        MReg n = Temp();
-        MovL(n, RL(count), 4);
-        MReg value = Temp();
-        MovL(value, RML(a, w), w);
-        MovL(Rcx, n, 4);
-        EmitW(op, w, value, Rcx);
-        MovL(V(d), value, w);
-    }
-
-    private void SelectNarrowL(Instr i)
-    {
-        VReg d = i.Dest!;
-        int w = Width(d.Type);
-        MReg src = RL(i.Operands[0]);
-        switch (i.Op)
-        {
-            case Opcode.SExt8:
-                EmitW(MOp.Movsx, 1, V(d), src);
-                if (w == 4) MovL(V(d), V(d), 4);
-                break;
-            case Opcode.SExt16:
-                EmitW(MOp.Movsx, 2, V(d), src);
-                if (w == 4) MovL(V(d), V(d), 4);
-                break;
-            case Opcode.ZExt8:
-                EmitW(MOp.Movzx, 1, V(d), src);
-                break;
-            default:
-                EmitW(MOp.Movzx, 2, V(d), src);
-                break;
-        }
-    }
-
     // ---- comparisons -------------------------------------------------------------------
-
-    private Cond IntCompareL(Instr i)
-    {
-        int w = Width(i.Operands[0].Type);
-        Operand a = i.Operands[0], b = i.Operands[1];
-        Cond c = i.Op switch
-        {
-            Opcode.Eq => Cond.E,
-            Opcode.Ne => Cond.Ne,
-            Opcode.LtS => Cond.L,
-            Opcode.LeS => Cond.Le,
-            Opcode.GtS => Cond.G,
-            Opcode.GeS => Cond.Ge,
-            Opcode.LtU => Cond.B,
-            Opcode.LeU => Cond.Be,
-            Opcode.GtU => Cond.A,
-            _ => Cond.Ae,
-        };
-        if (a is ImmOperand && b is not ImmOperand)
-        {
-            (a, b) = (b, a);
-            c = c.Swap();
-        }
-        MReg ar = RL(a);
-        MOperand br = RML(b, w);
-        if (br is MImm { Value: 0 } && c is Cond.E or Cond.Ne)
-        {
-            EmitW(MOp.Test, w, ar, ar);
-        }
-        else
-        {
-            EmitW(MOp.Cmp, w, ar, br);
-        }
-        return c;
-    }
 
     /// <summary>A 0 or 1 from the flags: SETcc into the low byte, then zero-extended.</summary>
     private void SetFromFlags(MReg d, Cond c)
@@ -894,6 +657,13 @@ internal sealed partial class Selector
         MReg b = Temp();
         Emit(new MInstr(MOp.Setcc, b) { Cond = c, Width = 1 });
         EmitW(MOp.Movzx, 1, d, b);
+    }
+
+    /// <summary>Long mode's float compare (FloatCompareL), as the family's fused branch reads one.</summary>
+    private FloatCond LongFloatCond(Instr i)
+    {
+        (Cond c, bool parityFalse, bool parityTrue) = FloatCompareL(i);
+        return new FloatCond(c, parityFalse, parityTrue);
     }
 
     /// <summary>
@@ -1398,62 +1168,6 @@ internal sealed partial class Selector
     /// and CMPXCHG the 486 lacked. And, or and xor have no fetching form, so
     /// they are a compare-exchange loop.
     /// </summary>
-    private void SelectAtomicL(Instr i)
-    {
-        VReg d = i.Dest!;
-        int w = Width(d.Type);
-        MMem m = AddressL(i.Operands[0], 0);
-        switch (i.Op)
-        {
-            case Opcode.AtomicSwap:
-            {
-                MReg t = Temp();
-                MovL(t, RML(i.Operands[1], w), w);
-                EmitW(MOp.Xchg, w, m, t);
-                MovL(V(d), t, w);
-                return;
-            }
-            case Opcode.AtomicAdd:
-            {
-                MReg t = Temp();
-                MovL(t, RML(i.Operands[1], w), w);
-                Emit(new MInstr(MOp.Xadd, m, t) { Width = w, Lock = true });
-                MovL(V(d), t, w);
-                return;
-            }
-            case Opcode.AtomicCas:
-            {
-                MReg value = RL(i.Operands[2]);
-                MovL(Rax, RML(i.Operands[1], w), w);
-                Emit(new MInstr(MOp.Cmpxchg, m, value) { Width = w, Lock = true });
-                MovL(V(d), Rax, w);
-                return;
-            }
-            default:
-            {
-                MOp op = i.Op switch
-                {
-                    Opcode.AtomicAnd => MOp.And,
-                    Opcode.AtomicOr => MOp.Or,
-                    _ => MOp.Xor,
-                };
-                MOperand v = RML(i.Operands[1], w);
-                MReg next = Temp();
-                MovL(Rax, m, w);
-                MBlock loop = Aside();
-                MBlock done = _m.NewBlock($"{_cur.Name}.{_splits++}", loop);
-                _cur = loop;
-                MovL(next, Rax, w);
-                EmitW(op, w, next, v);
-                Emit(new MInstr(MOp.Cmpxchg, m, next) { Width = w, Lock = true });
-                Jcc(Cond.Ne, loop);
-                _cur = done;
-                MovL(V(d), Rax, w);
-                return;
-            }
-        }
-    }
-
     // ---- calls -------------------------------------------------------------------------
 
     private void SelectCallL(Instr i)
@@ -1616,55 +1330,6 @@ internal sealed partial class Selector
     }
 
     // ---- control ---------------------------------------------------------------------
-
-    private void SelectBranchL(Instr i)
-    {
-        MBlock t = _heads[i.Targets[0]];
-        MBlock f = _heads[i.Targets[1]];
-        Operand c = i.Operands[0];
-        // A KNOWN CONDITION IS TESTED AT ITS OWN WIDTH, as the TEST below
-        // would: a word whose low half is zero is true, and an I32 whose
-        // long carries junk above bit 31 is only its low half.
-        if (c is ImmOperand imm)
-        {
-            Jmp(Corsac.Lang.Opt.IrInfo.Normalise(imm.Value, c.Type) != 0 ? t : f);
-            return;
-        }
-        if (c is RegOperand cr && _constants.TryGetValue(cr.Reg.Id, out long known))
-        {
-            Jmp(Corsac.Lang.Opt.IrInfo.Normalise(known, c.Type) != 0 ? t : f);
-            return;
-        }
-        MReg r = RL(c);
-        int w = Width(c.Type);
-        EmitW(MOp.Test, w, r, r);
-        Jcc(Cond.Ne, t);
-        Jmp(f);
-    }
-
-    private void SelectFusedBranchL(Instr cmp, Instr br)
-    {
-        MBlock t = _heads[br.Targets[0]];
-        MBlock f = _heads[br.Targets[1]];
-        if (cmp.Op is >= Opcode.FEq and <= Opcode.FGe)
-        {
-            (Cond fc, bool parityFalse, bool parityTrue) = FloatCompareL(cmp);
-            if (parityFalse)
-            {
-                Jcc(Cond.P, f);
-            }
-            else if (parityTrue)
-            {
-                Jcc(Cond.P, t);
-            }
-            Jcc(fc, t);
-            Jmp(f);
-            return;
-        }
-        Cond c = IntCompareL(cmp);
-        Jcc(c, t);
-        Jmp(f);
-    }
 
     private void SelectSwitchL(Instr i)
     {

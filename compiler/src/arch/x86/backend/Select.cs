@@ -136,8 +136,19 @@ internal sealed partial class Selector
         _xmm32 = sse && cpu.Has(X86Feature.Sse);
         _xmm64 = _xmm32 && cpu.Has(X86Feature.Sse2);
         _m.XmmSpillWidth = _xmm64 ? 8 : 4;
-        foreach (VReg parameter in f.Params) _definitions[parameter] = null;
-        foreach (Block b in f.Blocks)
+        NoteDefinitions();
+    }
+
+    /// <summary>
+    /// Each register's one definition, or every one of a register defined
+    /// more than once (a parameter's unknown entry value among them): what
+    /// the bounds on a value's bits are read from (UnsignedBits, ZeroHigh).
+    /// Both modes' constructors ask.
+    /// </summary>
+    private void NoteDefinitions()
+    {
+        foreach (VReg parameter in _f.Params) _definitions[parameter] = null;
+        foreach (Block b in _f.Blocks)
         foreach (Instr instruction in b.Instrs)
             if (instruction.Dest is { } dest)
             {
@@ -1078,6 +1089,9 @@ internal sealed partial class Selector
     public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false, bool windowsTls = false,
         string? streamCopy = null, string? streamFill = null, X86Backend.X87Facts? x87 = null)
     {
+        // The mode is the process's (X86Mode), which the walk and every
+        // width left unsaid read: this is i386's entry, RunLong long mode's.
+        if (X86Mode.Long) throw new InvalidOperationException("the i386 selector was asked for a function in long mode");
         // NOT IN THE STREAM ROUTINES THEMSELVES, whose own copy and fill are
         // the long way they fall back on: a block overlapping itself copied
         // there called the routine again, and again, until the stack ran out.
@@ -1229,8 +1243,15 @@ internal sealed partial class Selector
     }
 
     /// <summary>An I32 operand in a register, loading a constant or address if it is one.</summary>
+    /// <summary>
+    /// An integer operand in a register: its own, or a temporary made of a
+    /// constant, a symbol's address or a frame slot's. Long mode's way with
+    /// the last three is its own (RL: a constant by the shortest move that
+    /// makes it, a symbol RIP-relative or through its GOT slot).
+    /// </summary>
     private MReg R(Operand o)
     {
+        if (X86Mode.Long) return RL(o);
         switch (o)
         {
             case RegOperand r:
@@ -1338,6 +1359,10 @@ internal sealed partial class Selector
     /// <summary>The memory an address operand plus displacement names.</summary>
     private MMem Address(Operand addr, long offset)
     {
+        // Long mode's addresses are its own (AddressL): a symbol RIP-relative
+        // or through its GOT slot, a constant address through a register
+        // where thirty-two bits do not hold it.
+        if (X86Mode.Long) return AddressL(addr, offset);
         int disp = checked((int)offset);
         switch (addr)
         {
@@ -1446,7 +1471,7 @@ internal sealed partial class Selector
                     }
                     if (IsCompare(i.Op) && i.Dest is not null && n + 1 < b.Instrs.Count && FusesInto(i, b.Instrs[n + 1]))
                     {
-                        SelectFusedBranchL(i, b.Instrs[n + 1]);
+                        SelectFusedBranch(i, b.Instrs[n + 1]);
                         n++;
                         continue;
                     }
@@ -1661,7 +1686,11 @@ internal sealed partial class Selector
     /// </summary>
     private static bool BothModes(Opcode op)
         => op is Opcode.Neg or Opcode.Not or Opcode.ByteSwap or Opcode.Fence or Opcode.CompilerFence or Opcode.Jump or Opcode.Unreachable
-            or Opcode.Trap or Opcode.Pause;
+            or Opcode.Trap or Opcode.Pause or Opcode.Shl or Opcode.ShrS or Opcode.ShrU or Opcode.SExt8 or Opcode.SExt16 or Opcode.ZExt8
+            or Opcode.ZExt16 or Opcode.Branch or (>= Opcode.Eq and <= Opcode.GeU) or Opcode.ArrayLength or Opcode.InitArrayLength
+            or Opcode.LabelAddr or Opcode.StackPointer or Opcode.FramePointer or Opcode.Trunc64 or Opcode.SExt32 or Opcode.ZExt32
+            or Opcode.Add or Opcode.Sub or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Mul or Opcode.Copy
+            or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas);
 
     private void SelectInstr(Instr i)
     {
@@ -1776,17 +1805,34 @@ internal sealed partial class Selector
             case Opcode.ZExt16:
                 SelectNarrow(i);
                 break;
+            // BETWEEN AN I32 AND AN I64. On i386 the I64 is a pair: its low
+            // word taken, or a high word made. In long mode it is the one
+            // register: a 32-bit move clears the upper half -- which IS the
+            // truncation's result as an I32 and the zero extension -- and
+            // MOVSXD fills it with the sign.
             case Opcode.Trunc64:
-                Mov(Lo(i.Dest!), PairRM(i.Operands[0]).Lo);
+                if (X86Mode.Long) MovW(Lo(i.Dest!), RM(i.Operands[0], 4), 4);
+                else Mov(Lo(i.Dest!), PairRM(i.Operands[0]).Lo);
                 break;
             case Opcode.SExt32:
             {
+                if (X86Mode.Long)
+                {
+                    if (i.Operands[0] is ImmOperand sextImm) LoadConstant(Lo(i.Dest!), unchecked((int)sextImm.Value), 8);
+                    else EmitW(MOp.Movsx, 4, Lo(i.Dest!), R(i.Operands[0]));
+                    break;
+                }
                 Mov(Lo(i.Dest!), RM(i.Operands[0]));
                 Mov(Hi(i.Dest!), Lo(i.Dest!));
                 Emit(MOp.Sar, Hi(i.Dest!), Imm(31));
                 break;
             }
             case Opcode.ZExt32:
+                if (X86Mode.Long)
+                {
+                    MovW(Lo(i.Dest!), RM(i.Operands[0], 4), 4);
+                    break;
+                }
                 // A move of zero rather than xor: the allocator then knows the
                 // half is a constant it can remake instead of spilling, and
                 // the peephole turns what survives into xor anyway.
@@ -1823,11 +1869,14 @@ internal sealed partial class Selector
                 SelectLoad(i);
                 break;
             case Opcode.ArrayLength:
-                Mov(Lo(i.Dest!), Address(i.Operands[0], Target.Current.ArrayCountOffset));
+                MovW(Lo(i.Dest!), Address(i.Operands[0], Target.Current.ArrayCountOffset), WordOf(i.Dest!.Type));
                 break;
             case Opcode.InitArrayLength:
-                Mov(Address(i.Operands[0], Target.Current.ArrayCountOffset), RM(i.Operands[1]));
+            {
+                int w = WordOf(i.Operands[1].Type);
+                MovW(Address(i.Operands[0], Target.Current.ArrayCountOffset), RM(i.Operands[1], w), w);
                 break;
+            }
             case Opcode.Store:
                 SelectStore(i);
                 break;
@@ -1874,14 +1923,18 @@ internal sealed partial class Selector
                 SelectSwitch(i);
                 break;
             case Opcode.Unreachable:
-                // No ud2 on a 486; a breakpoint trap is the loudest thing it has.
+                // UD2 where every processor has it. i386's may be a 486, which
+                // has none: a breakpoint trap is the loudest thing it has.
                 Emit(X86Mode.Long ? MOp.Ud2 : MOp.Int3);
                 break;
             case Opcode.Unwind:
                 SelectUnwind(i);
                 break;
             case Opcode.LabelAddr:
-                Mov(Lo(i.Dest!), MImm.Of(_heads[i.Targets[0]]));
+                // The block's address: a constant the image is linked with, and
+                // in long mode RIP-relative, as every address of the image is.
+                if (X86Mode.Long) Emit(MOp.Lea, Lo(i.Dest!), new MMem(null, 0) { Label = _heads[i.Targets[0]] });
+                else Mov(Lo(i.Dest!), MImm.Of(_heads[i.Targets[0]]));
                 break;
             case Opcode.StackPointer:
                 Mov(Lo(i.Dest!), Esp);
@@ -1910,15 +1963,30 @@ internal sealed partial class Selector
 
     private void SelectCopy(Instr i)
     {
-        if (PackedValueCopy(i)) return;
+        // (Long mode has no Packed128 value of the class yet, and its floats
+        // are its own: CopyFloatL.)
+        if (!X86Mode.Long && PackedValueCopy(i)) return;
         VReg d = i.Dest!;
         Operand src = i.Operands[0];
+        if (X86Mode.Long && d.Type.IsFloat())
+        {
+            CopyFloatL(d, src);
+            return;
+        }
         switch (d.Type)
         {
+            // One register: a frame slot's address by LEA in both modes; what
+            // else long mode copies is its own way with constants and
+            // symbols (CopyWordL).
             case IrType.I32:
+            case IrType.I64 when X86Mode.Long:
                 if (src is SlotOperand s)
                 {
                     Emit(MOp.Lea, Lo(d), MMem.Frame(_m.Frame.SlotOffset(s.Slot)));
+                }
+                else if (X86Mode.Long)
+                {
+                    CopyWordL(d, src);
                 }
                 else
                 {
@@ -1975,9 +2043,9 @@ internal sealed partial class Selector
         }
         if (clobbers)
         {
-            return (Temp(), d.Type == IrType.I64 ? Temp() : Lo(d), true);
+            return (Temp(), Pairs(d.Type) ? Temp() : Lo(d), true);
         }
-        return (Lo(d), d.Type == IrType.I64 ? Hi(d) : Lo(d), false);
+        return (Lo(d), Pairs(d.Type) ? Hi(d) : Lo(d), false);
     }
 
     private void Commit(Instr i, (MReg Lo, MReg Hi, bool Temp) dest)
@@ -1986,8 +2054,8 @@ internal sealed partial class Selector
         {
             return;
         }
-        Mov(Lo(i.Dest!), dest.Lo);
-        if (i.Dest!.Type == IrType.I64)
+        MovW(Lo(i.Dest!), dest.Lo, WordOf(i.Dest!.Type));
+        if (Pairs(i.Dest!.Type))
         {
             Mov(Hi(i.Dest!), dest.Hi);
         }
@@ -1997,7 +2065,7 @@ internal sealed partial class Selector
     {
         var dest = DestPair(i);
         MOp op = AluOp(i.Op);
-        if (i.Op == Opcode.Add && i.Dest!.Type == IrType.I64)
+        if (i.Op == Opcode.Add && Pairs(i.Dest!.Type))
         {
             _rangeVisits = 0;
             int leftBits = UnsignedBits(i.Operands[0]), rightBits = UnsignedBits(i.Operands[1]);
@@ -2024,7 +2092,7 @@ internal sealed partial class Selector
                 ulong possible = bits == 64 ? ulong.MaxValue : (1UL << bits) - 1;
                 if ((unchecked((ulong)mask.Value) & possible) == possible)
                 {
-                    if (i.Dest.Type == IrType.I32) Mov(dest.Lo, RM(value));
+                    if (!Pairs(i.Dest.Type)) MovW(dest.Lo, RM(value, WordOf(i.Dest.Type)), WordOf(i.Dest.Type));
                     else
                     {
                         var pair = PairRM(value);
@@ -2035,9 +2103,28 @@ internal sealed partial class Selector
                 }
             }
         }
-        if (i.Dest!.Type == IrType.I32)
+        if (!Pairs(i.Dest!.Type))
         {
-            BitOrAlu(op, dest.Lo, RM(i.Operands[0]), RM(i.Operands[1]));
+            int w = WordOf(i.Dest.Type);
+            // AN ADDRESS PLUS A CONSTANT, OR TWO REGISTERS ADDED, IS ONE LEA
+            // and no move, where a register is an address's width (long
+            // mode's I64): the three-operand form x86 has always had. (An
+            // I32's, and i386's, are made of the move and the add by
+            // AddressFold where they are an address's.)
+            if (op == MOp.Add && w == 8 && !dest.Temp && i.Operands[0] is RegOperand ar && !Aliases(i.Dest, i.Operands[0]))
+            {
+                if (i.Operands[1] is ImmOperand bi && bi.Value is >= int.MinValue and <= int.MaxValue)
+                {
+                    Emit(MOp.Lea, dest.Lo, new MMem(Lo(ar.Reg), (int)bi.Value));
+                    return;
+                }
+                if (i.Operands[1] is RegOperand br)
+                {
+                    Emit(MOp.Lea, dest.Lo, new MMem(Lo(ar.Reg), 0) { Index = Lo(br.Reg) });
+                    return;
+                }
+            }
+            BitOrAlu(op, dest.Lo, RM(i.Operands[0], w), RM(i.Operands[1], w), w);
         }
         else
         {
@@ -2045,8 +2132,8 @@ internal sealed partial class Selector
             (MOperand blo, MOperand bhi) = PairRM(i.Operands[1]);
             if (op is MOp.And or MOp.Or or MOp.Xor)
             {
-                BitOrAlu(op, dest.Lo, alo, blo);
-                BitOrAlu(op, dest.Hi, ahi, bhi);
+                BitOrAlu(op, dest.Lo, alo, blo, 4);
+                BitOrAlu(op, dest.Hi, ahi, bhi, 4);
             }
             else
             {
@@ -2082,7 +2169,9 @@ internal sealed partial class Selector
     // IR bitwise operations do not expose flags. In particular, an I64 mask
     // may have an identity/absorbing half even when the whole mask does not.
     // Do not apply these rules to add/sub: the high half consumes carry.
-    private void BitOrAlu(MOp op, MReg dest, MOperand left, MOperand right)
+    // One register of `width` bytes. (An immediate of eight is thirty-two
+    // bits sign-extended, RM: all ones is -1 there too, and zero zero.)
+    private void BitOrAlu(MOp op, MReg dest, MOperand left, MOperand right, int width)
     {
         if (op is MOp.And or MOp.Or or MOp.Xor)
         {
@@ -2091,15 +2180,15 @@ internal sealed partial class Selector
             {
                 int mask = unchecked((int)imm.Value);
                 if ((op == MOp.And && mask == 0) || (op == MOp.Or && mask == -1))
-                { Mov(dest, Imm(mask)); return; }
+                { MovW(dest, Imm(mask), width); return; }
                 if ((op == MOp.And && mask == -1) || (op is MOp.Or or MOp.Xor && mask == 0))
-                { Mov(dest, left); return; }
+                { MovW(dest, left, width); return; }
                 if (op == MOp.Xor && mask == -1)
-                { Mov(dest, left); Emit(MOp.Not, dest); return; }
+                { MovW(dest, left, width); EmitW(MOp.Not, width, dest); return; }
             }
         }
-        Mov(dest, left);
-        Emit(op, dest, right);
+        MovW(dest, left, width);
+        EmitW(op, width, dest, right);
     }
 
     // Structural facts only: no assumption about mutable memory contents or
@@ -2187,7 +2276,9 @@ internal sealed partial class Selector
     /// <summary>
     /// `dest = src * factor`, 32 bits wrapping, as the processor --cpu names
     /// runs it best: IMUL, or shifts, LEAs, adds and subtracts where those
-    /// are quicker -- the same product modulo 2^32, and nothing reads the
+    /// are quicker -- the same product modulo 2^32 (2^64 at a width of eight,
+    /// in long mode, where every step is written at the width: a 32-bit LEA
+    /// clears the register's upper half as a 32-bit move does), and nothing reads the
     /// flags of a multiplication selected here (a checked one is
     /// CheckedArith's). IMUL r, r, imm is 10 and unpaired on a Pentium (and
     /// AP-500 replaces one with six simple instructions); 2 or 3 on the K6,
@@ -2210,14 +2301,14 @@ internal sealed partial class Selector
     /// copied first where the recipe reads it after writing the destination,
     /// and the copy counts.
     /// </summary>
-    private void MulByConstant(MReg dest, MReg src, int factor)
+    private void MulByConstant(MReg dest, MReg src, int factor, int width)
     {
         int limit = CpuModel.K6 ? 2 : CpuModel.K8 ? 1 : CpuModel.K7 ? 2 : CpuModel.P5 ? 5 : CpuModel.Scalar ? 5 : CpuModel.GeodeLx ? 4 : 3;
         long c = Math.Abs((long)factor);
         bool negate = factor < 0;
         if (c == 0)
         {
-            Mov(dest, Imm(0));
+            MovW(dest, Imm(0), width);
             return;
         }
         int k = 0;
@@ -2247,7 +2338,7 @@ internal sealed partial class Selector
         int cost = body == int.MaxValue ? int.MaxValue : body + (k > 0 ? 1 : 0) + (negate ? 1 : 0) + (copies ? 1 : 0);
         if (cost > limit)
         {
-            Emit(MOp.Imul3, dest, src, Imm(factor));
+            EmitW(MOp.Imul3, width, dest, src, Imm(factor));
             return;
         }
         MMem Scaled(MReg? baseReg, MReg index, long n) => new(baseReg, 0) { Index = index, Scale = (int)n };
@@ -2256,55 +2347,62 @@ internal sealed partial class Selector
         if (copies)
         {
             MReg copy = Temp();
-            Mov(copy, src);
+            MovW(copy, src, width);
             src = copy;
         }
         switch (kind)
         {
             case 0:
-                Mov(dest, src);
+                MovW(dest, src, width);
                 break;
             case 1:
-                Emit(MOp.Lea, dest, Scaled(src, src, Scale(a)));
+                EmitW(MOp.Lea, width, dest, Scaled(src, src, Scale(a)));
                 break;
             case 2:
-                Emit(MOp.Lea, dest, Scaled(src, src, Scale(a)));
-                Emit(MOp.Lea, dest, Scaled(dest, dest, Scale(b)));
+                EmitW(MOp.Lea, width, dest, Scaled(src, src, Scale(a)));
+                EmitW(MOp.Lea, width, dest, Scaled(dest, dest, Scale(b)));
                 break;
             case 3:
                 // c = 1 + b * a: dest = a * src, then src + dest * b.
-                Emit(MOp.Lea, dest, Scaled(src, src, Scale(a)));
-                Emit(MOp.Lea, dest, Scaled(src, dest, b));
+                EmitW(MOp.Lea, width, dest, Scaled(src, src, Scale(a)));
+                EmitW(MOp.Lea, width, dest, Scaled(src, dest, b));
                 break;
             case 4:
-                Mov(dest, src);
-                Emit(MOp.Shl, dest, Imm(j));
-                Emit(MOp.Sub, dest, src);
+                MovW(dest, src, width);
+                EmitW(MOp.Shl, width, dest, Imm(j));
+                EmitW(MOp.Sub, width, dest, src);
                 break;
             case 5:
-                Mov(dest, src);
-                Emit(MOp.Shl, dest, Imm(j));
-                Emit(MOp.Add, dest, src);
+                MovW(dest, src, width);
+                EmitW(MOp.Shl, width, dest, Imm(j));
+                EmitW(MOp.Add, width, dest, src);
                 break;
         }
-        if (k == 1) Emit(MOp.Add, dest, dest);
-        else if (k > 1) Emit(MOp.Shl, dest, Imm(k));
-        if (negate) Emit(MOp.Neg, dest);
+        if (k == 1) EmitW(MOp.Add, width, dest, dest);
+        else if (k > 1) EmitW(MOp.Shl, width, dest, Imm(k));
+        if (negate) EmitW(MOp.Neg, width, dest);
     }
 
     private void SelectMul(Instr i)
     {
         var dest = DestPair(i);
-        if (i.Dest!.Type == IrType.I32)
+        if (!Pairs(i.Dest!.Type))
         {
-            if (i.Operands[1] is ImmOperand imm)
+            // One register. By a constant an IMUL's immediate holds (any of
+            // an I32's; thirty-two bits sign-extended of long mode's I64),
+            // as the processor runs it best (MulByConstant); the constant on
+            // the left is the same product.
+            int w = WordOf(i.Dest.Type);
+            Operand value = i.Operands[0], by = i.Operands[1];
+            if (X86Mode.Long && value is ImmOperand && by is not ImmOperand) (value, by) = (by, value);
+            if (by is ImmOperand imm && (w == 4 || imm.Value is >= int.MinValue and <= int.MaxValue))
             {
-                MulByConstant(dest.Lo, R(i.Operands[0]), (int)imm.Value);
+                MulByConstant(dest.Lo, R(value), (int)imm.Value, w);
             }
             else
             {
-                Mov(dest.Lo, RM(i.Operands[0]));
-                Emit(MOp.Imul, dest.Lo, RM(i.Operands[1]));
+                MovW(dest.Lo, RM(value, w), w);
+                EmitW(MOp.Imul, w, dest.Lo, RM(by, w));
             }
             Commit(i, dest);
             return;
@@ -2907,7 +3005,7 @@ internal sealed partial class Selector
         if (rem)
         {
             MReg product = Temp();
-            MulByConstant(product, quotient, unchecked((int)value));
+            MulByConstant(product, quotient, unchecked((int)value), 4);
             Mov(Lo(i.Dest!), numerator); Emit(MOp.Sub, Lo(i.Dest!), product);
         }
         else Mov(Lo(i.Dest!), quotient);
@@ -2948,7 +3046,7 @@ internal sealed partial class Selector
             if (rem)
             {
                 MReg product = Temp();
-                MulByConstant(product, quotient, (int)constant.Value);
+                MulByConstant(product, quotient, (int)constant.Value, 4);
                 Mov(Lo(i.Dest), numerator); Emit(MOp.Sub, Lo(i.Dest), product);
             }
             else Mov(Lo(i.Dest), quotient);
@@ -3006,17 +3104,20 @@ internal sealed partial class Selector
         var dest = DestPair(i);
         Operand count = i.Operands[1];
 
-        if (i.Dest!.Type == IrType.I32)
+        if (!Pairs(i.Dest!.Type))
         {
-            Mov(dest.Lo, RM(i.Operands[0]));
+            // One register, of four bytes or (an I64 in long mode) eight: the
+            // count is taken modulo its bits by the processor and by this.
+            int w = WordOf(i.Dest.Type);
+            MovW(dest.Lo, RM(i.Operands[0], w), w);
             if (count is ImmOperand c)
             {
-                Emit(op, dest.Lo, Imm(c.Value & 31));
+                EmitW(op, w, dest.Lo, Imm(c.Value & (w * 8 - 1)));
             }
             else
             {
-                Mov(Ecx, RM(count));
-                EmitCl(op, dest.Lo);
+                MovW(Ecx, RM(count, 4), 4);
+                EmitW(op, w, dest.Lo, Ecx);
             }
             Commit(i, dest);
             return;
@@ -3222,15 +3323,17 @@ internal sealed partial class Selector
         Cond c = CondOf(i.Op);
         Operand a = i.Operands[0];
         Operand b = i.Operands[1];
-        bool narrow64 = a.Type == IrType.I64 && ZeroHigh(a) && ZeroHigh(b);
+        bool narrow64 = Pairs(a.Type) && ZeroHigh(a) && ZeroHigh(b);
         if (narrow64)
         {
             // Positive I64 operands are ordered by their unsigned low words,
             // not by the sign bit of those low words.
             c = c switch { Cond.L => Cond.B, Cond.Le => Cond.Be, Cond.G => Cond.A, Cond.Ge => Cond.Ae, _ => c };
         }
-        if (a.Type == IrType.I32 || narrow64)
+        if (!Pairs(a.Type) || narrow64)
         {
+            // One register each (a pair's low words, where the high are zero).
+            int w = WordOf(a.Type);
             if (a is not RegOperand && b is RegOperand)
             {
                 (a, b) = (b, a);
@@ -3240,11 +3343,11 @@ internal sealed partial class Selector
             if (b is ImmOperand { Value: 0 })
             {
                 // Against zero, test is a byte shorter than cmp and says the same.
-                Emit(MOp.Test, ra, ra);
+                EmitW(MOp.Test, w, ra, ra);
             }
             else
             {
-                Emit(MOp.Cmp, ra, RM(b));
+                EmitW(MOp.Cmp, w, ra, RM(b, w));
             }
             return c;
         }
@@ -3307,7 +3410,8 @@ internal sealed partial class Selector
         // two instructions and is a register.
         MReg d = Lo(dest);
         MReg t = Temp();
-        _m.ByteRegs.Add(t.Id);
+        // (Any of long mode's registers has a low byte.)
+        if (!X86Mode.Long) _m.ByteRegs.Add(t.Id);
         Emit(new MInstr(MOp.Setcc, t) { Cond = c, Width = 1 });
         EmitW(MOp.Movzx, 1, d, t);
     }
@@ -3405,6 +3509,17 @@ internal sealed partial class Selector
         VReg d = i.Dest!;
         MReg src = R(i.Operands[0]);
         MReg lo = Lo(d);
+        if (X86Mode.Long)
+        {
+            // Every register has a low byte and a low word, and MOVZX clears
+            // the rest of the register; MOVSX is written for the whole
+            // register (Encoder.Long), so an I32's sign extension clears its
+            // upper half again with the move that does.
+            bool signed = i.Op is Opcode.SExt8 or Opcode.SExt16;
+            EmitW(signed ? MOp.Movsx : MOp.Movzx, i.Op is Opcode.SExt8 or Opcode.ZExt8 ? 1 : 2, lo, src);
+            if (signed && WordOf(d.Type) == 4) MovW(lo, lo, 4);
+            return;
+        }
         switch (i.Op)
         {
             case Opcode.ZExt8:
@@ -3884,29 +3999,43 @@ internal sealed partial class Selector
     private void SelectAtomic(Instr i)
     {
         VReg d = i.Dest!;
-        if (d.Type != IrType.I32)
+        if (Pairs(d.Type))
         {
             Error("64-bit atomics are not available on a 486");
             return;
         }
+        // One register, of the value's width (eight for long mode's I64).
+        int w = WordOf(d.Type);
         MMem m = Address(i.Operands[0], 0);
         switch (i.Op)
         {
+            // THE RESULT'S REGISTER IS WRITTEN BEFORE THE MEMORY IS NAMED, so
+            // one that is also the address -- `p = swap(*p, v)` -- goes
+            // through a temporary (DestPair, every operand counted): written
+            // first, the instruction addressed through the value.
             case Opcode.AtomicSwap:
+            {
                 // xchg with a memory operand locks the bus by itself.
-                Mov(Lo(d), RM(i.Operands[1]));
-                Emit(MOp.Xchg, m, Lo(d));
+                var dest = DestPair(i, 0);
+                MovW(dest.Lo, RM(i.Operands[1], w), w);
+                EmitW(MOp.Xchg, w, m, dest.Lo);
+                Commit(i, dest);
                 break;
+            }
             case Opcode.AtomicAdd:
-                Mov(Lo(d), RM(i.Operands[1]));
-                Emit(new MInstr(MOp.Xadd, m, Lo(d)) { Lock = true });
+            {
+                var dest = DestPair(i, 0);
+                MovW(dest.Lo, RM(i.Operands[1], w), w);
+                Emit(new MInstr(MOp.Xadd, m, dest.Lo) { Width = w, Lock = true });
+                Commit(i, dest);
                 break;
+            }
             case Opcode.AtomicCas:
             {
                 MReg value = R(i.Operands[2]);
-                Mov(Eax, RM(i.Operands[1]));
-                Emit(new MInstr(MOp.Cmpxchg, m, value) { Lock = true });
-                Mov(Lo(d), Eax);
+                MovW(Eax, RM(i.Operands[1], w), w);
+                Emit(new MInstr(MOp.Cmpxchg, m, value) { Width = w, Lock = true });
+                MovW(Lo(d), Eax, w);
                 break;
             }
             default:
@@ -3914,16 +4043,16 @@ internal sealed partial class Selector
                 // No single locked instruction returns the old value of a
                 // bitwise op: read, compute, and cmpxchg until it sticks.
                 MOp op = i.Op == Opcode.AtomicAnd ? MOp.And : i.Op == Opcode.AtomicOr ? MOp.Or : MOp.Xor;
-                MOperand v = RM(i.Operands[1]);
-                Mov(Eax, m);
+                MOperand v = RM(i.Operands[1], w);
+                MovW(Eax, m, w);
                 MBlock loop = Split();
                 MReg t = Temp();
-                Mov(t, Eax);
-                Emit(op, t, v);
-                Emit(new MInstr(MOp.Cmpxchg, m, t) { Lock = true });
+                MovW(t, Eax, w);
+                EmitW(op, w, t, v);
+                Emit(new MInstr(MOp.Cmpxchg, m, t) { Width = w, Lock = true });
                 Jcc(Cond.Ne, loop);
                 Split();
-                Mov(Lo(d), Eax);
+                MovW(Lo(d), Eax, w);
                 break;
             }
         }
@@ -4149,7 +4278,7 @@ internal sealed partial class Selector
             return;
         }
         MReg r = R(c);
-        Emit(MOp.Test, r, r);
+        EmitW(MOp.Test, WordOf(c.Type), r, r);
         Jcc(Cond.Ne, t);
         Jmp(f);
     }
@@ -4160,7 +4289,8 @@ internal sealed partial class Selector
         MBlock f = _heads[br.Targets[1]];
         if (cmp.Op is >= Opcode.FEq and <= Opcode.FGe)
         {
-            FloatCond fc = FloatCompare(cmp);
+            // (Long mode's float compare is still its own: FloatCompareL.)
+            FloatCond fc = X86Mode.Long ? LongFloatCond(cmp) : FloatCompare(cmp);
             if (fc.ParityFalse)
             {
                 Jcc(Cond.P, f);

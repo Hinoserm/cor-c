@@ -127,7 +127,9 @@ internal sealed partial class Encoder
                 if (w == 1 && i.Operands[1] is MReg { IsFloat: false, Hw: >= 4 and <= 7 }) _rexEmpty = true;
                 OpL(4, Hw(i.Operands[0]), i.Operands[1], 0x0F, w == 1 ? (byte)0xB6 : (byte)0xB7);
                 return true;
-            case MOp.Lea: OpL(8, Hw(i.Operands[0]), i.Operands[1], 0x8D); return true;
+            // An address is the register's whole eight bytes; an I32's sum made
+            // by LEA (a multiplication's step) is four, and clears the rest.
+            case MOp.Lea: OpL(i.Width == 4 ? 4 : 8, Hw(i.Operands[0]), i.Operands[1], 0x8D); return true;
             case MOp.Push: PushL(i.Operands[0]); return true;
             case MOp.Pop:
                 if (i.Operands[0] is MReg pr) OpReg(0x58, pr);

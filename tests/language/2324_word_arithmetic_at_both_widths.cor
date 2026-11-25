@@ -1,0 +1,146 @@
+// test: word_arithmetic_at_both_widths
+// expect-exit: 0
+// expect-output:
+// 3471434943
+// 4274300173
+// 1205641378
+// 1212185089
+// 3313950467
+//
+// Integer arithmetic on values the compiler cannot fold, at 32 and 64 bits:
+// multiplication by constants (the ones made of shifts and LEAs among
+// them, and a product whose upper half must not reach a 64-bit use),
+// shifts by constants and by counts, every comparison signed and unsigned
+// against a value and against a constant, the bit operations with their
+// identities, the narrowing and widening casts, and byte reversal. One
+// selection serves i386 and x86-64 for these; each line is a hash of every
+// result, the same on both.
+
+using System;
+
+static class Program
+{
+    static int[] Ints = { 0, 1, -1, 2, 3, 7, 100, 65535, 65536, 0x7FFFFFFF, unchecked((int)0x80000000), 123456789, -987654321, 0x55555555, unchecked((int)0xAAAAAAAA) };
+    static long[] Longs = { 0, 1, -1, 2, 3, 7, 100, 0xFFFFFFFFL, 0x100000000L, 0x7FFFFFFFFFFFFFFFL, unchecked((long)0x8000000000000000UL), 1234567890123456789L, -987654321987654321L, 0x5555555555555555L };
+
+    static uint Hash(uint h, long v) { unchecked { h = (h ^ (uint)v) * 16777619u; h = (h ^ (uint)(v >> 32)) * 16777619u; return h; } }
+
+    static uint MulInts()
+    {
+        uint h = 2166136261u;
+        foreach (int x in Ints)
+        {
+            unchecked
+            {
+                h = Hash(h, x * 0); h = Hash(h, x * 1); h = Hash(h, x * 2); h = Hash(h, x * 3); h = Hash(h, x * 4); h = Hash(h, x * 5);
+                h = Hash(h, x * 6); h = Hash(h, x * 7); h = Hash(h, x * 8); h = Hash(h, x * 9); h = Hash(h, x * 10); h = Hash(h, x * 11);
+                h = Hash(h, x * 12); h = Hash(h, x * 13); h = Hash(h, x * 15); h = Hash(h, x * 17); h = Hash(h, x * 18); h = Hash(h, x * 19);
+                h = Hash(h, x * 21); h = Hash(h, x * 25); h = Hash(h, x * 27); h = Hash(h, x * 31); h = Hash(h, x * 33); h = Hash(h, x * 37);
+                h = Hash(h, x * 41); h = Hash(h, x * 45); h = Hash(h, x * 63); h = Hash(h, x * 65); h = Hash(h, x * 72); h = Hash(h, x * 73);
+                h = Hash(h, x * 81); h = Hash(h, x * 100); h = Hash(h, x * 1000); h = Hash(h, x * -1); h = Hash(h, x * -3); h = Hash(h, x * -9);
+                h = Hash(h, x * -40); h = Hash(h, x * 0x10001); h = Hash(h, x * 0x7FFFFFFF); h = Hash(h, 5 * x); h = Hash(h, (x * 9) * 5);
+                // The product's upper half must not survive into a 64-bit use.
+                long wide = (uint)(x * 9); h = Hash(h, wide); wide = x * 73; h = Hash(h, wide);
+                int[] table = new int[8]; table[(uint)(x * 5) & 7] = x; h = Hash(h, table[(uint)(x * 5) & 7]);
+            }
+        }
+        return h;
+    }
+
+    static uint MulLongs()
+    {
+        uint h = 2166136261u;
+        foreach (long x in Longs)
+        {
+            unchecked
+            {
+                h = Hash(h, x * 0); h = Hash(h, x * 1); h = Hash(h, x * 2); h = Hash(h, x * 3); h = Hash(h, x * 5); h = Hash(h, x * 7);
+                h = Hash(h, x * 9); h = Hash(h, x * 10); h = Hash(h, x * 12); h = Hash(h, x * 25); h = Hash(h, x * 37); h = Hash(h, x * 63);
+                h = Hash(h, x * 65); h = Hash(h, x * 100); h = Hash(h, x * -1); h = Hash(h, x * -5); h = Hash(h, x * 0x7FFFFFFF);
+                h = Hash(h, x * 0x100000000L); h = Hash(h, x * 0x123456789ABL); h = Hash(h, 9 * x); h = Hash(h, x * x);
+            }
+        }
+        return h;
+    }
+
+    static uint Shifts(int n)
+    {
+        uint h = 2166136261u;
+        foreach (int x in Ints)
+            for (int k = 0; k < n; k++)
+            {
+                h = Hash(h, x << k); h = Hash(h, x >> k); h = Hash(h, (int)((uint)x >> k));
+                h = Hash(h, x << 5); h = Hash(h, x >> 31); h = Hash(h, (int)((uint)x >> 17));
+            }
+        foreach (long x in Longs)
+            for (int k = 0; k < n; k++)
+            {
+                h = Hash(h, x << k); h = Hash(h, x >> k); h = Hash(h, (long)((ulong)x >> k));
+                h = Hash(h, x << 40); h = Hash(h, x >> 63); h = Hash(h, (long)((ulong)x >> 33));
+                int count = k; long y = x; y <<= count; count = (int)(y & 63); h = Hash(h, x >> count);
+            }
+        return h;
+    }
+
+    static uint Compares()
+    {
+        uint h = 2166136261u;
+        foreach (int a in Ints)
+            foreach (int b in Ints)
+            {
+                int bits = (a < b ? 1 : 0) | (a <= b ? 2 : 0) | (a > b ? 4 : 0) | (a >= b ? 8 : 0) | (a == b ? 16 : 0) | (a != b ? 32 : 0)
+                    | ((uint)a < (uint)b ? 64 : 0) | ((uint)a <= (uint)b ? 128 : 0) | ((uint)a > (uint)b ? 256 : 0) | ((uint)a >= (uint)b ? 512 : 0)
+                    | (a < 0 ? 1024 : 0) | (a <= 0 ? 2048 : 0) | (a > 0 ? 4096 : 0) | (a >= 0 ? 8192 : 0) | (0 < b ? 16384 : 0) | (5 >= b ? 32768 : 0);
+                h = Hash(h, bits);
+                if (a < b) h = Hash(h, 1); if (a >= 0) h = Hash(h, 2); if ((uint)a > 7u) h = Hash(h, 3); if (b == 0) h = Hash(h, 4);
+            }
+        foreach (long a in Longs)
+            foreach (long b in Longs)
+            {
+                int bits = (a < b ? 1 : 0) | (a <= b ? 2 : 0) | (a > b ? 4 : 0) | (a >= b ? 8 : 0) | (a == b ? 16 : 0) | (a != b ? 32 : 0)
+                    | ((ulong)a < (ulong)b ? 64 : 0) | ((ulong)a <= (ulong)b ? 128 : 0) | ((ulong)a > (ulong)b ? 256 : 0) | ((ulong)a >= (ulong)b ? 512 : 0)
+                    | (a < 0 ? 1024 : 0) | (a <= 0 ? 2048 : 0) | (a > 0 ? 4096 : 0) | (a >= 0 ? 8192 : 0) | (0x100000000L < b ? 16384 : 0) | (a == 0x123456789AL ? 32768 : 0);
+                h = Hash(h, bits);
+                if (a < b) h = Hash(h, 1); if (a >= 0) h = Hash(h, 2); if ((ulong)a > 7ul) h = Hash(h, 3); if (b == 0) h = Hash(h, 4);
+            }
+        return h;
+    }
+
+    static uint Bits()
+    {
+        uint h = 2166136261u;
+        foreach (int a in Ints)
+            foreach (int b in Ints)
+            {
+                unchecked
+                {
+                    h = Hash(h, a + b); h = Hash(h, a - b); h = Hash(h, a & b); h = Hash(h, a | b); h = Hash(h, a ^ b); h = Hash(h, -a); h = Hash(h, ~b);
+                    h = Hash(h, a & 0xFF); h = Hash(h, a | -1); h = Hash(h, a ^ -1); h = Hash(h, a & 0); h = Hash(h, a + 0x7FFFFFFF); h = Hash(h, 100 - a);
+                    h = Hash(h, (sbyte)a); h = Hash(h, (short)a); h = Hash(h, (byte)a); h = Hash(h, (ushort)a); h = Hash(h, (long)a); h = Hash(h, (long)(uint)a);
+                }
+            }
+        foreach (long a in Longs)
+            foreach (long b in Longs)
+            {
+                unchecked
+                {
+                    h = Hash(h, a + b); h = Hash(h, a - b); h = Hash(h, a & b); h = Hash(h, a | b); h = Hash(h, a ^ b); h = Hash(h, -a); h = Hash(h, ~b);
+                    h = Hash(h, a & 0xFF); h = Hash(h, a | -1L); h = Hash(h, a ^ -1L); h = Hash(h, a & 0); h = Hash(h, a + 0x7FFFFFFFL); h = Hash(h, a + 0x80000000L);
+                    h = Hash(h, a - 0x123456789ABCL); h = Hash(h, a & 0xFFFFFFFFL); h = Hash(h, a & 0x00FF00FF00FF00FFL); h = Hash(h, a + 8); h = Hash(h, a + b + 16);
+                    h = Hash(h, (sbyte)a); h = Hash(h, (short)a); h = Hash(h, (byte)a); h = Hash(h, (ushort)a); h = Hash(h, (int)a); h = Hash(h, (uint)a);
+                    h = Hash(h, System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(a)); h = Hash(h, System.Buffers.Binary.BinaryPrimitives.ReverseEndianness((int)a));
+                }
+            }
+        return h;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(MulInts());
+        Console.WriteLine(MulLongs());
+        Console.WriteLine(Shifts(70));
+        Console.WriteLine(Compares());
+        Console.WriteLine(Bits());
+        return 0;
+    }
+}

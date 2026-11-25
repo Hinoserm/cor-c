@@ -4,10 +4,10 @@ namespace Corsac.Lang.Lto;
 /// WORK THAT IS EACH ITEM'S ALONE, on as many threads as there are
 /// processors (Width; one in a 32-bit process, below): every thread takes
 /// the next item not yet taken, so one large item holds up only its own
-/// thread, and each answer goes to its item's place. What the caller reads afterwards is in the items' order, and a
-/// failure is thrown as a loop over them in order would have thrown it --
-/// the first item's, as it was thrown. The link's answers never depend on
-/// how many threads there were.
+/// thread, and each answer goes to its item's place. What the caller reads
+/// afterwards is in the items' order, and a failure is thrown as a loop
+/// over them in order would have thrown it -- the first item's, as it was
+/// thrown. The link's answers never depend on how many threads there were.
 ///
 /// ONE AT A TIME IN A 32-BIT PROCESS. What the lanes make is read from the
 /// units' archives and notes: many small objects each, and much let go on
