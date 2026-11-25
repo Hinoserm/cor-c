@@ -80,7 +80,7 @@ internal sealed partial class Encoder
     {
         _m = null!;
         _long.Clear(); Tables.Clear(); CallSites.Clear(); Lines.Clear(); _pending.Clear();
-        _short.Clear(); _loopHeads.Clear();
+        _short.Clear(); _loopHeads.Clear(); _ripLabels.Clear();
     }
 
     /// <summary>Encode a function at the current end of the section; returns its size.</summary>
@@ -511,12 +511,6 @@ internal sealed partial class Encoder
     /// <summary>A scalar instruction's prefix: F3 for a float, F2 for a double.</summary>
     private static byte Scalar(MInstr i) => i.Width == 8 ? (byte)0xF2 : (byte)0xF3;
 
-    /// <summary>
-    /// ModRM, SIB and displacement for a register field and an r/m operand.
-    /// [EBP] with no displacement does not exist (that encoding means
-    /// [disp32]), and [ESP] always needs a SIB byte; both are handled here so
-    /// nothing else has to know.
-    /// </summary>
     /// <summary>A packed instruction's register (mmN or xmmN) named at operand `k` (an MImm), or 0 -- mm0, xmm0 -- where it names none.</summary>
     private static int Packed(MInstr i, int k) => i.Operands.Count > k && i.Operands[k] is MImm { Value: var n } ? (int)n : 0;
 
@@ -527,6 +521,12 @@ internal sealed partial class Encoder
         else ModRM(reg, source);
     }
 
+    /// <summary>
+    /// ModRM, SIB and displacement for a register field and an r/m operand.
+    /// [EBP] with no displacement does not exist (that encoding means
+    /// [disp32]), and [ESP] always needs a SIB byte; both are handled here so
+    /// nothing else has to know.
+    /// </summary>
     private void ModRM(int reg, MOperand rm)
     {
         reg &= 7;

@@ -96,7 +96,11 @@ internal sealed partial class Encoder
         D32(0);
     }
 
-    /// <summary>Long mode's form of the instruction, where it has one of its own; false where the family's case is right.</summary>
+    /// <summary>
+    /// Long mode's form of the instruction, where it has one of its own;
+    /// false where the family's case is right (FamilyForm); and for any
+    /// other opcode the compile is stopped, with the function's name.
+    /// </summary>
     private bool EncodeLong(MInstr i)
     {
         // Each form says its own width (OpL): nothing is taken from the instruction's.
@@ -117,7 +121,8 @@ internal sealed partial class Encoder
                 return true;
             case MOp.Movzx:
                 // Width is the source's; the destination is 32 bits, which zero-extends to 64.
-                if (w == 1 && (Hw(i.Operands[0]) is >= 4 and <= 7 || i.Operands[1] is MReg { IsFloat: false, Hw: >= 4 and <= 7 })) _rexEmpty = true;
+                // (The empty REX for a byte SOURCE in SPL to DIL alone: the destination is a whole register.)
+                if (w == 1 && i.Operands[1] is MReg { IsFloat: false, Hw: >= 4 and <= 7 }) _rexEmpty = true;
                 OpL(4, Hw(i.Operands[0]), i.Operands[1], 0x0F, w == 1 ? (byte)0xB6 : (byte)0xB7);
                 return true;
             case MOp.Lea: OpL(8, Hw(i.Operands[0]), i.Operands[1], 0x8D); return true;
@@ -137,6 +142,7 @@ internal sealed partial class Encoder
             case MOp.Test:
                 if (i.Operands[1] is MImm ti)
                 {
+                    Imm32Only(ti, w);
                     OpD(w, 0, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7);
                     if (w == 1) _out.Add((byte)ti.Value); else if (w == 2) D16(ti.Value); else D32(ti.Value);
                 }
@@ -148,6 +154,7 @@ internal sealed partial class Encoder
             case MOp.Imul3:
             {
                 MImm k = (MImm)i.Operands[2];
+                Imm32Only(k, w);
                 if (k.FitsSbyte) { OpL(w, Hw(i.Operands[0]), i.Operands[1], 0x6B); _out.Add((byte)k.Value); }
                 else
                 {
@@ -343,9 +350,11 @@ internal sealed partial class Encoder
     /// fields that note a REX (RegR, RegB, Xmm, XmmRM, ModRM), they name no
     /// absolute address, and they mean in long mode what they mean on i386.
     /// Each was read against the mode before it was put here; an opcode is
-    /// added the same way, with what selects it.
+    /// added the same way, with what selects it. (A register-to-register
+    /// or sixteen-byte MovF goes there by its own case above, not by this
+    /// list.)
     /// </summary>
-    private static bool FamilyForm(MOp op) => op is MOp.MovF or MOp.Shld or MOp.Shrd or MOp.XorPs or MOp.Cvttss2si or MOp.Cvttsd2si
+    private static bool FamilyForm(MOp op) => op is MOp.Shld or MOp.Shrd or MOp.XorPs or MOp.Cvttss2si or MOp.Cvttsd2si
         or MOp.LockOrEsp or MOp.Int or MOp.PrefetchNta or MOp.Sfence;
 
     private void Lock(MInstr i)
@@ -435,6 +444,7 @@ internal sealed partial class Encoder
     {
         if (src is MImm imm)
         {
+            Imm32Only(imm, w);
             if (w == 1) { OpD(1, digit, dst, 0x80); _out.Add((byte)imm.Value); }
             else if (imm.FitsSbyte) { OpD(w, digit, dst, 0x83); _out.Add((byte)imm.Value); }
             else
@@ -447,6 +457,17 @@ internal sealed partial class Encoder
         int basis = digit * 8;
         if (src is MMem) OpL(w, Hw(dst), src, (byte)(basis + (w == 1 ? 2 : 3)));
         else OpL(w, Hw(src), dst, (byte)(basis + (w == 1 ? 0 : 1)));
+    }
+
+    /// <summary>
+    /// An immediate of a sixty-four-bit operation is thirty-two bits, sign-
+    /// extended: one that does not fit is refused, never written short.
+    /// (What chooses immediates asks first -- Allocator.Foldable, IfConvert,
+    /// AddressFold; this is for the pass that forgets.)
+    /// </summary>
+    private void Imm32Only(MImm imm, int w)
+    {
+        if (w == 8 && !imm.FitsInt32) throw new InvalidOperationException($"{_m.Source.Name}: an immediate of a 64-bit operation that is not a sign-extended 32 bits");
     }
 
     private void ShiftL(int digit, MInstr i, int w)
