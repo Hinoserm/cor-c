@@ -1690,7 +1690,7 @@ internal sealed partial class Selector
             or Opcode.LabelAddr or Opcode.StackPointer or Opcode.FramePointer or Opcode.Trunc64 or Opcode.SExt32 or Opcode.ZExt32
             or Opcode.Add or Opcode.Sub or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Mul or Opcode.Copy
             or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas) or Opcode.FAdd or Opcode.FSub or Opcode.FMul or Opcode.FDiv or Opcode.FNeg
-            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store or Opcode.DivS or Opcode.DivU or Opcode.RemS or Opcode.RemU;
+            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store or Opcode.DivS or Opcode.DivU or Opcode.RemS or Opcode.RemU or Opcode.MemCopy or Opcode.MemSet;
 
     private void SelectInstr(Instr i)
     {
@@ -1884,6 +1884,12 @@ internal sealed partial class Selector
                 SelectMemCopy(i);
                 break;
             case Opcode.MemSet:
+                // (Long mode: a small clear of known length as stores, any other by the string instructions.)
+                if (X86Mode.Long)
+                {
+                    if (!SmallSetL(i)) InlineMemSet(i);
+                    break;
+                }
                 if (PackedValueMemSet(i)) break;
                 if (SelectFrameSet(i)) break;
                 SelectMemSet(i);
@@ -3934,15 +3940,42 @@ internal sealed partial class Selector
         _cur = done;
     }
 
+    // ---- the string instructions, a word of the mode at a time ------------------
+    //
+    // REP STOS and REP MOVS take their address and count in the mode's whole
+    // registers and go by its word -- MOVSD's four bytes, MOVSQ's eight --
+    // with what is left over a byte at a time. One method each for both
+    // modes: the word, the instruction and the shift that divides by it are
+    // what differ.
+
+    private static int StringWord => X86Mode.Word;
+    private static int StringShift => X86Mode.Long ? 3 : 2;
+
+    /// <summary>A constant count into ECX (RCX): long mode's by the shortest move that makes it.</summary>
+    private void StringCount(long count)
+    {
+        if (X86Mode.Long) LoadConstant(Ecx, count, 8); else Mov(Ecx, Imm(count));
+    }
+
     private void InlineMemSet(Instr i)
     {
-        Mov(Edi, RM(i.Operands[0]));
+        int word = StringWord;
+        MOp words = X86Mode.Long ? MOp.RepStosq : MOp.RepStosd;
+        MovW(Edi, RM(i.Operands[0], word), word);
 
-        // The fill byte in all four lanes, so the words below carry it.
+        // The fill byte in every lane of the word, so the words below carry it.
         if (i.Operands[1] is ImmOperand fill)
         {
-            uint repeated = unchecked((uint)(byte)fill.Value * 0x01010101u);
-            Mov(Eax, Imm(unchecked((int)repeated)));
+            if (X86Mode.Long) LoadConstant(Eax, unchecked((long)((byte)fill.Value * 0x0101010101010101UL)), 8);
+            else Mov(Eax, Imm(unchecked((int)((uint)(byte)fill.Value * 0x01010101u))));
+        }
+        else if (X86Mode.Long)
+        {
+            // No IMUL takes sixty-four bits of immediate: the ones in a register.
+            MReg ones = Temp();
+            EmitW(MOp.Movzx, 1, Eax, R(i.Operands[1]));
+            MovW(ones, Imm(0x0101010101010101L), 8);
+            EmitW(MOp.Imul, 8, Eax, ones);
         }
         else
         {
@@ -3953,32 +3986,41 @@ internal sealed partial class Selector
 
         if (i.Operands[2] is ImmOperand n)
         {
-            if (n.Value / 4 > 0)
+            if (n.Value / word > 0)
             {
-                Mov(Ecx, Imm(n.Value / 4));
-                Emit(MOp.RepStosd);
+                StringCount(n.Value / word);
+                Emit(words);
             }
-            if (n.Value % 4 > 0)
+            if (n.Value % word > 0)
             {
-                Mov(Ecx, Imm(n.Value % 4));
+                StringCount(n.Value % word);
                 Emit(MOp.RepStosb);
             }
             return;
         }
 
-        Mov(Ecx, RM(i.Operands[2]));
+        MovW(Ecx, RM(i.Operands[2], word), word);
         // REP consumes ECX, so the remainder is kept before the words go.
         MReg remainder = Temp();
-        Mov(remainder, Ecx);
-        Emit(MOp.Shr, Ecx, Imm(2));
-        Emit(MOp.RepStosd);
-        Mov(Ecx, remainder);
-        Emit(MOp.And, Ecx, Imm(3));
+        MovW(remainder, Ecx, word);
+        EmitW(MOp.Shr, word, Ecx, Imm(StringShift));
+        Emit(words);
+        MovW(Ecx, remainder, word);
+        EmitW(MOp.And, word, Ecx, Imm(word - 1));
         Emit(MOp.RepStosb);
     }
 
     private void SelectMemCopy(Instr i)
     {
+        // Long mode: a small copy of known length as moves (SmallCopyL), any
+        // other by the string instructions. i386's ways with a Packed128
+        // value, the MMX registers, a small copy and the runtime's streamed
+        // routine are its own.
+        if (X86Mode.Long)
+        {
+            if (!SmallCopyL(i)) InlineMemCopy(i);
+            return;
+        }
         if (PackedValueMemCopy(i)) return;
         if (SelectMmxFrameCopy(i)) return;
         if (SelectSmallCopy(i)) return;
@@ -3988,33 +4030,35 @@ internal sealed partial class Selector
 
     private void InlineMemCopy(Instr i)
     {
-        Mov(Edi, RM(i.Operands[0]));
-        Mov(Esi, RM(i.Operands[1]));
+        int word = StringWord;
+        MOp words = X86Mode.Long ? MOp.RepMovsq : MOp.RepMovsd;
+        MovW(Edi, RM(i.Operands[0], word), word);
+        MovW(Esi, RM(i.Operands[1], word), word);
         if (i.Operands[2] is ImmOperand n)
         {
-            // A constant length: whole words with movsd, the remainder with movsb.
-            if (n.Value / 4 > 0)
+            // A constant length: whole words with movsd (movsq), the remainder with movsb.
+            if (n.Value / word > 0)
             {
-                Mov(Ecx, Imm(n.Value / 4));
-                Emit(MOp.RepMovsd);
+                StringCount(n.Value / word);
+                Emit(words);
             }
-            if (n.Value % 4 > 0)
+            if (n.Value % word > 0)
             {
-                Mov(Ecx, Imm(n.Value % 4));
+                StringCount(n.Value % word);
                 Emit(MOp.RepMovsb);
             }
             return;
         }
-        Mov(Ecx, RM(i.Operands[2]));
+        MovW(Ecx, RM(i.Operands[2], word), word);
         // Runtime-sized copies (including heap reallocation) should move whole
         // words rather than dispatching every byte separately on legacy x86.
         // Retain the original count across REP, which consumes ECX.
         MReg remainder = Temp();
-        Mov(remainder, Ecx);
-        Emit(MOp.Shr, Ecx, Imm(2));
-        Emit(MOp.RepMovsd);
-        Mov(Ecx, remainder);
-        Emit(MOp.And, Ecx, Imm(3));
+        MovW(remainder, Ecx, word);
+        EmitW(MOp.Shr, word, Ecx, Imm(StringShift));
+        Emit(words);
+        MovW(Ecx, remainder, word);
+        EmitW(MOp.And, word, Ecx, Imm(word - 1));
         Emit(MOp.RepMovsb);
     }
 

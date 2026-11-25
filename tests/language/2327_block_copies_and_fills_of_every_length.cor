@@ -1,0 +1,70 @@
+// test: block_copies_and_fills_of_every_length
+// expect-exit: 0
+// expect-output:
+// 2590327996
+// 3729887210
+//
+// Fills, clears and copies of lengths around every boundary the selection
+// has (a word, the lengths written as moves, the string instructions' whole
+// words and their leftover bytes), overlapping copies among them, and
+// structs of twenty words and of odd fields copied by value: each line a
+// hash of every byte, the same on i386 and x86-64, whose string forms are
+// one method.
+
+using System;
+
+struct Big { public long A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T; }
+struct Odd { public byte A; public short B; public int C; public long D; public byte E, F, G; }
+
+static class Program
+{
+    static uint Hash(uint h, long v) { unchecked { h = (h ^ (uint)v) * 16777619u; h = (h ^ (uint)(v >> 32)) * 16777619u; return h; } }
+
+    static uint HashBytes(byte[] bytes) { uint h = 2166136261u; foreach (byte b in bytes) h = Hash(h, b); return h; }
+
+    static uint Fills()
+    {
+        uint h = 2166136261u;
+        int[] sizes = { 0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 1000, 4097 };
+        foreach (int n in sizes)
+        {
+            byte[] a = new byte[n + 16];
+            for (int k = 0; k < a.Length; k++) a[k] = (byte)(k * 7 + 1);
+            new Span<byte>(a, 8, n).Fill((byte)(n + 3));
+            h = Hash(h, HashBytes(a));
+            new Span<byte>(a, 8, n).Clear();
+            h = Hash(h, HashBytes(a));
+            new Span<byte>(a, 0, n).CopyTo(new Span<byte>(a, 4, n));
+            h = Hash(h, HashBytes(a));
+            byte[] b = new byte[n + 16];
+            Array.Copy(a, 3, b, 5, n);
+            h = Hash(h, HashBytes(b));
+            Array.Copy(b, 0, a, 1, n);
+            h = Hash(h, HashBytes(a));
+        }
+        return h;
+    }
+
+    static uint Structs()
+    {
+        uint h = 2166136261u;
+        Big x = default; x.A = 1; x.J = -2; x.T = 3; x.K = 0x123456789ABCDEFL;
+        Big y = x; y.B = 9;
+        Big[] many = new Big[5];
+        for (int k = 0; k < many.Length; k++) { many[k] = y; many[k].C = k; }
+        Big z = many[3]; many[1] = z; z = default;
+        foreach (Big b in many) { h = Hash(h, b.A); h = Hash(h, b.B); h = Hash(h, b.C); h = Hash(h, b.J); h = Hash(h, b.K); h = Hash(h, b.T); }
+        h = Hash(h, z.K);
+        Odd o = default; o.A = 200; o.B = -5; o.C = 77; o.D = long.MinValue + 1; o.G = 9;
+        Odd[] odds = new Odd[3]; odds[2] = o; Odd q = odds[2]; odds[0] = q;
+        h = Hash(h, odds[0].A); h = Hash(h, odds[0].B); h = Hash(h, odds[0].C); h = Hash(h, odds[0].D); h = Hash(h, odds[0].G); h = Hash(h, odds[1].D);
+        return h;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Fills());
+        Console.WriteLine(Structs());
+        return 0;
+    }
+}

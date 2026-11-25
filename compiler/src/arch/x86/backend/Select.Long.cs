@@ -304,12 +304,6 @@ internal sealed partial class Selector
             case Opcode.FToU:
                 SelectFloatToInteger(i);
                 break;
-            case Opcode.MemCopy:
-                SelectMemCopyL(i);
-                break;
-            case Opcode.MemSet:
-                SelectMemSetL(i);
-                break;
             case Opcode.Call:
             case Opcode.CallIndirect:
                 SelectCallL(i);
@@ -722,129 +716,63 @@ internal sealed partial class Selector
         }
     }
 
-    /// <summary>Eight bytes at a time and the tail a byte at a time, as x86 does four and one.</summary>
-    private void SelectMemCopyL(Instr i)
+    /// <summary>
+    /// A SMALL COPY OF KNOWN LENGTH is loads and stores, in order: a string
+    /// instruction's start-up costs more than the whole copy. False for any
+    /// other, which the family's string form copies (InlineMemCopy).
+    /// </summary>
+    private bool SmallCopyL(Instr i)
     {
+        if (i.Operands[2] is not ImmOperand { Value: >= 0 and <= InlineBytes } small) return false;
         MReg dst = RL(i.Operands[0]);
         MReg src = RL(i.Operands[1]);
-        if (i.Operands[2] is ImmOperand { Value: >= 0 and <= InlineBytes } small)
+        MReg t = Temp();
+        Pieces(small.Value, (offset, width) =>
         {
-            // A small copy of known length is loads and stores, in order: a
-            // string instruction's start-up costs more than the whole copy.
-            MReg t = Temp();
-            Pieces(small.Value, (offset, width) =>
+            if (width >= 4)
             {
-                if (width >= 4)
-                {
-                    MovL(t, new MMem(src, offset), width);
-                }
-                else
-                {
-                    EmitW(MOp.Movzx, width, t, new MMem(src, offset));
-                }
-                MovL(new MMem(dst, offset), t, width);
-            });
-            return;
-        }
-        if (i.Operands[2] is ImmOperand n)
-        {
-            MovL(Rdi, dst);
-            MovL(Rsi, src);
-            if (n.Value / 8 > 0)
-            {
-                LoadConstant(Rcx, n.Value / 8, 8);
-                Emit(MOp.RepMovsq);
-            }
-            if (n.Value % 8 > 0)
-            {
-                LoadConstant(Rcx, n.Value % 8, 8);
-                Emit(MOp.RepMovsb);
-            }
-            return;
-        }
-        MReg count = RL(i.Operands[2]);
-        MReg remainder = Temp();
-        MovL(remainder, count, 8);
-        MovL(Rdi, dst);
-        MovL(Rsi, src);
-        MovL(Rcx, count, 8);
-        EmitW(MOp.Shr, 8, Rcx, Imm(3));
-        Emit(MOp.RepMovsq);
-        EmitW(MOp.And, 4, remainder, Imm(7));
-        MovL(Rcx, remainder, 8);
-        Emit(MOp.RepMovsb);
-    }
-
-    private void SelectMemSetL(Instr i)
-    {
-        MReg dst = RL(i.Operands[0]);
-        if (i.Operands[2] is ImmOperand { Value: >= 0 and <= InlineBytes } small && i.Operands[1] is ImmOperand smallFill)
-        {
-            // A small clear of known length is stores, of an immediate when the
-            // repeated byte fits one (zero always does), else of a register.
-            ulong pattern = (byte)smallFill.Value * 0x0101010101010101UL;
-            MOperand source;
-            if ((long)pattern is >= int.MinValue and <= int.MaxValue)
-            {
-                source = Imm((long)pattern);
+                MovL(t, new MMem(src, offset), width);
             }
             else
             {
-                MReg p = Temp();
-                LoadConstant(p, unchecked((long)pattern), 8);
-                source = p;
+                EmitW(MOp.Movzx, width, t, new MMem(src, offset));
             }
-            Pieces(small.Value, (offset, width) =>
-            {
-                MOperand value = source is MImm imm ? Imm(width == 8 ? imm.Value : imm.Value & ((1L << (width * 8)) - 1)) : source;
-                if (value is MImm narrow && width == 4)
-                {
-                    value = Imm(unchecked((int)narrow.Value));
-                }
-                MovL(new MMem(dst, offset), value, width);
-            });
-            return;
-        }
-        MReg fill = Temp();
-        if (i.Operands[1] is ImmOperand f)
+            MovL(new MMem(dst, offset), t, width);
+        });
+        return true;
+    }
+
+    /// <summary>
+    /// A SMALL CLEAR OF KNOWN LENGTH AND BYTE is stores, of an immediate when
+    /// the repeated byte fits one (zero always does), else of a register.
+    /// False for any other, which the family's string form fills (InlineMemSet).
+    /// </summary>
+    private bool SmallSetL(Instr i)
+    {
+        if (i.Operands[2] is not ImmOperand { Value: >= 0 and <= InlineBytes } small || i.Operands[1] is not ImmOperand smallFill) return false;
+        MReg dst = RL(i.Operands[0]);
+        ulong pattern = (byte)smallFill.Value * 0x0101010101010101UL;
+        MOperand source;
+        if ((long)pattern is >= int.MinValue and <= int.MaxValue)
         {
-            ulong repeated = (byte)f.Value * 0x0101010101010101UL;
-            LoadConstant(fill, unchecked((long)repeated), 8);
+            source = Imm((long)pattern);
         }
         else
         {
-            MReg ones = Temp();
-            EmitW(MOp.Movzx, 1, fill, RL(i.Operands[1]));
-            MovL(ones, Imm(0x0101010101010101L), 8);
-            EmitW(MOp.Imul, 8, fill, ones);
+            MReg p = Temp();
+            LoadConstant(p, unchecked((long)pattern), 8);
+            source = p;
         }
-        if (i.Operands[2] is ImmOperand n)
+        Pieces(small.Value, (offset, width) =>
         {
-            MovL(Rdi, dst);
-            MovL(Rax, fill);
-            if (n.Value / 8 > 0)
+            MOperand value = source is MImm imm ? Imm(width == 8 ? imm.Value : imm.Value & ((1L << (width * 8)) - 1)) : source;
+            if (value is MImm narrow && width == 4)
             {
-                LoadConstant(Rcx, n.Value / 8, 8);
-                Emit(MOp.RepStosq);
+                value = Imm(unchecked((int)narrow.Value));
             }
-            if (n.Value % 8 > 0)
-            {
-                LoadConstant(Rcx, n.Value % 8, 8);
-                Emit(MOp.RepStosb);
-            }
-            return;
-        }
-        MReg count = RL(i.Operands[2]);
-        MReg remainder = Temp();
-        MovL(remainder, count, 8);
-        MovL(Rdi, dst);
-        MovL(Rax, fill);
-        MovL(Rcx, count, 8);
-        EmitW(MOp.Shr, 8, Rcx, Imm(3));
-        Emit(MOp.RepStosq);
-        EmitW(MOp.And, 4, remainder, Imm(7));
-        MovL(Rcx, remainder, 8);
-        Emit(MOp.RepStosb);
+            MovL(new MMem(dst, offset), value, width);
+        });
+        return true;
     }
 
     // ---- calls -------------------------------------------------------------------------
