@@ -73,7 +73,9 @@ public sealed class Block
     /// The reads LoopLoads moved into this block, a loop's way in, over every
     /// round and run of it on this function: the loop's budget. Kept on the
     /// block, not in a table the function workers share, and gone with it.
-    /// Never copied with the block: a copy is a way in to no loop yet.
+    /// Never copied with the block -- a copy is a way in to no loop yet --
+    /// nor into an inlined copy of its function, nor through the IR archive:
+    /// a loop inlined or decoded at the link starts its budget afresh.
     /// </summary>
     public int LoopReadsHeld
     {
@@ -84,7 +86,9 @@ public sealed class Block
     /// <summary>
     /// A loop header LoopUnswitch has copied, or the copy it made: never
     /// copied again for a test that is not trivial. Kept on the block, as
-    /// LoopReadsHeld, and not copied with it.
+    /// LoopReadsHeld, and not copied with it: a loop inlined into another
+    /// function, or decoded at the link, may be copied once more there,
+    /// within that function's own count and size budget.
     /// </summary>
     public bool Unswitched
     {
