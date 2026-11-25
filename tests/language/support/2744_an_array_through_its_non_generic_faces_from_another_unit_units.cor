@@ -1,0 +1,12 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+public static class Faces
+{
+    public static int Count(Array a) => ((ICollection)a).Count;
+    public static object At(Array a, int i) => ((IList)a)[i];
+    public static void Put(Array a, int i, object v) { ((IList)a)[i] = v; }
+    public static int Sum(IEnumerable<int> items) { int s = 0; foreach (int x in items) s += x; return s; }
+    public static int Total(ICollection items) => items.Count;
+}

@@ -1,0 +1,44 @@
+// test: an_array_through_its_non_generic_faces_from_another_unit
+// units: tests/language/support/2744_an_array_through_its_non_generic_faces_from_another_unit_units.cor
+// expect-exit: 0
+// expect-output:
+// 4 3
+// 7 bb
+// 13 d
+// 36 3
+// 3 5
+// 24 3
+// 6 2
+//
+// AN ARRAY THROUGH SYSTEM.ARRAY'S OWN INTERFACES, from another unit: a
+// parameter declared Array is every array, which no array's descriptor
+// names among its ancestors -- narrowed to Array's subclasses, a call on it
+// reached __RectangularArray alone -- and an array answers the non-generic
+// ICollection and IList outside its table, as it does IEnumerable<T>: the
+// link counts it among the targets of each such call. Checked against
+// .NET 10.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        int[] numbers = { 3, 5, 7, 11 };
+        string[] words = { "a", "bb", "ccc" };
+        Console.WriteLine(Faces.Count(numbers) + " " + Faces.Count(words));
+        Console.WriteLine(Faces.At(numbers, 2) + " " + Faces.At(words, 1));
+        Faces.Put(numbers, 0, 13);
+        Faces.Put(words, 2, "d");
+        Console.WriteLine(numbers[0] + " " + words[2]);
+        Console.WriteLine(Faces.Sum(numbers) + " " + Faces.Sum(new List<int> { 1, 2 }));
+        Console.WriteLine(Faces.Total(words) + " " + Faces.Total(new ArrayList { 1, 2, 3, 4, 5 }));
+        Array.Clear(numbers, 1, 2);
+        Console.WriteLine(Faces.Sum(numbers) + " " + Array.IndexOf(numbers, 11));
+        int[,] grid = new int[2, 3];
+        Console.WriteLine(Faces.Count(grid) + " " + grid.Rank);
+        return 0;
+    }
+}

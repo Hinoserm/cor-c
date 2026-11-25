@@ -358,14 +358,17 @@ public sealed partial class Lowering
     /// would say. Not in shared code -- a canonical copy's types stand in for
     /// every argument, and what it makes is stamped with the canonical copy's
     /// descriptor -- nor for a shared class itself, an interface, object, a
-    /// string, an array, a delegate or a struct.
+    /// string, an array, a delegate or a struct. Nor System.Array: every
+    /// array is one, and no array's descriptor names it among its ancestors,
+    /// so a call on such a parameter narrowed to Array's subclasses left
+    /// every array out of its targets.
     /// </summary>
     private string[]? ParamClass(MethodSymbol m, Type t)
     {
         if (t.IsArray || t.IsPointer || t.IsNullableValue || t.ParamName is not null || t.Prim is Prim.Any or Prim.String
             || t.Symbol is not { Kind: TypeKind.Class } c || c.Decl is not TypeDecl d || d.IsDelegate || c.Structural
             || SharedCopy(c) || CanonicalCopy(c) || c.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal)
-            || "t_" + TypeKey(c) == ObjectDispatch)
+            || "t_" + TypeKey(c) == ObjectDispatch || SystemArrayClass(c))
             return null;
         if (Monomorphiser.SharedMethodCopy(m.Name) > 0 || SharedCopy(m.Owner) || CanonicalCopy(m.Owner)
             || m.Owner.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal))

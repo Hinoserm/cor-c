@@ -94,24 +94,29 @@ public static class VirtualTargets
     public static bool OfSharedFace(IEnumerable<string> ancestors, string declaring)
         => ancestors.Any(up => SharedFace(up) is string family && declaring.StartsWith(family, StringComparison.Ordinal));
 
+    /// <summary>Whether any object may answer `declaring` outside its tables (MayAnswer's interfaces, whatever the descriptor).</summary>
+    public static bool AnsweredOutsideTables(string declaring)
+        => IsBoxedFace(declaring) || IsArrayFace(declaring) || IsInterfaceOf(declaring, "IEnumerator", generic: true);
+
     /// <summary>
     /// WHETHER AN OBJECT STAMPED WITH A DESCRIPTOR MAY ANSWER AN INTERFACE ITS
-    /// TABLES DO NOT NAME: a box (b_) or a string (q_string) answers its
-    /// system interfaces -- IComparable, IComparable&lt;T&gt;, IEquatable&lt;T&gt;,
-    /// IFormattable, IConvertible (BoxedFaces, IsBoxedFace) -- in its
-    /// interfaces' slots, and lists none of them; so does an array its
-    /// sequence faces (IsArrayFace) and its walker IEnumerator&lt;T&gt;. A box
-    /// lists none of them, so that every unit's copy of a box is one table though only some
-    /// units make IEquatable&lt;int&gt;. Any interface may then be one of them:
-    /// a call declared on one counts every box and the string among the
-    /// objects it can run on, and what each holds at the slot among its
-    /// targets. More than the box answers is only ever more targets.
-    /// ONLY THOSE: any interface at all made every one of a program's
-    /// interface calls one a box might answer, and a box fills no slot of
-    /// the runtime's own IOwnsElements -- "no descriptor fills the slot", the
-    /// call left unresolved, and with it every method of every live type
-    /// reached, every getter's address taken: a program of arrays and
-    /// statics needed a collector again (762, 764, 767, 768).
+    /// TABLES DO NOT NAME. Three kinds of object do:
+    /// - a box (b_) or the string (q_string), its system interfaces --
+    ///   IComparable, IComparable&lt;T&gt;, IEquatable&lt;T&gt;, IFormattable,
+    ///   IConvertible (BoxedFaces, IsBoxedFace) -- in those interfaces' slots,
+    ///   listing none of them so that every unit's copy of a box is one table
+    ///   though only some units make IEquatable&lt;int&gt;;
+    /// - an array (q_array_), its sequence faces (IsArrayFace);
+    /// - an array's walker, IEnumerator&lt;T&gt;.
+    /// A call declared on one of those interfaces counts every such object
+    /// among those it can run on, and what each holds at the slot among its
+    /// targets; more than the object answers is only ever more targets.
+    /// ONLY THOSE (AnsweredOutsideTables): any interface at all made every
+    /// one of a program's interface calls one a box might answer, and a box
+    /// fills no slot of the runtime's own IOwnsElements -- "no descriptor
+    /// fills the slot", the call left unresolved, and with it every method of
+    /// every live type reached, every getter's address taken: a program of
+    /// arrays and statics needed a collector again (762, 764, 767, 768).
     /// </summary>
     public static bool MayAnswer(string descriptor, string declaring)
         => (descriptor.StartsWith("b_", StringComparison.Ordinal) || descriptor == "q_string") && IsBoxedFace(declaring)
@@ -948,7 +953,7 @@ public static class VirtualTargets
             // array its sequence faces, the array's walker IEnumerator<T>.
             // Only boxes were asked here: an array was no target of a call
             // through IList or ICollection, or the call reached nothing.
-            if (!everyType && (IsBoxedFace(declaring) || IsArrayFace(declaring) || IsInterfaceOf(declaring, "IEnumerator", generic: true)))
+            if (!everyType && AnsweredOutsideTables(declaring))
                 reaching = reaching.Union(Enumerable.Range(0, _descriptors.Count).Where(d => MayAnswer(_descriptors[d].Name, declaring)));
             // A SHARED GENERIC'S FACE -- `i_Func$0024__canon`, through which the
             // one body every reference instantiation of Lazy<T> runs calls its
