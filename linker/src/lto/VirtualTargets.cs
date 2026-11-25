@@ -98,8 +98,10 @@ public static class VirtualTargets
     /// WHETHER AN OBJECT STAMPED WITH A DESCRIPTOR MAY ANSWER AN INTERFACE ITS
     /// TABLES DO NOT NAME: a box (b_) or a string (q_string) answers its
     /// system interfaces -- IComparable, IComparable&lt;T&gt;, IEquatable&lt;T&gt;,
-    /// IFormattable (BoxedFaces) -- in its interfaces' slots, and lists none of
-    /// them, so that every unit's copy of a box is one table though only some
+    /// IFormattable, IConvertible (BoxedFaces, IsBoxedFace) -- in its
+    /// interfaces' slots, and lists none of them; so does an array its
+    /// sequence faces (IsArrayFace) and its walker IEnumerator&lt;T&gt;. A box
+    /// lists none of them, so that every unit's copy of a box is one table though only some
     /// units make IEquatable&lt;int&gt;. Any interface may then be one of them:
     /// a call declared on one counts every box and the string among the
     /// objects it can run on, and what each holds at the slot among its
@@ -121,8 +123,8 @@ public static class VirtualTargets
     /// either (Lowering.ArrayFaces' families): IEnumerable, ICollection and
     /// IList, which System.Array is, and IEnumerable, ICollection, IList,
     /// IReadOnlyCollection and IReadOnlyList of any element -- an element the
-    /// array is not of is only more targets -- and its walker IEnumerator of
-    /// any. Leaving out the non-generic ICollection and IList left Array's
+    /// array is not of is only more targets. (Its walker's IEnumerator&lt;T&gt;
+    /// is MayAnswer's own case.) Leaving out the non-generic ICollection and IList left Array's
     /// own Count and indexer calls with no array among their targets.
     /// </summary>
     public static bool IsArrayFace(string declaring)
@@ -941,8 +943,12 @@ public static class VirtualTargets
             bool everyType = declaring == "t_object";
             IEnumerable<int> reaching = everyType ? Enumerable.Range(0, _descriptors.Count)
                 : _derived.TryGetValue(declaring, out List<int>? derived) ? derived : Enumerable.Empty<int>();
-            // And every box and the string, for an interface (MayAnswer).
-            if (!everyType && IsBoxedFace(declaring))
+            // And every type that answers the interface outside its table
+            // (MayAnswer): a box and the string their system interfaces, an
+            // array its sequence faces, the array's walker IEnumerator<T>.
+            // Only boxes were asked here: an array was no target of a call
+            // through IList or ICollection, or the call reached nothing.
+            if (!everyType && (IsBoxedFace(declaring) || IsArrayFace(declaring) || IsInterfaceOf(declaring, "IEnumerator", generic: true)))
                 reaching = reaching.Union(Enumerable.Range(0, _descriptors.Count).Where(d => MayAnswer(_descriptors[d].Name, declaring)));
             // A SHARED GENERIC'S FACE -- `i_Func$0024__canon`, through which the
             // one body every reference instantiation of Lazy<T> runs calls its

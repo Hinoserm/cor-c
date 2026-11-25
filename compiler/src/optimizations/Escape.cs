@@ -7317,7 +7317,7 @@ continue;
                         // counts nothing here, as for a call that frees it: a
                         // static initialiser's failure message, String.Concat
                         // returned into TypeInitializationException (1823).
-                        // What that object's fields own is made once with it.
+                        // The callee's other allocations count as ever.
                         bool ownedCall = _ownedCalls.Contains(i) && !(_heldCalls.Contains(i) && Leaky(i));
                         bool callUnowned = ownedCall || once.RunsOnce(f, b) ? false : origin ? unowned : true;
                         Reach(i.Callee, callUnowned, f.Name);
