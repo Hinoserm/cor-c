@@ -208,7 +208,9 @@ public sealed class LoopLoads : IPass
     /// Hoist would move: the way in tests and goes out, or into a new block
     /// of its own that jumps to that block, which is then the loop's first.
     /// Not SSA, so the test's copy writes the registers the header writes,
-    /// the values the header would have given them on the first lap.
+    /// the values the header would have given them on the first lap -- but
+    /// for a register the header writes before any read of it and nothing
+    /// past the header reads, which the copy gives a register of its own.
     /// </summary>
     private static bool Guard(Function function, Cfg cfg, HashSet<Block> loop, Block header, Block preheader, Summary summary, Func<VReg, bool> invariant, Defs defs)
     {
@@ -235,25 +237,34 @@ public sealed class LoopLoads : IPass
         jump.SetTargets(new[] { body });
         way.Instrs.Add(jump);
         preheader.Instrs.RemoveAt(preheader.Instrs.Count - 1);
-        // A register the header writes and only the header reads -- the
-        // test's flag above all -- gets a register of its own in the copy:
-        // written in both places, the flag would be read by two branches,
-        // and the selector fuses a compare only into the one branch that is
-        // its flag's single read (`cmp; jl`, not `setl; movzx; test; jne`
-        // on every lap).
-        HashSet<VReg> readOutside = new();
+        // A register the header writes before any read of it there, and
+        // nothing past the header reads -- the test's flag above all -- gets
+        // a register of its own in the copy: written in both places, the
+        // flag would be read by two branches, and the selector fuses a
+        // compare only into the one branch that is its flag's single read
+        // (`cmp; jl`, not `setl; movzx; test; jne` on every lap). One the
+        // header reads before it writes it (`t = t + 1`, or a value the
+        // last lap left) carries a value from lap to lap: the copy writes
+        // it where the header does, or the second lap reads it stale.
+        HashSet<VReg> kept = new(), writtenHere = new();
         foreach (Block b in function.Blocks)
             if (!ReferenceEquals(b, header))
                 foreach (Instr i in b.Instrs)
                     foreach (Operand o in i.Operands)
-                        if (o is RegOperand { Reg: var r }) readOutside.Add(r);
+                        if (o is RegOperand { Reg: var r }) kept.Add(r);
+        foreach (Instr i in header.Instrs)
+        {
+            foreach (Operand o in i.Operands)
+                if (o is RegOperand { Reg: var r } && !writtenHere.Contains(r)) kept.Add(r);
+            if (i.Dest is { } written) writtenHere.Add(written);
+        }
         Dictionary<VReg, VReg> own = new();
         foreach (Instr i in header.Instrs)
         {
             Instr copy = i.Clone();
             for (int o = 0; o < copy.Operands.Count; o++)
                 if (copy.Operands[o] is RegOperand { Reg: var r } && own.TryGetValue(r, out VReg? mine)) copy.Operands[o] = RegOperand.Of(mine);
-            if (copy.Dest is { } d && !readOutside.Contains(d))
+            if (copy.Dest is { } d && !kept.Contains(d))
             {
                 VReg fresh = function.NewReg(d.Type, d.Name);
                 own[d] = fresh;

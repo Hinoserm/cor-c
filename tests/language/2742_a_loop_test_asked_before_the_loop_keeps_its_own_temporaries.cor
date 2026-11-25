@@ -7,6 +7,9 @@
 // 0
 // 28021
 // 0
+// 32
+// 40
+// 0
 // 3
 // 36
 // out of range
@@ -14,9 +17,10 @@
 // A LOOP'S TEST ASKED ONCE BEFORE IT (LoopLoads.Guard) writes registers of
 // its own for what only the test reads -- its flag and the temporaries it
 // computes -- and the same registers as the loop's test for a value read
-// after the loop: a chain of temporaries before the test, a test value read
-// after the loop, a loop that never runs, and one that faults on its last
-// lap. Checked against .NET 10.
+// after the loop, or one the test reads before it writes it, carried from
+// lap to lap: a chain of temporaries before the test, a test value read
+// after the loop, a test that adds to a value only it reads, a loop that
+// never runs, and one that faults on its last lap. Checked against .NET 10.
 using System;
 using System.Runtime.CompilerServices;
 sealed class Rows
@@ -40,6 +44,14 @@ sealed class Rows
         while ((t = k * Stride) < n) { sum += A[k]; k++; }
         return sum * 1000 + t;
     }
+    // The header's test adds to a value it alone reads, carried lap to lap.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Carried(int n)
+    {
+        int c = 0, sum = 0;
+        while ((c += 2) < n) sum += A.Length;
+        return sum;
+    }
     // A loop that never runs, then one that runs once.
     [MethodImpl(MethodImplOptions.NoInlining)]
     public long Bounded(int from, int to)
@@ -59,6 +71,9 @@ static class P
         Console.WriteLine(r.Chain(100));
         Console.WriteLine(r.After(0));
         Console.WriteLine(r.After(20));
+        Console.WriteLine(r.Carried(1));
+        Console.WriteLine(r.Carried(10));
+        Console.WriteLine(r.Carried(11));
         Console.WriteLine(r.Bounded(5, 5));
         Console.WriteLine(r.Bounded(2, 4));
         Console.WriteLine(r.Bounded(0, 9));
