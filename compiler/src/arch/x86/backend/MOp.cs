@@ -69,7 +69,7 @@ public enum MOp : byte
     UcomiF,
     /// <summary>cvtss2sd (Width 8) and cvtsd2ss (Width 4): xmm, xmm/m.</summary>
     CvtFToF,
-    /// <summary>cvtsi2ss (Width 4) and cvtsi2sd (Width 8): xmm, r/m32.</summary>
+    /// <summary>cvtsi2ss (Width 4) and cvtsi2sd (Width 8): xmm, r/m32 -- and in long mode r/m64, where SourceWidth is eight.</summary>
     CvtIntToF,
     /// <summary>xorps xmm, xmm: the sign flipped by a mask, or zero.</summary>
     XorPs,

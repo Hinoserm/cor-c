@@ -1134,7 +1134,13 @@ internal sealed partial class Selector
     /// <summary>The same instruction, marked as selected inside the packed block (MInstr.OwnsState).</summary>
     private MInstr Owning(MInstr i)
     {
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = (byte)_packedNow, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
+        // Everything of the instruction but who owns the state (a list kept in step with MInstr.WithOperands').
+        MInstr n = new(i.Op)
+        {
+            Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = i.Table, TableSymbol = i.TableSymbol,
+            CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = (byte)_packedNow, Asm = i.Asm,
+            ZeroFirst = i.ZeroFirst, FloatArgs = i.FloatArgs, IntArgs = i.IntArgs, NativeAl = i.NativeAl,
+        };
         n.Operands.AddRange(i.Operands);
         return n;
     }
@@ -4415,6 +4421,9 @@ internal sealed partial class Selector
         Jmp(f);
     }
 
+    /// <summary>The jump tables long mode has named in this function (their symbols' numbers).</summary>
+    private int _tables;
+
     private void SelectSwitch(Instr i)
     {
         // The index is thirty-two bits. Long mode's in a register of its own
@@ -4438,7 +4447,7 @@ internal sealed partial class Selector
         // LONG MODE'S TABLE IS REACHED RIP-RELATIVE: its address in a register
         // of its own, loaded by an instruction before the jump -- the jump
         // reads both it and the index, so the allocator keeps them apart.
-        string symbol = $"{_f.Name}$table{_tablesL++}";
+        string symbol = $"{_f.Name}$table{_tables++}";
         MReg at = Temp();
         Emit(MOp.Lea, at, MMem.Rip(symbol, 0));
         Emit(new MInstr(MOp.JmpTable, idx, at) { Table = table, TableSymbol = symbol });

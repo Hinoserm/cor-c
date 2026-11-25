@@ -29,7 +29,6 @@ using Block = Corsac.Lang.Ir.Block;
 // sixteen-byte aligned at every call.
 internal sealed partial class Selector
 {
-    private int _tablesL;
 
     internal static Gpr[] IntArgRegs => LongAbi.IntArgRegs;
     internal const int FloatArgRegs = LongAbi.FloatArgRegs;

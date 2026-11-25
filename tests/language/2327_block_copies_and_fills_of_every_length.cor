@@ -100,7 +100,8 @@ static class Program
     {
         Console.WriteLine(Fills());
         Console.WriteLine(Structs());
-        Console.WriteLine(Blocks(Environment.TickCount == int.MinValue ? 1 : 0));
+        // (A zero the compiler cannot know: the fill byte is made when it runs.)
+        Console.WriteLine(Blocks(Environment.ProcessorCount < 1 ? 1 : 0));
         return 0;
     }
 }

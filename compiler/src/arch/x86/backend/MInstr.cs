@@ -23,7 +23,12 @@ public sealed class MInstr : MOperandList
     /// <summary>Operand width in bytes: 1, 2, 4, or 8 for an x87 qword. Registers are always 32-bit except at width 1 and 2.</summary>
     public int Width { get; init; } = X86Mode.Word;
 
-    /// <summary>Long mode: the source's width where it differs from the destination's (a widening move).</summary>
+    /// <summary>
+    /// The source's width where it is not the destination's: an integer's
+    /// converted to a float (CvtIntToF -- long mode's encoder writes CVTSI2SD
+    /// from a 64-bit register for eight; i386's has the one form and reads
+    /// nothing here), a float's converted to an integer (CvtFToInt).
+    /// </summary>
     public int SourceWidth { get; init; }
 
     /// <summary>Long mode: a jump table's symbol (JmpTable).</summary>
@@ -57,7 +62,9 @@ public sealed class MInstr : MOperandList
     /// Each writes the low lane alone and keeps the rest, so it waits on
     /// whatever last wrote the register; a CPU that takes the zeroing for a value independent of the old one starts it at once
     /// (CpuModel.BreaksMerge, which says where). The encoder leaves it out
-    /// where the register is also the source (Encoder.ZeroFirst). One
+    /// where the register is also the source (Encoder.ZeroFirst; long mode's
+    /// encoder asks CpuModel itself for every such instruction, BreakMergeL,
+    /// whoever made it). One
     /// instruction, so the zeroing is the conversion's own register and no
     /// pass parts them or drops it as dead (Peephole.DeadXmmMoves); every
     /// rebuild of an instruction carries it (X86Target.Build, LoopRotate.Clone,

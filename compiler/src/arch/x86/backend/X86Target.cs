@@ -581,7 +581,7 @@ internal sealed class X86Target : ITarget
         List<MBlock>? table = i.Table;
         if (i.Op == MOp.JmpTable && ai.Targets is { } targets && targets.Where((t, k) => !ReferenceEquals(blocks[t], i.Table![k])).Any())
             table = targets.Select(t => blocks[t]).ToList();
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
+        MInstr n = new(i.Op) { Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
         // The registers named, walked in the order Allocator.RegsOf named them.
         int k = 0;
         for (int o = 0; o < i.Operands.Count; o++)
