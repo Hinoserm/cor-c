@@ -456,7 +456,7 @@ public sealed class X64Backend : IBackend
         Corsac.Lang.Opt.SharedTrapFrees.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.Run(f, errors, isExternal);
+        MFunction m = Selector.RunLong(f, errors, isExternal);
         m.RealignsStack = entry;
         if (errors.Count > before)
         {

@@ -3,27 +3,25 @@ using Corsac.Asm;
 using Corsac.Lang.Ir;
 using Operand = Corsac.Lang.Ir.Operand;
 
-using Corsac.Lang.X86;
-
-namespace Corsac.Lang.X64;
+namespace Corsac.Lang.X86;
 
 internal sealed partial class Selector
 {
     /// <summary>
     /// AN ASM BLOCK and the AsmOuts right after it, as one -- i386's way
-    /// (Corsac.Lang.X86's TryInlineAsm): the memory locals' slots filled,
+    /// (TryInlineAsm, Select.InlineAsm.cs): the memory locals' slots filled,
     /// the head's bindings moved into their registers, the block, the
     /// tail's bindings moved out and the written slots read back.
     /// </summary>
-    private bool TryInlineAsm(List<Instr> instrs, int n, out int consumed)
+    private bool TryInlineAsmL(List<Instr> instrs, int n, out int consumed)
     {
         consumed = 0;
         Instr i = instrs[n];
         if (i.Op != Opcode.Call || i.Callee is not { } callee
-            || !callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.Asm, StringComparison.Ordinal))
+            || !callee.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal))
             return false;
         consumed = 1;
-        InlineAsm.Spec spec = InlineAsm.Decode(callee[Corsac.Lang.X86.MachineIntrinsics.Asm.Length..]);
+        InlineAsm.Spec spec = InlineAsm.Decode(callee[MachineIntrinsics.Asm.Length..]);
         if (spec.Bits != 64)
         {
             Error($"an asm block written for {spec.Bits}-bit code, in 64-bit code");
@@ -52,7 +50,7 @@ internal sealed partial class Selector
         for (int k = 0; k < count; k++)
         {
             if (!spec.Written[k]) continue;
-            if (at >= instrs.Count || instrs[at] is not { Op: Opcode.Call, Callee: Corsac.Lang.X86.MachineIntrinsics.AsmOut } taken
+            if (at >= instrs.Count || instrs[at] is not { Op: Opcode.Call, Callee: MachineIntrinsics.AsmOut } taken
                 || taken.Operands is not [ImmOperand { Value: var which }] || which != k)
             {
                 Error("an asm block's results are not right after it");
@@ -74,7 +72,7 @@ internal sealed partial class Selector
             slot[k] = MMem.Frame(_m.Frame.Allocate(width, Math.Max(8, width)));
             operandOf[k] = operands.Count;
             operands.Add(slot[k]!);
-            if (plan.StoreBefore[k] && input[k] is { } value) StoreFrom(slot[k]!, value, width);
+            if (plan.StoreBefore[k] && input[k] is { } value) StoreFromL(slot[k]!, value, width);
         }
         List<Gpr> uses = new();
         foreach ((int gpr, int k) in plan.Inputs)
@@ -85,7 +83,7 @@ internal sealed partial class Selector
                 return true;
             }
             int width = spec.Locals[k].Width == 8 ? 8 : 4;
-            Mov(MReg.Of((Gpr)gpr), RM(value, width), width);
+            MovL(MReg.Of((Gpr)gpr), RML(value, width), width);
             uses.Add((Gpr)gpr);
         }
         InlineAsmCode code = new()
@@ -95,10 +93,10 @@ internal sealed partial class Selector
         };
         Emit(new MInstr(MOp.InlineAsm, operands.ToArray()) { Asm = code });
         foreach ((int k, int gpr) in plan.Outputs)
-            if (output[k] is { } d) Mov(V(d), MReg.Of((Gpr)gpr), spec.Locals[k].Width == 8 ? 8 : 4);
+            if (output[k] is { } d) MovL(V(d), MReg.Of((Gpr)gpr), spec.Locals[k].Width == 8 ? 8 : 4);
         for (int k = 0; k < count; k++)
             if (plan.LoadAfter[k] && output[k] is { } d)
-                LoadInto(d, slot[k]!, spec.Locals[k].Width, spec.Locals[k].Kind == 's');
+                LoadIntoL(d, slot[k]!, spec.Locals[k].Width, spec.Locals[k].Kind == 's');
         return true;
     }
 }

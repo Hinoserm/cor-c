@@ -265,7 +265,7 @@ four results stored from the registers.
 | `frontend/Binder.InlineAsm.cs` | names, shapes, constants, roles, definite assignment, and the block assembled once for its errors |
 | `lowering/Lowering.InlineAsm.cs` | `__x86.i.asm:<spec>`, the inputs as operands, an `__x86.i.asmout` per output right after |
 | `arch/x86/assembler/InlineAsm.cs` | reading, the instructions' facts, the rules, the bindings, the text assembled |
-| `arch/x86/backend/Select.InlineAsm.cs`, `arch/x64/backend/Select.InlineAsm.cs` | the plan carried out: slots, bindings, `MOp.InlineAsm` |
+| `arch/x86/backend/Select.InlineAsm.cs`, `arch/x86/backend/Select.Long.InlineAsm.cs` | the plan carried out: slots, bindings, `MOp.InlineAsm` |
 
 The block's spec travels in the IR in the call's name, so a unit regenerated
 at the link selects it as it did. The preinitialiser refuses a block: what it
