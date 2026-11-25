@@ -80,7 +80,7 @@ internal sealed partial class Encoder
     {
         _m = null!;
         _long.Clear(); Tables.Clear(); CallSites.Clear(); Lines.Clear(); _pending.Clear();
-        _short.Clear(); _loopHeads.Clear(); _ripLabels.Clear();
+        _short.Clear(); _loopHeads.Clear(); _ripLabels.Clear(); _ripRelocs.Clear();
     }
 
     /// <summary>Encode a function at the current end of the section; returns its size.</summary>

@@ -98,8 +98,10 @@ internal sealed partial class Encoder
 
     /// <summary>
     /// Long mode's form of the instruction, where it has one of its own;
-    /// false where the family's case is right (FamilyForm); and for any
-    /// other opcode the compile is stopped, with the function's name.
+    /// false where the family's case is right (FamilyForm, and the shapes a
+    /// case here hands on with Family: MOVF between registers or of sixteen
+    /// bytes); and for any other opcode the compile is stopped, with the
+    /// function's name.
     /// </summary>
     private bool EncodeLong(MInstr i)
     {
@@ -435,7 +437,9 @@ internal sealed partial class Encoder
         {
             case MReg r: OpReg(0x50, r); break;
             case MImm imm when imm.FitsSbyte: B(0x6A, (byte)imm.Value); break;
-            case MImm imm: _out.Add(0x68); D32(imm.Value); break;
+            // PUSH imm32 pushes it sign-extended to a whole word, as a
+            // sixty-four-bit operation's immediate is (Imm32Only).
+            case MImm imm: Imm32Only(imm, 8); _out.Add(0x68); D32(imm.Value); break;
             default: OpD(4, 6, o, 0xFF); break;
         }
     }
@@ -461,13 +465,17 @@ internal sealed partial class Encoder
 
     /// <summary>
     /// An immediate of a sixty-four-bit operation is thirty-two bits, sign-
-    /// extended: one that does not fit is refused, never written short.
-    /// (What chooses immediates asks first -- Allocator.Foldable, IfConvert,
-    /// AddressFold; this is for the pass that forgets.)
+    /// extended: one that does not fit is refused, never written short, and
+    /// so is a symbol's address, which no thirty-two-bit field holds in a
+    /// position-independent image. (What chooses immediates asks first --
+    /// the allocator's FoldableImm, the selection, IfConvert, AddressFold;
+    /// this is for the pass that forgets.)
     /// </summary>
     private void Imm32Only(MImm imm, int w)
     {
-        if (w == 8 && !imm.FitsInt32) throw new InvalidOperationException($"{_m.Source.Name}: an immediate of a 64-bit operation that is not a sign-extended 32 bits");
+        if (w != 8) return;
+        if (!imm.IsPlain) throw new InvalidOperationException($"{_m.Source.Name}: a symbol's address as the immediate of a 64-bit operation");
+        if (!imm.FitsInt32) throw new InvalidOperationException($"{_m.Source.Name}: an immediate of a 64-bit operation that is not a sign-extended 32 bits");
     }
 
     private void ShiftL(int digit, MInstr i, int w)

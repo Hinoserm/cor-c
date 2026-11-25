@@ -87,7 +87,10 @@ has long mode's forms where they are not i386's with a prefix (64-bit
 immediates, MOVSXD, the stack operations, calls, the frame's prologue and
 epilogue with callee-saved registers in slots, jump tables), with the SIB
 form for an absolute `[disp32]` (mod 00 r/m 101 is RIP-relative there) and
-SSE's mandatory prefix before REX. Branches are relaxed to a fixed point by
+SSE's mandatory prefix before REX. What long mode has no form of is refused
+with the function's name, never written as i386 would write it: an opcode
+outside the family's shared forms, and the immediate of a 64-bit operation
+that is not a sign-extended 32 bits or is a symbol's address. Branches are relaxed to a fixed point by
 whole passes; loop heads are padded by `--cpu` unless `--opt-size`.
 
 What is still x86-64's own, in `compiler/src/arch/x64/backend`:
