@@ -5,6 +5,8 @@ namespace Corsac.Lang.X86;
 
 /// <summary>
 /// Folds address arithmetic into the addressing mode, before allocation.
+/// ONE PASS FOR BOTH MODES of the family: address arithmetic is of the
+/// mode's word (X86Mode.Word), and each rule says where a mode differs.
 ///
 /// The selector names every address as one register plus a displacement,
 /// so `a[i]` came out as
@@ -17,8 +19,16 @@ namespace Corsac.Lang.X86;
 ///
 /// The steps, each within one block, on virtual registers only. Three are
 /// described here; the code has more, each with its own comment: 0 (a copy
-/// used as a base), S (a symbol's address used as a base) and 4 (a load
-/// only compared, compared in memory).
+/// used as a base), S and R (a symbol's address used as a base: absolute
+/// on i386, from the instruction in long mode), F and L (an LEA's address
+/// used as a base: the frame's, any other), 4 (a load only compared,
+/// compared in memory) and 5 (a pointer loaded only to be called).
+///
+/// ONLY A SHIFT OF THE WHOLE WORD IS AN INDEX. In long mode `shl r32`
+/// drops the bits a carry would put in the upper half, and the scaled
+/// index in an address keeps them. Lowering widens an index before it
+/// scales it (ElementOffset), so an element's shift is of the word, and
+/// the widening before it stays.
 ///
 ///   1. `mov t, X ; add t, Y|imm` whose t is read nowhere but as the base
 ///      of memory operands after it in the block: each becomes
@@ -63,9 +73,15 @@ internal static class AddressFold
             return BlockDominators.Strictly(_idom, a, b);
         }
 
-        /// <summary>Whether a virtual register holds one value from before `start` in `block` on.</summary>
-        public bool Fixed(int v, int block, int start)
-            => Block[v] >= 0 && (Block[v] == block ? At[v] < start : Dominates(Block[v], block));
+        /// <summary>
+        /// Whether a register holds one value from before `start` in `block`
+        /// on: the frame's base, which nothing in a body writes, or a
+        /// virtual one written in one block only, before `start` in it or
+        /// in a block that dominates this one.
+        /// </summary>
+        public bool Fixed(MReg r, int block, int start)
+            => r.IsVirtual ? Block[r.Id] >= 0 && (Block[r.Id] == block ? At[r.Id] < start : Dominates(Block[r.Id], block))
+                : r.Id == (int)Gpr.Ebp;
 
         // Where each register occurs, by block, instruction and operand, made
         // when Beyond first asks, so a base read in other blocks is found
@@ -108,12 +124,12 @@ internal static class AddressFold
             if (_sites is null) return;
             switch (at.Operands[k])
             {
-                case MReg { IsPhys: false } r:
+                case MReg { IsVirtual: true } r:
                     _sites[r.Id].Add((b, at, k));
                     break;
                 case MMem mem:
-                    if (mem.Base is { IsPhys: false } mb) _sites[mb.Id].Add((b, at, k));
-                    if (mem.Index is { IsPhys: false } mx && mx.Id != mem.Base?.Id) _sites[mx.Id].Add((b, at, k));
+                    if (mem.Base is { IsVirtual: true } mb) _sites[mb.Id].Add((b, at, k));
+                    if (mem.Index is { IsVirtual: true } mx && mx.Id != mem.Base?.Id) _sites[mx.Id].Add((b, at, k));
                     break;
             }
         }
@@ -132,7 +148,8 @@ internal static class AddressFold
 
     /// <summary>
     /// `absolute`: a symbol's address may be a 32-bit displacement (i386, not
-    /// position-independent code, which Pic has rewritten by now).
+    /// position-independent code, which Pic has rewritten by now; never in
+    /// long mode, which reaches a symbol from the instruction: step R).
     /// `compareMemory`: a load only compared may be compared in memory (step
     /// 4). On the Pentium such a compare -- a displacement and an immediate
     /// -- gives up the V pipe, at most a clock; the register it frees is a
@@ -173,9 +190,9 @@ internal static class AddressFold
                 for (int k = 0; k < ins.Count; k++)
                 {
                     MInstr i = ins[k];
-                    bool zeroing = i.Op == MOp.Xor && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
+                    bool zeroing = i.Op is MOp.Xor or MOp.XorF && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
                     for (int o = 0; o < i.Operands.Count; o++)
-                        if (i.Operands[o] is MReg { IsPhys: false } r && writes.Block[r.Id] == b && (zeroing || (Roles.Of(i.Op, o) & Role.Def) != 0))
+                        if (i.Operands[o] is MReg { IsVirtual: true } r && writes.Block[r.Id] == b && (zeroing || (Roles.Of(i.Op, o) & Role.Def) != 0))
                             writes.At[r.Id] = k;
                 }
             }
@@ -209,12 +226,12 @@ internal static class AddressFold
             for (int q = 1; q < ins.Count; q++)
             {
                 MInstr shl = ins[q], copy = ins[q - 1];
-                if (shl.Op != MOp.Shl || shl.Width != 4 || shl.Operands.Count != 2
-                    || shl.Operands[0] is not MReg { IsPhys: false } y || defs[y.Id] != 2
-                    || shl.Operands[1] is not MImm { Value: >= 1 and <= 3 } amount
-                    || copy.Op != MOp.Mov || copy.Width != 4 || copy.Operands.Count != 2
+                if (shl.Op != MOp.Shl || shl.Width != X86Mode.Word || shl.Operands.Count != 2
+                    || shl.Operands[0] is not MReg { IsVirtual: true } y || defs[y.Id] != 2
+                    || shl.Operands[1] is not MImm { IsPlain: true, Value: >= 1 and <= 3 } amount
+                    || copy.Op != MOp.Mov || copy.Width != X86Mode.Word || copy.Operands.Count != 2
                     || copy.Operands[0] is not MReg c0 || c0.Id != y.Id
-                    || copy.Operands[1] is not MReg { IsPhys: false } z || z.Id == y.Id || defs[z.Id] != 1
+                    || copy.Operands[1] is not MReg { IsVirtual: true } z || z.Id == y.Id || defs[z.Id] != 1
                     || !FlagsDead(ins, q))
                 {
                     continue;
@@ -252,7 +269,7 @@ internal static class AddressFold
                 foreach ((MInstr u, int k) in uses)
                 {
                     MMem mem = (MMem)u.Operands[k];
-                    u.Operands[k] = new MMem(mem.Base, mem.Disp) { Index = z, Scale = 1 << (int)amount.Value, Device = mem.Device };
+                    u.Operands[k] = mem.Addressed(mem.Base, mem.Disp, z, 1 << (int)amount.Value);
                 }
                 occurrences[z.Id] += uses.Count - 1;
                 occurrences[y.Id] = 0;
@@ -272,12 +289,12 @@ internal static class AddressFold
 
     private static void Count(MInstr i, int[] occurrences, int[] defs, WriteSites writes, int block, int at)
     {
-        bool zeroing = i.Op == MOp.Xor && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
+        bool zeroing = i.Op is MOp.Xor or MOp.XorF && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
         for (int k = 0; k < i.Operands.Count; k++)
         {
             switch (i.Operands[k])
             {
-                case MReg r when !r.IsPhys:
+                case MReg r when r.IsVirtual:
                     occurrences[r.Id]++;
                     if (zeroing || (Roles.Of(i.Op, k) & Role.Def) != 0)
                     {
@@ -287,8 +304,8 @@ internal static class AddressFold
                     }
                     break;
                 case MMem mem:
-                    if (mem.Base is { IsPhys: false } mb) occurrences[mb.Id]++;
-                    if (mem.Index is { IsPhys: false } mx) occurrences[mx.Id]++;
+                    if (mem.Base is { IsVirtual: true } mb) occurrences[mb.Id]++;
+                    if (mem.Index is { IsVirtual: true } mx) occurrences[mx.Id]++;
                     break;
             }
         }
@@ -318,7 +335,8 @@ internal static class AddressFold
         {
             switch (ins[j].Op)
             {
-                case MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Push or MOp.Pop or MOp.Nop:
+                case MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Push or MOp.Pop or MOp.Nop
+                    or MOp.Not or MOp.Bswap or MOp.MovGx:
                     continue;
                 case var op when Isa.FlagNeutralScalar(op):
                     // The scalar SSE forms leave every flag as it was.
@@ -331,14 +349,17 @@ internal static class AddressFold
                 // had just loaded, and the shift, taken for a reader, kept
                 // every int array's element address out of the addressing
                 // mode: four instructions and a register for [a+i*4+16].
-                case MOp.Shl or MOp.Shr or MOp.Sar when ins[j].Operands.Count == 2 && ins[j].Operands[1] is MImm { Value: >= 1 and <= 31 }:
+                // (The count is masked to the operand's width: 63 for eight
+                // bytes, 31 below.)
+                case MOp.Shl or MOp.Shr or MOp.Sar
+                    when ins[j].Operands.Count == 2 && ins[j].Operands[1] is MImm { IsPlain: true } count && (count.Value & (ins[j].Width == 8 ? 63 : 31)) != 0:
                     return true;
                 case MOp.Imul or MOp.Imul3:
                     return true;
                 // A call through a register leaves the flags as any call
                 // does, its callee's: an element passed to a virtual or an
                 // interface call kept its address out of the mode for it.
-                case MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.Jmp or MOp.Ret or MOp.Epilogue:
+                case MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas or MOp.Jmp or MOp.Ret or MOp.Epilogue:
                     return true;
                 default:
                     return false;
@@ -353,14 +374,14 @@ internal static class AddressFold
 
     /// <summary>
     /// Every occurrence of t outside its own block, when each is a plain
-    /// base with no index that can take X+Y (or X+imm) in a block t's block
-    /// strictly dominates, and X and Y hold one value from before t is made
-    /// on -- null otherwise. `counted`: t's occurrences in its own block,
-    /// which with these must be all it has.
+    /// base that can take X + Y*s + disp (no index of its own where there
+    /// is a Y) in a block t's block strictly dominates, and X and Y hold
+    /// one value from before t is made on -- null otherwise. `counted`: t's
+    /// occurrences in its own block, which with these must be all it has.
     /// </summary>
-    private static List<(int Block, MInstr I, int K)>? Beyond(WriteSites writes, MReg t, MReg x, MOperand y, int block, int start, int counted, int[] occurrences)
+    private static List<(int Block, MInstr I, int K)>? Beyond(WriteSites writes, MReg t, MReg x, MReg? y, long disp, int block, int start, int counted, int[] occurrences)
     {
-        if (!writes.Fixed(x.Id, block, start) || y is MReg yr && !writes.Fixed(yr.Id, block, start))
+        if (!writes.Fixed(x, block, start) || y is not null && !writes.Fixed(y, block, start))
         {
             return null;
         }
@@ -387,7 +408,7 @@ internal static class AddressFold
                 case MMem mem when mem.Index?.Id == t.Id:
                     return null;
                 case MMem mem when mem.Base?.Id == t.Id:
-                    if (!Plain(mem) || mem.Index is not null || (y is MImm imm && !FitsDisp(mem.Disp, imm.Value)) || !writes.Dominates(block, b))
+                    if (!Plain(mem) || y is not null && mem.Index is not null || !FitsDisp(mem.Disp, disp) || !writes.Dominates(block, b))
                     {
                         return null;
                     }
@@ -416,8 +437,8 @@ internal static class AddressFold
             for (int q = 0; q < ins.Count; q++)
             {
                 MInstr load = ins[q];
-                if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
-                    || load.Operands[0] is not MReg { IsPhys: false } t || defs[t.Id] != 1
+                if (load.Op != MOp.Mov || load.Width != X86Mode.Word || load.Operands.Count != 2
+                    || load.Operands[0] is not MReg { IsVirtual: true } t || defs[t.Id] != 1
                     || load.Operands[1] is not MImm { Symbol: not null, Label: null, Value: >= int.MinValue and <= int.MaxValue } sym)
                 {
                     continue;
@@ -449,7 +470,59 @@ internal static class AddressFold
                 foreach ((int j, int k) in uses)
                 {
                     MMem mem = (MMem)ins[j].Operands[k];
-                    ins[j].Operands[k] = new MMem(null, checked(mem.Disp + (int)sym.Value)) { Index = mem.Index, Scale = mem.Scale, Symbol = sym.Symbol, Device = mem.Device };
+                    ins[j].Operands[k] = new MMem(null, checked(mem.Disp + (int)sym.Value)) { Index = mem.Index, Scale = mem.Scale, Symbol = sym.Symbol, Device = mem.Device, Segment = mem.Segment };
+                }
+                occurrences[t.Id] = 0;
+                writes.Remove(ins, q);
+                any = true;
+            }
+        }
+
+        // ---- R. base = a symbol's address, from the instruction ----
+        //
+        // Long mode's S: `lea t, [rip + sym + d]` whose t is read nowhere but
+        // as the base of plain memory operands with no index after it in
+        // this block: each becomes [rip + sym + d + disp]. No index, for an
+        // address from the instruction has no other register in it. A static
+        // read through its address was `lea t, [rip+sym] ; mov r, [t+8]`.
+        if (X86Mode.Long)
+        {
+            for (int q = 0; q < ins.Count; q++)
+            {
+                MInstr lea = ins[q];
+                if (lea.Op != MOp.Lea || lea.Operands.Count != 2 || lea.Operands[0] is not MReg { IsVirtual: true } t || defs[t.Id] != 1
+                    || lea.Operands[1] is not MMem { Base: null, Index: null, Symbol: not null, Label: null, Got: false, Segment: 0 } sym)
+                {
+                    continue;
+                }
+                List<(int J, int K)> uses = new();
+                bool ok = true;
+                for (int j = q + 1; j < ins.Count && ok; j++)
+                {
+                    MInstr use = ins[j];
+                    for (int k = 0; k < use.Operands.Count; k++)
+                    {
+                        switch (use.Operands[k])
+                        {
+                            case MReg r when r.Id == t.Id:
+                            case MMem m1 when m1.Index?.Id == t.Id:
+                            case MMem m2 when m2.Base?.Id == t.Id && (!Plain(m2) || m2.Index is not null || !FitsDisp(m2.Disp, sym.Disp)):
+                                ok = false;
+                                break;
+                            case MMem mem when mem.Base?.Id == t.Id:
+                                uses.Add((j, k));
+                                break;
+                        }
+                    }
+                }
+                if (!ok || uses.Count == 0 || uses.Count != occurrences[t.Id] - 1)
+                {
+                    continue;
+                }
+                foreach ((int j, int k) in uses)
+                {
+                    MMem mem = (MMem)ins[j].Operands[k];
+                    ins[j].Operands[k] = new MMem(null, mem.Disp + sym.Disp) { Symbol = sym.Symbol, Device = mem.Device, Segment = mem.Segment };
                 }
                 occurrences[t.Id] = 0;
                 writes.Remove(ins, q);
@@ -466,9 +539,9 @@ internal static class AddressFold
         for (int q = ins.Count - 1; q >= 0; q--)
         {
             MInstr copy = ins[q];
-            if (copy.Op != MOp.Mov || copy.Width != 4 || copy.Operands.Count != 2
-                || copy.Operands[0] is not MReg { IsPhys: false } u || defs[u.Id] != 1
-                || copy.Operands[1] is not MReg { IsPhys: false } t || t.Id == u.Id)
+            if (copy.Op != MOp.Mov || copy.Width != X86Mode.Word || copy.Operands.Count != 2
+                || copy.Operands[0] is not MReg { IsVirtual: true } u || defs[u.Id] != 1
+                || copy.Operands[1] is not MReg { IsVirtual: true, IsFloat: false } t || t.Id == u.Id)
             {
                 continue;
             }
@@ -499,7 +572,7 @@ internal static class AddressFold
             List<(int Block, MInstr I, int K)>? beyond = null;
             if (occurrences[u.Id] != 1 + uses.Count)
             {
-                beyond = Beyond(writes, u, t, new MImm(0), block, q, 1 + uses.Count, occurrences);
+                beyond = Beyond(writes, u, t, null, 0, block, q, 1 + uses.Count, occurrences);
                 if (beyond is null)
                 {
                     continue;
@@ -515,7 +588,7 @@ internal static class AddressFold
             foreach ((int where, MInstr at, int k) in all)
             {
                 MMem mem = (MMem)at.Operands[k];
-                at.Operands[k] = new MMem(t, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
+                at.Operands[k] = mem.Addressed(t, mem.Disp, mem.Index, mem.Scale);
                 writes.Note(where, at, k);
             }
             occurrences[t.Id] += all.Count - 1;
@@ -528,7 +601,7 @@ internal static class AddressFold
         //
         // `lea t, [ebp+d]` whose t is read nowhere but as the base of plain
         // memory operands after it in this block: each becomes [ebp+d+disp]
-        // (with its index) -- a local's address taken only to be written
+        // -- a local's address taken only to be written
         // through, `lea eax, [ebp-48h] ; mov dword [eax], 0`: 24,065 frame
         // LEAs over a kernel, its modules and its userland, and an address
         // generation interlock each on the 486 and the Pentium. FrameCompact
@@ -537,7 +610,7 @@ internal static class AddressFold
         for (int q = 0; q < ins.Count; q++)
         {
             MInstr lea = ins[q];
-            if (lea.Op != MOp.Lea || lea.Operands.Count != 2 || lea.Operands[0] is not MReg { IsPhys: false } t || defs[t.Id] != 1
+            if (lea.Op != MOp.Lea || lea.Operands.Count != 2 || lea.Operands[0] is not MReg { IsVirtual: true } t || defs[t.Id] != 1
                 || lea.Operands[1] is not MMem { Base: { IsPhys: true, Phys: Gpr.Ebp } ebp, Index: null, Symbol: null, Label: null, IsSpill: false } frame)
             {
                 continue;
@@ -557,6 +630,10 @@ internal static class AddressFold
                         // each operand by the block its displacement falls in,
                         // and an element past the block's end, or an index the
                         // displacement does not show, would be moved by another's.
+                        // And the frame's liveness reads an operand off the base
+                        // as the slot its displacement lies in (FrameSlotLiveness):
+                        // an indexed one it can place nowhere, and takes every
+                        // slot for live -- the LEA names one.
                         case MMem m2 when m2.Base?.Id == t.Id && (!Plain(m2) || m2.Index is not null || !FitsDisp(m2.Disp, frame.Disp)
                             || !SameAllocation(frameOf, frame.Disp, frame.Disp + m2.Disp)):
                             ok = false;
@@ -567,14 +644,116 @@ internal static class AddressFold
                     }
                 }
             }
-            if (!ok || uses.Count == 0 || uses.Count != occurrences[t.Id] - 1)
+            if (!ok)
             {
                 continue;
             }
-            foreach ((int j, int k) in uses)
+            // Read in the blocks this one dominates as well: the frame's base
+            // is one value everywhere, and each use there is held to what a
+            // use here is.
+            List<(int Block, MInstr I, int K)>? beyond = null;
+            if (uses.Count != occurrences[t.Id] - 1)
             {
-                MMem mem = (MMem)ins[j].Operands[k];
-                ins[j].Operands[k] = new MMem(ebp, mem.Disp + frame.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
+                beyond = Beyond(writes, t, ebp, null, frame.Disp, block, q, 1 + uses.Count, occurrences);
+                if (beyond is null || beyond.Exists(u => u.I.Operands[u.K] is MMem far
+                        && (far.Index is not null || !SameAllocation(frameOf, frame.Disp, frame.Disp + far.Disp))))
+                {
+                    continue;
+                }
+            }
+            if (uses.Count == 0 && beyond is null)
+            {
+                continue;
+            }
+            List<(int Block, MInstr I, int K)> all = uses.Select(u => (block, ins[u.J], u.K)).ToList();
+            if (beyond is not null) all.AddRange(beyond);
+            foreach ((int where, MInstr at, int k) in all)
+            {
+                MMem mem = (MMem)at.Operands[k];
+                at.Operands[k] = mem.Addressed(ebp, mem.Disp + frame.Disp, mem.Index, mem.Scale);
+                writes.Note(where, at, k);
+            }
+            occurrences[t.Id] = 0;
+            writes.Remove(ins, q);
+            any = true;
+        }
+
+        // ---- L. base = an LEA's address ----
+        //
+        // `lea t, [X + Y*s + d]` of the whole word (X and Y virtual; no
+        // symbol, no segment) whose t is read nowhere but as the base of
+        // plain memory operands, after it in this block or in the blocks
+        // this one dominates: each becomes [X + Y*s + d + disp] -- keeping
+        // its own index where the LEA has none -- and the LEA goes. Long
+        // mode's selector names an element's and a field's address so:
+        // `lea t, [s+y] ; movzx r, [t+24]` is `movzx r, [s+y+24]`. Last
+        // first, so an LEA of an LEA's address is folded before the first
+        // is asked about.
+        for (int q = ins.Count - 1; q >= 0; q--)
+        {
+            MInstr lea = ins[q];
+            if (lea.Op != MOp.Lea || lea.Width != X86Mode.Word || lea.Operands.Count != 2
+                || lea.Operands[0] is not MReg { IsVirtual: true } t || defs[t.Id] != 1
+                || lea.Operands[1] is not MMem { Base: { IsVirtual: true } x, Segment: 0 } made || !Plain(made)
+                || x.Id == t.Id || made.Index is { } index && (!index.IsVirtual || index.Id == t.Id))
+            {
+                continue;
+            }
+            MReg? y = made.Index;
+            List<(int J, int K)> uses = new();
+            bool ok = true;
+            for (int j = q + 1; j < ins.Count && ok; j++)
+            {
+                MInstr u = ins[j];
+                for (int k = 0; k < u.Operands.Count && ok; k++)
+                {
+                    switch (u.Operands[k])
+                    {
+                        case MReg r when r.Id == t.Id:
+                        case MMem m1 when m1.Index?.Id == t.Id:
+                        case MMem m2 when m2.Base?.Id == t.Id && (!Plain(m2) || y is not null && m2.Index is not null || !FitsDisp(m2.Disp, made.Disp)):
+                            ok = false;
+                            break;
+                        case MMem mem when mem.Base?.Id == t.Id:
+                            uses.Add((j, k));
+                            break;
+                    }
+                }
+            }
+            if (!ok)
+            {
+                continue;
+            }
+            List<(int Block, MInstr I, int K)>? beyond = null;
+            if (occurrences[t.Id] != 1 + uses.Count)
+            {
+                beyond = Beyond(writes, t, x, y, made.Disp, block, q, 1 + uses.Count, occurrences);
+                if (beyond is null)
+                {
+                    continue;
+                }
+            }
+            if (uses.Count == 0 && beyond is null)
+            {
+                continue;
+            }
+            int last = uses.Count > 0 ? uses[^1].J : ins.Count - 1;
+            if (Written(ins, q + 1, last, x.Id) || y is not null && Written(ins, q + 1, last, y.Id))
+            {
+                continue;
+            }
+            List<(int Block, MInstr I, int K)> all = uses.Select(u => (block, ins[u.J], u.K)).ToList();
+            if (beyond is not null) all.AddRange(beyond);
+            foreach ((int where, MInstr at, int k) in all)
+            {
+                MMem mem = (MMem)at.Operands[k];
+                at.Operands[k] = mem.Addressed(x, checked(mem.Disp + made.Disp), y ?? mem.Index, y is not null ? made.Scale : mem.Scale);
+                writes.Note(where, at, k);
+            }
+            occurrences[x.Id] += all.Count - 1;
+            if (y is not null)
+            {
+                occurrences[y.Id] += all.Count - 1;
             }
             occurrences[t.Id] = 0;
             writes.Remove(ins, q);
@@ -585,13 +764,14 @@ internal static class AddressFold
         for (int q = 1; q < ins.Count; q++)
         {
             MInstr add = ins[q];
-            if (add.Op != MOp.Add || add.Lock || add.Width != 4 || add.Operands.Count != 2
-                || add.Operands[0] is not MReg { IsPhys: false } t || defs[t.Id] != 2)
+            if (add.Op != MOp.Add || add.Lock || add.Width != X86Mode.Word || add.Operands.Count != 2
+                || add.Operands[0] is not MReg { IsVirtual: true } t || defs[t.Id] != 2)
             {
                 continue;
             }
+            // A plain number only: a symbol's address added is no displacement.
             MOperand y = add.Operands[1];
-            if (y is not (MReg { IsPhys: false } or MImm))
+            if (y is not (MReg { IsVirtual: true } or MImm { IsPlain: true }))
             {
                 continue;
             }
@@ -610,9 +790,9 @@ internal static class AddressFold
                 continue;
             }
             MInstr copy = ins[p];
-            if (copy.Op != MOp.Mov || copy.Width != 4 || copy.Operands.Count != 2
+            if (copy.Op != MOp.Mov || copy.Width != X86Mode.Word || copy.Operands.Count != 2
                 || copy.Operands[0] is not MReg c0 || c0.Id != t.Id
-                || copy.Operands[1] is not MReg { IsPhys: false } x || x.Id == t.Id)
+                || copy.Operands[1] is not MReg { IsVirtual: true } x || x.Id == t.Id)
             {
                 continue;
             }
@@ -658,7 +838,7 @@ internal static class AddressFold
             List<(int Block, MInstr I, int K)>? beyond = null;
             if (occurrences[t.Id] != 2 + uses.Count)
             {
-                beyond = Beyond(writes, t, x, y, block, p, 2 + uses.Count, occurrences);
+                beyond = Beyond(writes, t, x, y as MReg, y is MImm far ? far.Value : 0, block, p, 2 + uses.Count, occurrences);
                 if (beyond is null)
                 {
                     continue;
@@ -679,8 +859,8 @@ internal static class AddressFold
             {
                 MMem mem = (MMem)at.Operands[k];
                 at.Operands[k] = y is MImm imm
-                    ? new MMem(x, checked(mem.Disp + (int)imm.Value)) { Device = mem.Device }
-                    : new MMem(x, mem.Disp) { Index = (MReg)y, Scale = 1, Device = mem.Device };
+                    ? mem.Addressed(x, checked(mem.Disp + (int)imm.Value), mem.Index, mem.Scale)
+                    : mem.Addressed(x, mem.Disp, (MReg)y, 1);
                 writes.Note(where, at, k);
             }
             occurrences[x.Id] += all.Count - 1;
@@ -706,8 +886,8 @@ internal static class AddressFold
         for (int q = 1; q < ins.Count; q++)
         {
             MInstr add = ins[q];
-            if (add.Op is not (MOp.Add or MOp.Sub) || add.Lock || add.Width != 4 || add.Operands.Count != 2
-                || add.Operands[0] is not MReg { IsPhys: false } t || defs[t.Id] != 2 || add.Operands[1] is not MImm { IsPlain: true } amount)
+            if (add.Op is not (MOp.Add or MOp.Sub) || add.Lock || add.Width != X86Mode.Word || add.Operands.Count != 2
+                || add.Operands[0] is not MReg { IsVirtual: true } t || defs[t.Id] != 2 || add.Operands[1] is not MImm { IsPlain: true } amount)
             {
                 continue;
             }
@@ -716,7 +896,7 @@ internal static class AddressFold
             while (p >= 0 && !Touches(ins[p], t.Id)) p--;
             if (p < 0) continue;
             MInstr start = ins[p];
-            if (start.Op != MOp.Mov || start.Width != 4 || start.Operands.Count != 2
+            if (start.Op != MOp.Mov || start.Width != X86Mode.Word || start.Operands.Count != 2
                 || start.Operands[0] is not MReg s0 || s0.Id != t.Id || Touches(new MInstr(MOp.Nop, start.Operands[1]), t.Id))
             {
                 continue;
@@ -748,7 +928,7 @@ internal static class AddressFold
             foreach ((int j, int k) in uses)
             {
                 MMem mem = (MMem)ins[j].Operands[k];
-                ins[j].Operands[k] = new MMem(mem.Base, checked(mem.Disp + (int)delta)) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
+                ins[j].Operands[k] = mem.Addressed(mem.Base, checked(mem.Disp + (int)delta), mem.Index, mem.Scale);
             }
             occurrences[t.Id]--;
             defs[t.Id]--;
@@ -760,9 +940,9 @@ internal static class AddressFold
         for (int q = 1; q < ins.Count; q++)
         {
             MInstr shl = ins[q];
-            if (shl.Op != MOp.Shl || shl.Width != 4 || shl.Operands.Count != 2
-                || shl.Operands[0] is not MReg { IsPhys: false } yv || defs[yv.Id] != 2
-                || shl.Operands[1] is not MImm { Value: >= 1 and <= 3 } amount)
+            if (shl.Op != MOp.Shl || shl.Width != X86Mode.Word || shl.Operands.Count != 2
+                || shl.Operands[0] is not MReg { IsVirtual: true } yv || defs[yv.Id] != 2
+                || shl.Operands[1] is not MImm { IsPlain: true, Value: >= 1 and <= 3 } amount)
             {
                 continue;
             }
@@ -776,9 +956,9 @@ internal static class AddressFold
                 continue;
             }
             MInstr copy = ins[p];
-            if (copy.Op != MOp.Mov || copy.Width != 4 || copy.Operands.Count != 2
+            if (copy.Op != MOp.Mov || copy.Width != X86Mode.Word || copy.Operands.Count != 2
                 || copy.Operands[0] is not MReg c0 || c0.Id != yv.Id
-                || copy.Operands[1] is not MReg { IsPhys: false } z || z.Id == yv.Id)
+                || copy.Operands[1] is not MReg { IsVirtual: true } z || z.Id == yv.Id)
             {
                 continue;
             }
@@ -825,7 +1005,7 @@ internal static class AddressFold
             foreach ((int j, int k) in uses)
             {
                 MMem mem = (MMem)ins[j].Operands[k];
-                ins[j].Operands[k] = new MMem(mem.Base, mem.Disp) { Index = z, Scale = 1 << (int)amount.Value, Device = mem.Device };
+                ins[j].Operands[k] = mem.Addressed(mem.Base, mem.Disp, z, 1 << (int)amount.Value);
             }
             occurrences[z.Id] += uses.Count - 1;
             occurrences[yv.Id] = 0;
@@ -844,8 +1024,8 @@ internal static class AddressFold
         {
             MInstr alu = ins[q];
             if (alu.Op is not (MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Imul)
-                || alu.Width != 4 || alu.Lock || alu.Operands.Count != 2
-                || alu.Operands[1] is not MReg { IsPhys: false } t || alu.Operands[0] is not MReg dst || dst.Id == t.Id
+                || alu.Width != 4 && alu.Width != X86Mode.Word || alu.Lock || alu.Operands.Count != 2
+                || alu.Operands[1] is not MReg { IsVirtual: true } t || alu.Operands[0] is not MReg dst || dst.Id == t.Id
                 || defs[t.Id] != 1 || occurrences[t.Id] != 2)
             {
                 continue;
@@ -854,7 +1034,7 @@ internal static class AddressFold
             while (p >= 0 && !Touches(ins[p], t.Id)) p--;
             if (p < 0) continue;
             MInstr load = ins[p];
-            if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
+            if (load.Op != MOp.Mov || load.Width != alu.Width || load.Operands.Count != 2
                 || load.Operands[0] is not MReg l0 || l0.Id != t.Id || load.Operands[1] is not MMem mem)
             {
                 continue;
@@ -888,20 +1068,21 @@ internal static class AddressFold
         for (int q = 1; q < ins.Count && compareMemory; q++)
         {
             MInstr cmp = ins[q];
-            if (cmp.Width != 4 || cmp.Lock || cmp.Operands.Count != 2 || cmp.Operands[0] is not MReg { IsPhys: false } t
+            if (cmp.Width != 4 && cmp.Width != X86Mode.Word || cmp.Lock || cmp.Operands.Count != 2 || cmp.Operands[0] is not MReg { IsVirtual: true } t
                 || defs[t.Id] != 1)
             {
                 continue;
             }
             MImm against;
-            if (cmp.Op == MOp.Cmp && cmp.Operands[1] is MImm { IsPlain: true } imm && occurrences[t.Id] == 2) against = imm;
+            // (Long mode's immediate is thirty-two bits, sign-extended.)
+            if (cmp.Op == MOp.Cmp && cmp.Operands[1] is MImm { IsPlain: true } imm && occurrences[t.Id] == 2 && (!X86Mode.Long || imm.FitsInt32)) against = imm;
             else if (cmp.Op == MOp.Test && cmp.Operands[1] is MReg same && same.Id == t.Id && occurrences[t.Id] == 3) against = new MImm(0);
             else continue;
             int p = q - 1;
             while (p >= 0 && !Touches(ins[p], t.Id)) p--;
             if (p < 0) continue;
             MInstr load = ins[p];
-            if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
+            if (load.Op != MOp.Mov || load.Width != cmp.Width || load.Operands.Count != 2
                 || load.Operands[0] is not MReg l0 || l0.Id != t.Id || load.Operands[1] is not MMem mem)
             {
                 continue;
@@ -917,7 +1098,7 @@ internal static class AddressFold
                     && (mem.Index is null || !Writes(between, mem.Index.Id));
             }
             if (!quiet) continue;
-            writes.Replace(ins, q, new MInstr(MOp.Cmp, mem, against) { Width = 4, Line = cmp.Line });
+            writes.Replace(ins, q, new MInstr(MOp.Cmp, mem, against) { Width = cmp.Width, Line = cmp.Line });
             occurrences[t.Id] = 0;
             writes.Remove(ins, p);
             any = true;
@@ -937,7 +1118,7 @@ internal static class AddressFold
             MInstr call = ins[q];
             // (Its argument registers past the target, where it passes them so
             // -- RegisterArgs -- stay as they are: only the target is folded.)
-            if (call.Op != MOp.CallInd || call.Operands.Count < 1 || call.Operands[0] is not MReg { IsPhys: false } t
+            if (call.Op != MOp.CallInd || call.Operands.Count < 1 || call.Operands[0] is not MReg { IsVirtual: true } t
                 || defs[t.Id] != 1 || occurrences[t.Id] != 2)
             {
                 continue;
@@ -946,7 +1127,7 @@ internal static class AddressFold
             while (p >= 0 && !Touches(ins[p], t.Id)) p--;
             if (p < 0) continue;
             MInstr load = ins[p];
-            if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
+            if (load.Op != MOp.Mov || load.Width != X86Mode.Word || load.Operands.Count != 2
                 || load.Operands[0] is not MReg l0 || l0.Id != t.Id || load.Operands[1] is not MMem mem)
             {
                 continue;

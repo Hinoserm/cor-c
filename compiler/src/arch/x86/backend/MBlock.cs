@@ -31,20 +31,9 @@ public sealed class MBlock
 
     public override string ToString() => Name;
 
-    /// <summary>Whether control cannot fall out of the bottom of this block.</summary>
     /// <summary>Laid out after the function's other blocks (Layout): its segment ends in a trap.</summary>
     public bool Cold { get; set; }
 
-    public bool EndsUnconditionally
-    {
-        get
-        {
-            if (Instrs.Count == 0)
-            {
-                return false;
-            }
-            MOp last = Instrs[^1].Op;
-            return last is MOp.Jmp or MOp.Ret or MOp.JmpTable or MOp.JmpInd or MOp.Epilogue or MOp.Int3;
-        }
-    }
+    /// <summary>Whether control cannot fall out of the bottom of this block (MInstr.EndsFlow).</summary>
+    public bool EndsUnconditionally => Instrs.Count > 0 && Instrs[^1].EndsFlow;
 }

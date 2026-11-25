@@ -16,10 +16,15 @@ namespace Corsac.Lang.X86;
 /// again past a jump -- say what they need of it, and the last of them
 /// leaves flags live into a block, which no rule before it allows.
 /// </summary>
-internal static class Peephole
+internal static partial class Peephole
 {
     public static void Run(MFunction m)
     {
+        if (X86Mode.Long)
+        {
+            RunLong(m);
+            return;
+        }
         ParameterHomes(m);
         foreach (MBlock block in m.Blocks) StoredAgainAtOnce(block.Instrs);
         // Found on the code as the allocator left it, read once the spill
@@ -805,8 +810,12 @@ internal static class Peephole
             foreach (MInstr i in block.Instrs)
                 foreach (MOperand o in i.Operands)
                 {
+                    // A block's address taken: as a constant (i386), by an
+                    // LEA of its label or as a jump table's (both), as a
+                    // label that is no jump's (long mode's unwind).
                     if (o is MImm { Label: { } taken }) Root(taken);
                     else if (o is MMem { Label: { } table }) Root(table);
+                    else if (o is MLabel { Target: var named } && i.Op is not (MOp.Jmp or MOp.Jcc)) Root(named);
                 }
         }
         List<MBlock> next = new();
@@ -2010,7 +2019,7 @@ internal static class Peephole
     private static bool ReadsFlags(MInstr i) => i.Op is MOp.Jcc or MOp.Setcc or MOp.Cmov or MOp.Adc or MOp.Sbb;
 
     /// <summary>What may read the flags besides (a PUSHF, an asm block): to a rule that removes a flag setter, a reader.</summary>
-    private static bool MayReadFlags(MInstr i) => ReadsFlags(i) || i.Op is MOp.ReadFlags or MOp.InlineAsm or MOp.Pushfd;
+    private static bool MayReadFlags(MInstr i) => ReadsFlags(i) || i.Op is MOp.ReadFlags or MOp.InlineAsm or MOp.Pushf;
 
     // ---- test after an instruction that set the flags --------------------------------
 

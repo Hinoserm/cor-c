@@ -163,8 +163,8 @@ internal static class AlignedSlots
                 else if (i.Op == MOp.JmpInd) return null;
                 switch (i.Op)
                 {
-                    case MOp.Push or MOp.Pushfd: d += 4; continue;
-                    case MOp.Pop or MOp.Popfd: d -= 4; if (d < 0) return null; continue;
+                    case MOp.Push or MOp.Pushf: d += 4; continue;
+                    case MOp.Pop or MOp.Popf: d -= 4; if (d < 0) return null; continue;
                     case MOp.Ret: return null;
                     case MOp.InlineAsm when i.Asm!.NeedsFrame: return null;
                     case MOp.Call or MOp.CallInd when i.Native: return null;

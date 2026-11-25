@@ -1,7 +1,9 @@
 #nullable enable
-namespace Corsac.Lang.X64;
+namespace Corsac.Lang.X86;
 
 /// <summary>
+/// LONG MODE'S PART OF THE PEEPHOLE (Peephole.Run's, where X86Mode.Long).
+///
 /// The control-flow tidying after allocation, where the blocks are final:
 ///
 ///   - a jump to a block that holds nothing but another jump goes straight
@@ -10,17 +12,14 @@ namespace Corsac.Lang.X64;
 ///   - a jump to the very next block is dropped: control falls into it;
 ///   - a block nothing reaches goes (Unreachable).
 ///
-/// The selector writes every branch as a conditional jump and an
-/// unconditional one, so that nothing depends on block order; this is where
-/// block order is known and the jumps it makes redundant go.
-///
-/// And one move: `mov r32, r32` onto itself, where the register's last
+/// And one move no 32-bit machine has: `mov r32, r32` onto itself, the
+/// zero-extension of a register's upper half, where the register's last
 /// write in the block was already a 32-bit one (ZeroExtended), or where
 /// nothing reads its upper half before it is written again (UpperRead).
 /// </summary>
-internal static class Peephole
+internal static partial class Peephole
 {
-    public static void Run(MFunction m)
+    private static void RunLong(MFunction m)
     {
         foreach (MBlock b in m.Blocks)
         {
@@ -60,49 +59,6 @@ internal static class Peephole
     }
 
     /// <summary>
-    /// A BLOCK NOTHING REACHES -- no jump, no fall-through, no jump table, no
-    /// label taken, no landing pad -- is never run, and goes, as the x86
-    /// backend's (X86.Peephole.Unreachable): threading left behind a block of
-    /// one `jmp` laid out after the function's `ret`, which a loop whose test
-    /// was copied to its bottom no longer reaches (freestanding test 24).
-    /// The entry and every landing pad are roots, and every block whose
-    /// address an instruction takes: an unwind's indirect jump (JmpInd,
-    /// SelectUnwind) goes to a handler whose address a `lea` of its label
-    /// took, and a handler is a landing pad besides.
-    /// </summary>
-    private static void Unreachable(MFunction m)
-    {
-        int n = m.Blocks.Count;
-        if (n < 2) return;
-        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
-        for (int b = 0; b < n; b++) index[m.Blocks[b]] = b;
-        bool[] reached = new bool[n];
-        Stack<int> work = new();
-        void Root(MBlock? block)
-        {
-            if (block is not null && index.TryGetValue(block, out int at) && !reached[at]) { reached[at] = true; work.Push(at); }
-        }
-        Root(m.Blocks[0]);
-        foreach (MBlock block in m.Blocks)
-        {
-            if (block.Source is { IsLandingPad: true }) Root(block);
-            foreach (MInstr i in block.Instrs)
-                foreach (MOperand o in i.Operands)
-                {
-                    if (o is MMem { Label: { } table }) Root(table);
-                    else if (o is MLabel { Target: var taken } && i.Op is not (MOp.Jmp or MOp.Jcc)) Root(taken);
-                }
-        }
-        while (work.Count > 0)
-            foreach (MBlock to in m.Successors(work.Pop())) Root(to);
-        if (Array.TrueForAll(reached, x => x)) return;
-        List<MBlock> kept = new(n);
-        for (int b = 0; b < n; b++) if (reached[b]) kept.Add(m.Blocks[b]);
-        m.Blocks.Clear();
-        m.Blocks.AddRange(kept);
-    }
-
-    /// <summary>
     /// A 4-BYTE MOVE ONTO ITSELF CLEARS THE UPPER HALF, and that is all it
     /// does: the allocator keeps one where a coalesced copy was written
     /// `mov r32, r32`. Where the register's last write before it in the
@@ -118,7 +74,7 @@ internal static class Peephole
         {
             MInstr i = s[k];
             if (i.Op != MOp.Mov || i.Width != 4 || i.Operands.Count != 2
-                || i.Operands[0] is not MReg { IsPhys: true, IsFloat: false } r || i.Operands[1] is not MReg c || c.Id != r.Id)
+                || i.Operands[0] is not MReg { IsMachine: true, IsFloat: false } r || i.Operands[1] is not MReg c || c.Id != r.Id)
             {
                 continue;
             }
@@ -209,7 +165,7 @@ internal static class Peephole
             {
                 MInstr i = s[k];
                 if (i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2
-                    && i.Operands[0] is MReg { IsPhys: true, IsFloat: false } r && i.Operands[1] is MReg c && c.Id == r.Id
+                    && i.Operands[0] is MReg { IsMachine: true, IsFloat: false } r && i.Operands[1] is MReg c && c.Id == r.Id
                     && (read & (1UL << r.Id)) == 0)
                 {
                     // Nothing after reads more than its low half: the move
@@ -234,12 +190,12 @@ internal static class Peephole
         // A call takes every register it clobbers whole.
         if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeepRax or MOp.CallKeepCas)
         {
-            foreach (int clobbered in Roles.ImplicitDefs(i))
+            foreach (int clobbered in Implicit.Defs(i))
                 if (clobbered < MReg.XmmBase) read &= ~(1UL << clobbered);
         }
         for (int k = 0; k < i.Operands.Count; k++)
         {
-            if (i.Operands[k] is MReg { IsFloat: false } r && r.Id < MReg.XmmBase && (Roles.Of(i, k) & Roles.Role.Def) != 0
+            if (i.Operands[k] is MReg { IsFloat: false } r && r.Id < MReg.XmmBase && (Roles.Of(i.Op, k) & Roles.Role.Def) != 0
                 && WritesWhole(i, r.Id))
             {
                 read &= ~(1UL << r.Id);
@@ -253,12 +209,12 @@ internal static class Peephole
                     if (mem.Base is { IsFloat: false } b && b.Id < MReg.XmmBase) read |= 1UL << b.Id;
                     if (mem.Index is { IsFloat: false } x && x.Id < MReg.XmmBase) read |= 1UL << x.Id;
                     break;
-                case MReg { IsFloat: false } r when r.Id < MReg.XmmBase && (Roles.Of(i, k) & Roles.Role.Use) != 0 && !ReadsLowHalf(i, k):
+                case MReg { IsFloat: false } r when r.Id < MReg.XmmBase && (Roles.Of(i.Op, k) & Roles.Role.Use) != 0 && !ReadsLowHalf(i, k):
                     read |= 1UL << r.Id;
                     break;
             }
         }
-        foreach (int used in Roles.ImplicitUses(i))
+        foreach (int used in Implicit.Uses(i))
         {
             if (used >= MReg.XmmBase) continue;
             // What a function returning an int hands back is eax alone.
@@ -303,12 +259,12 @@ internal static class Peephole
     {
         for (int k = 0; k < i.Operands.Count; k++)
         {
-            if (i.Operands[k] is MReg r && r.Id == reg && (Roles.Of(i, k) & Roles.Role.Def) != 0)
+            if (i.Operands[k] is MReg r && r.Id == reg && (Roles.Of(i.Op, k) & Roles.Role.Def) != 0)
             {
                 return true;
             }
         }
-        return Roles.ImplicitDefs(i).Contains(reg);
+        return Implicit.Defs(i).Contains(reg);
     }
 
     /// <summary>
@@ -323,17 +279,17 @@ internal static class Peephole
         // A 4-byte XCHG or XADD writes its register operands as any 32-bit
         // result is written: `lock xadd [m], ecx` left the `mov ecx, ecx`
         // after every Interlocked.Increment.
-        if (i.Op is MOp.Xchg or MOp.Xadd && i.Width == 4 && !Roles.ImplicitDefs(i).Contains(reg))
+        if (i.Op is MOp.Xchg or MOp.Xadd && i.Width == 4 && !Implicit.Defs(i).Contains(reg))
         {
             return NamesRegister(i, reg);
         }
-        if (i.Operands.Count == 0 || i.Operands[0] is not MReg d || d.Id != reg || Roles.ImplicitDefs(i).Contains(reg))
+        if (i.Operands.Count == 0 || i.Operands[0] is not MReg d || d.Id != reg || Implicit.Defs(i).Contains(reg))
         {
             return false;
         }
         for (int k = 1; k < i.Operands.Count; k++)
         {
-            if (i.Operands[k] is MReg other && other.Id == reg && (Roles.Of(i, k) & Roles.Role.Def) != 0)
+            if (i.Operands[k] is MReg other && other.Id == reg && (Roles.Of(i.Op, k) & Roles.Role.Def) != 0)
             {
                 return false;
             }

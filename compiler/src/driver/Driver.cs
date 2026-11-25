@@ -1848,7 +1848,7 @@ public static class Driver
         if (preinitRecords is not null) PreinitMachine.Remember(obj, preinitRecords);
         Phase("codegen");
         if (Switches.ReportPhases)
-            Console.Error.WriteLine("phase " + (backend == x86Backend ? Corsac.Lang.X86.FrameSlotLiveness.Stats() : Corsac.Lang.X64.FrameSlotLiveness.Stats()));
+            Console.Error.WriteLine("phase " + Corsac.Lang.X86.FrameSlotLiveness.Stats());
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(windows ? TargetContract.WindowsTlsSlot : freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode,
             storeSequences: module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore)).Attach(obj);

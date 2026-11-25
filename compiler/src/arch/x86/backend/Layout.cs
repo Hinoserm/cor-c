@@ -23,8 +23,8 @@ namespace Corsac.Lang.X86;
 ///   still to be placed.
 /// - When neither can follow, the earliest segment not yet placed does. The
 ///   entry is always first.
-/// - A segment that ends in a trap (the int3 after a call that never
-///   returns) follows nothing and goes after all the others.
+/// - A segment that ends in a trap (the int3 or ud2 after a call that
+///   never returns) follows nothing and goes after all the others.
 ///
 /// Deterministic: it reads nothing but the blocks' order and their jumps.
 /// </summary>
@@ -84,7 +84,7 @@ internal static class Layout
             int end = (s + 1 < segments ? starts[s + 1] : n) - 1;
             // The trap after a call that never returns, not a breakpoint the
             // program runs on from (`int3` with an operand, Peephole.BeforeTrap).
-            cold[s] = m.Blocks[end].Instrs.Count > 0 && m.Blocks[end].Instrs[^1] is { Op: MOp.Int3, Operands.Count: 0 };
+            cold[s] = m.Blocks[end].Instrs.Count > 0 && EndsInTrap(m.Blocks[end].Instrs[^1]);
             if (cold[s])
             {
                 for (int b = starts[s]; b <= end; b++)
@@ -144,6 +144,13 @@ internal static class Layout
     /// <paramref name="block"/>, or -1. Segments are numbered in the old
     /// order, so one ahead of it has a larger number.
     /// </summary>
+    /// <summary>
+    /// Whether an instruction is the trap after a call that never returns:
+    /// `ud2`, or `int3` with no operand (one with an operand is a breakpoint
+    /// the program runs on from, MInstr.EndsFlow).
+    /// </summary>
+    private static bool EndsInTrap(MInstr i) => i.Op == MOp.Ud2 || i is { Op: MOp.Int3, Operands.Count: 0 };
+
     private static int Follower(MBlock block, int current, Dictionary<MBlock, int> index, int[] segmentOf, bool[] placed, bool[] cold)
     {
         List<MInstr> instrs = block.Instrs;

@@ -38,14 +38,14 @@ public sealed class Frame
     public IReadOnlyList<(int Offset, int Bytes, int Align)> Allocations => _allocations;
 
     /// <summary>Bytes of locals below EBP, rounded to a word.</summary>
-    public int Size => (_size + 3) & ~3;
+    public int Size => (_size + X86Mode.Word - 1) & ~(X86Mode.Word - 1);
 
     /// <summary>Reserve bytes with the given alignment; returns the (negative) EBP offset.</summary>
     public int Allocate(int bytes, int align)
     {
-        if (align < 4)
+        if (align < X86Mode.Word)
         {
-            align = 4;
+            align = X86Mode.Word;
         }
         _size = (_size + bytes + align - 1) / align * align;
         _allocations.Add((-_size, bytes, align));
@@ -87,7 +87,7 @@ public sealed class Frame
     {
         if (!_slots.TryGetValue(slot, out int off))
         {
-            off = Allocate(Math.Max(slot.Bytes, 4), slot.Align);
+            off = Allocate(Math.Max(slot.Bytes, X86Mode.Word), slot.Align);
             _slots[slot] = off;
         }
         return off;
@@ -157,7 +157,7 @@ public sealed class Frame
     }
 
     /// <summary>A spill slot for one 32-bit virtual register.</summary>
-    public int Spill() => Allocate(4, 4);
+    public int Spill() => Allocate(X86Mode.Word, X86Mode.Word);
 
     /// <summary>
     /// The IR frame slots -- objects the lifetime passes put in the frame, the
@@ -170,7 +170,7 @@ public sealed class Frame
     {
         foreach (var pair in _slots)
         {
-            yield return (pair.Value, Math.Max(pair.Key.Bytes, 4));
+            yield return (pair.Value, Math.Max(pair.Key.Bytes, X86Mode.Word));
         }
     }
 }

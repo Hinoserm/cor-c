@@ -62,7 +62,7 @@ internal static class FramePointerFree
             foreach (MInstr i in b.Instrs)
             {
                 if ((i.Op is MOp.Call or MOp.CallInd && !m.ColdFrames) || i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe
-                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd)
+                    or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf)
                     throw new InvalidOperationException($"{m.Source.Name}: {i.Op} in a function without a frame");
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0)
@@ -134,7 +134,7 @@ internal static class FramePointerFree
                     calls = true;
                 }
                 if (i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe or MOp.Push or MOp.Pop
-                    or MOp.Pushfd or MOp.Popfd or MOp.CallerReg or MOp.InlineAsm or MOp.SaveRegs) return false;
+                    or MOp.Pushf or MOp.Popf or MOp.CallerReg or MOp.InlineAsm or MOp.SaveRegs) return false;
                 foreach (MOperand o in i.Operands)
                 {
                     if (o is MReg { Id: (int)Gpr.Ebp or MReg.EbpDataId }) return false;

@@ -195,10 +195,10 @@ internal static class AsmText
             case MOp.Cdq:
                 yield return "cdq";
                 yield break;
-            case MOp.Pushfd:
+            case MOp.Pushf:
                 yield return "pushfd";
                 yield break;
-            case MOp.Popfd:
+            case MOp.Popf:
                 yield return "popfd";
                 yield break;
             case MOp.RepMovsb:

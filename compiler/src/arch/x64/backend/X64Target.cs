@@ -2,6 +2,8 @@
 using Corsac.Lang.RegAlloc;
 using Role = Corsac.Lang.RegAlloc.Role;
 
+using Corsac.Lang.X86;
+
 namespace Corsac.Lang.X64;
 
 /// <summary>
@@ -236,7 +238,7 @@ internal sealed class X64Target : ITarget
         // An address an LEA makes from nothing the allocator places -- off RBP,
         // which holds still, or a symbol RIP-relative -- remade where wanted;
         // not off RSP, which every push moves, nor through the GOT.
-        else if (i.Op == MOp.Lea && i.Width == 8 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsPhys: false, IsFloat: false }
+        else if (i.Op == MOp.Lea && i.Width == 8 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false, IsFloat: false }
             && i.Operands[1] is MMem { Index: null, Label: null, IsSpill: false, Got: false, Segment: 0 } m
             && (m.Base is null ? m.Symbol is not null : m.Base.Id == (int)Gpr.Rbp && m.Symbol is null))
             constant = m;
@@ -261,7 +263,7 @@ internal sealed class X64Target : ITarget
             MayImmediate = mayImmediate,
             MayImmediateWide = mayImmediateWide,
             Targets = targets,
-            Unconditional = i.Op is MOp.Jmp or MOp.Ret or MOp.JmpTable or MOp.JmpInd or MOp.Epilogue or MOp.Ud2,
+            Unconditional = i.EndsFlow,
             JumpsAnywhere = i.Op == MOp.JmpInd,
             HomeSlot = _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null,
             Line = i.Line,
@@ -293,7 +295,7 @@ internal sealed class X64Target : ITarget
             MOp.Shl or MOp.Shr or MOp.Sar
                 => countImm ? Effect.WritesFlags : Effect.ReadsFlags | Effect.WritesFlags,
             MOp.Rol or MOp.Ror => Effect.ReadsFlags | Effect.WritesFlags,
-            MOp.Setcc or MOp.Cmovcc => Effect.ReadsFlags,
+            MOp.Setcc or MOp.Cmov => Effect.ReadsFlags,
             _ => Effect.Barrier,
         };
         if (e == Effect.Barrier) return e;
@@ -301,7 +303,7 @@ internal sealed class X64Target : ITarget
         {
             if (i.Operands[k] is not MMem m || i.Op == MOp.Lea) continue;
             if (m.Segment != 0) return Effect.Barrier;
-            Roles.Role role = Roles.Of(i, k);
+            Roles.Role role = Roles.Of(i.Op, k);
             if ((role & Roles.Role.Use) != 0) e |= Effect.ReadsMemory;
             if ((role & Roles.Role.Def) != 0) e |= Effect.WritesMemory;
         }
@@ -341,7 +343,7 @@ internal sealed class X64Target : ITarget
                         if (mem.Disp >= 0) touched.Add((mem.Disp, mem.Disp + 16));
                         continue;
                     }
-                    if (i.Op == MOp.Mov && k == 1 && i.Width == 8 && !i.Lock && i.Operands[0] is MReg { IsPhys: false, IsFloat: false } && (mem.Disp & 7) == 0)
+                    if (i.Op == MOp.Mov && k == 1 && i.Width == 8 && !i.Lock && i.Operands[0] is MReg { IsMachine: false, IsFloat: false } && (mem.Disp & 7) == 0)
                         load[mem.Disp] = load.ContainsKey(mem.Disp) ? null : i;
                     else touched.Add((mem.Disp, mem.Disp + 16));
                 }
@@ -483,7 +485,7 @@ internal sealed class X64Target : ITarget
         {
             Place.Slot => Slot(at.Slot),
             Place.Constant => (MImm)at.Constant!,
-            _ => original.IsPhys ? original : Out(at.Reg),
+            _ => original.IsMachine ? original : Out(at.Reg),
         };
 
     /// <summary>A register the allocator placed a value in: RBP as the value it holds (MReg.RbpData), no frame's base.</summary>

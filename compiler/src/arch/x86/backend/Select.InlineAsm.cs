@@ -9,7 +9,8 @@ namespace Corsac.Lang.X86;
 /// An asm block as an instruction (MOp.InlineAsm): the block read and
 /// planned (InlineAsm.Analyze, InlineAsm.Bind), where each local's slot is
 /// among the instruction's operands, and the registers the allocator sees
-/// it read and write.
+/// it read and write. One record for both modes of the family (X86Mode):
+/// the registers by their numbers, eight of them or sixteen.
 /// </summary>
 public sealed class InlineAsmCode
 {
@@ -21,11 +22,11 @@ public sealed class InlineAsmCode
     public required Gpr[] Uses { get; init; }
     /// <summary>The registers the block destroys.</summary>
     public required Gpr[] Defs { get; init; }
-    /// <summary>The XMM registers it writes, by number.</summary>
+    /// <summary>The XMM registers it writes, a bit each by number.</summary>
     public required uint XmmClobbers { get; init; }
     /// <summary>
     /// Whether it needs the method's frame as it is: a local in a slot, or
-    /// ESP or EBP named or moved (a push, an address off either). Without,
+    /// the stack pointer or the frame's base named or moved (a push, an address off either). Without,
     /// its method may still go without a frame pointer (X86Target.Leaf).
     /// </summary>
     public bool NeedsFrame => Analysis.UsesStack || Plan.InMemory.Contains(true);
@@ -47,7 +48,8 @@ public sealed class InlineAsmCode
             {
                 try
                 {
-                    _bytes = InlineAsm.Assemble(text, 32, InlineAsm.Baseline(Target.Current.X86Profile, 32));
+                    int bits = X86Mode.Word * 8;
+                    _bytes = InlineAsm.Assemble(text, bits, InlineAsm.Baseline(Target.Current.X86Profile, bits));
                 }
                 catch (AsmException e)
                 {
@@ -63,19 +65,17 @@ public sealed class InlineAsmCode
         }
     }
 
-    /// <summary>A frame slot as the assembler writes it: `[ebp - 12]`.</summary>
+    /// <summary>A frame slot as the assembler writes it: `[ebp - 12]`, `[rbp - 12]`.</summary>
     private static string Address(MMem m)
     {
-        string base_ = m.Base is { } b ? Operands32[b.Id] : throw new InvalidOperationException("an asm slot has no base register");
+        string base_ = m.Base is { IsPhys: true } b ? X86Mode.GprName(b.Id) : throw new InvalidOperationException("an asm slot has no base register");
         return m.Disp < 0 ? $"[{base_} - {-(long)m.Disp}]" : $"[{base_} + {m.Disp}]";
     }
-
-    private static readonly string[] Operands32 = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi" };
 
     public static Gpr[] Registers(uint mask)
     {
         List<Gpr> r = new();
-        for (int g = 0; g < 8; g++) if ((mask & (1u << g)) != 0) r.Add((Gpr)g);
+        for (int g = 0; g < X86Mode.Gprs; g++) if ((mask & (1u << g)) != 0) r.Add((Gpr)g);
         return r.ToArray();
     }
 }

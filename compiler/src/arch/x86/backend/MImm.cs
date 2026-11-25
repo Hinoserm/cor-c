@@ -22,6 +22,7 @@ public sealed class MImm : MOperand
 
     public bool IsPlain => Symbol is null && Label is null;
     public bool FitsSbyte => IsPlain && Value is >= -128 and <= 127;
+    public bool FitsInt32 => IsPlain && Value is >= int.MinValue and <= int.MaxValue;
 
     public override string ToString()
     {

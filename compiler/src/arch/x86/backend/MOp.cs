@@ -25,7 +25,8 @@ public enum MOp : byte
     Shld, Shrd,     // dest, source, count
     Cdq,
     /// <summary>pushfd and popfd: the flags kept across what a measure inserts (SpillCount).</summary>
-    Pushfd, Popfd,
+    /// <summary>pushfd / popfd, pushfq / popfq in long mode: the flags as a word of the stack.</summary>
+    Pushf, Popf,
     Setcc,
     /// <summary>
     /// cmovcc r32, r/m32, the P6's conditional move (X86Feature.Cmov): operand 0
@@ -344,4 +345,28 @@ public enum MOp : byte
     /// made only at the end, by Peephole.IncDec, where nothing reads CF.
     /// </summary>
     Inc, Dec,
+
+    // ---- long mode's own (X64's selector and encoder; i386 makes none) ----------------
+    /// <summary>A call into a store-sequence stub that keeps every register (RAX the answer for the Rax and Cas ones): never a safepoint.</summary>
+    CallKeepRax, CallKeepCas,
+    /// <summary>cmovcc r, r/m.</summary>
+    Cmovcc,
+    /// <summary>cvttss2si / cvttsd2si r, xmm/m.</summary>
+    CvtFToInt,
+    /// <summary>cwd / cdq / cqo by Width: the accumulator's sign into the data register.</summary>
+    Cwd,
+    Mfence,
+    /// <summary>movd / movq between a general and an XMM register.</summary>
+    MovGx,
+    /// <summary>mul / imul r/m: the double-width product in RDX:RAX.</summary>
+    MulWide,
+    RepMovsq, RepStosq,
+    Rol,
+    /// <summary>int n.</summary>
+    SoftInt,
+    Swapgs, Syscall,
+    /// <summary>The trap after a call that never returns.</summary>
+    Ud2,
+    /// <summary>xorps / xorpd.</summary>
+    XorF,
 }

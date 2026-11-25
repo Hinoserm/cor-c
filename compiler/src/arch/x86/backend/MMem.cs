@@ -44,6 +44,33 @@ public sealed class MMem : MOperand
     /// </summary>
     public MBlock? Label { get; init; }
 
+    /// <summary>Long mode: the address is read from the symbol's GOT slot, [rip + symbol@GOTPCREL].</summary>
+    public bool Got { get; init; }
+
+    /// <summary>Long mode: a segment override prefix (0x64 FS, 0x65 GS), or 0.</summary>
+    public byte Segment { get; init; }
+
+    /// <summary>Long mode: [rip + symbol + disp] -- there is no absolute form there, every named thing is reached from the instruction.</summary>
+    public static MMem Rip(string symbol, int disp) => new(null, disp) { Symbol = symbol };
+    public static MMem RipGot(string symbol) => new(null, 0) { Symbol = symbol, Got = true };
+    public bool IsRipRelative => Symbol is not null || Label is not null;
+
+    /// <summary>
+    /// The same access by other registers: base, displacement, index and
+    /// scale as given; what the access is of -- a device's memory, a
+    /// segment's -- kept. No symbol, block or spill slot: an address of
+    /// registers and a number (AddressFold's Plain).
+    /// </summary>
+    public MMem Addressed(MReg? @base, int disp, MReg? index = null, int scale = 1)
+        => new(@base, disp) { Index = index, Scale = scale, Device = Device, Segment = Segment };
+
+    /// <summary>The same reference, its displacement moved.</summary>
+    public MMem WithDisp(int delta) => new(Base, Disp + delta)
+    {
+        Index = Index, Scale = Scale, Symbol = Symbol, Label = Label, IsSpill = IsSpill, Segment = Segment,
+        Aligned = Aligned, Device = Device, Reloc = Reloc, Got = Got,
+    };
+
     public MMem(MReg? @base, int disp)
     {
         Base = @base;
@@ -54,11 +81,19 @@ public sealed class MMem : MOperand
     public static MMem Spill(int offset) => new(MReg.Of(Gpr.Ebp), offset) { IsSpill = true };
     public static MMem Abs(string symbol, int disp) => new(null, disp) { Symbol = symbol };
 
+    /// <summary>
+    /// A named datum of this image as the mode reaches it with no register:
+    /// by its address on i386 (code that is not position-independent), from
+    /// the instruction in long mode. One shape, read by each encoder its way.
+    /// </summary>
+    public static MMem Data(string symbol, int disp) => X86Mode.Long ? Rip(symbol, disp) : Abs(symbol, disp);
+
     /// <summary>The same place reached from the GOT pointer: [EBX + symbol@GOTOFF + disp].</summary>
     public static MMem GotOff(MReg got, string symbol, int disp) => new(got, disp) { Symbol = symbol, Reloc = RelocKind.GotOff };
 
     public override string ToString()
     {
+        if (X86Mode.Long) return LongString();
         List<string> parts = new();
         if (Base is not null)
         {
@@ -78,5 +113,36 @@ public sealed class MMem : MOperand
             s = parts.Count == 0 ? Disp.ToString() : Disp < 0 ? $"{s}-{-Disp}" : $"{s}+{Disp}";
         }
         return $"[{s}]";
+    }
+
+    /// <summary>As long mode writes it: RIP-relative where it names a symbol or a block, a segment prefix said.</summary>
+    private string LongString()
+    {
+        List<string> parts = new();
+        if (Symbol is not null)
+        {
+            parts.Add("rip");
+            parts.Add(Symbol);
+        }
+        if (Label is not null)
+        {
+            parts.Add("rip");
+            parts.Add(Label.Name);
+        }
+        if (Base is not null)
+        {
+            parts.Add(Base.ToString());
+        }
+        if (Index is not null)
+        {
+            parts.Add(Scale == 1 ? Index.ToString() : $"{Index}*{Scale}");
+        }
+        string s = string.Join("+", parts);
+        if (Disp != 0 || parts.Count == 0)
+        {
+            s = parts.Count == 0 ? Disp.ToString() : Disp < 0 ? $"{s}-{-Disp}" : $"{s}+{Disp}";
+        }
+        string segment = Segment == 0x64 ? "fs:" : Segment == 0x65 ? "gs:" : "";
+        return $"{segment}[{s}]";
     }
 }

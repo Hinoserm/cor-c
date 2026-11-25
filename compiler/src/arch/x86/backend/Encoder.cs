@@ -663,10 +663,10 @@ internal sealed class Encoder
             case MOp.Cdq:
                 B(0x99);
                 break;
-            case MOp.Pushfd:
+            case MOp.Pushf:
                 B(0x9C);
                 break;
-            case MOp.Popfd:
+            case MOp.Popf:
                 B(0x9D);
                 break;
             case MOp.Setcc:

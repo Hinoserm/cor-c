@@ -4,6 +4,13 @@ using Role = Corsac.Lang.X86.Roles.Role;
 namespace Corsac.Lang.X86;
 
 /// <summary>
+/// ONE PASS FOR BOTH MODES of the family. Run where the processor has the
+/// conditional moves: every long-mode one, on i386 by --cpu (X86Backend).
+/// A zero selected as `xor v, v` is moved by an arm as the `mov v, 0` it
+/// means; a move or a cmov keeps its width, four bytes or the mode's word
+/// (Widths); a source in memory is the frame's or a static's own storage,
+/// never another segment's, a device's or one reached through the GOT.
+///
 /// A SMALL CHOICE WITHOUT A BRANCH where the processor has conditional moves
 /// (X86Feature.Cmov). A ternary, Math.Max, Min and Clamp, and an `if` that only
 /// assigns, are selected as a diamond of blocks that each move a value and
@@ -82,6 +89,8 @@ internal static class IfConvert
         Dictionary<MBlock, int> refs = References(m);
         int[] occurrences = Occurrences(m);
         Loops? loops = null;
+        // Which registers are only ever written four bytes wide (Narrow): made when first asked, long mode only.
+        bool[]? narrow = null;
 
         // Every candidate first, against the unchanged blocks: a triangle's
         // registers are then followed through the function once.
@@ -143,6 +152,7 @@ internal static class IfConvert
             if (inverted) c = c.Negate();
             loops ??= new Loops(m);
             if (loops.Carries(a, taken, notTaken)) continue;
+            if (!Widths(m, taken, notTaken, ref narrow)) continue;
             if (notTaken is null)
             {
                 // The cmov reads what it may keep: it must be there to read.
@@ -178,22 +188,23 @@ internal static class IfConvert
                     // condition turned round: a cmov's source has no
                     // immediate form, and would need a register of its own.
                     if (b is MImm && a2 is not MImm) (b, a2, cc) = (a2, b, c.Negate());
+                    // Both arms' moves are of one width (Widths).
                     // The plain move after the compare, MOV leaving the flags
                     // alone: before it, v would be live beside everything
                     // the compare reads, and in a loop of six registers that
                     // spilled the array (a `xor` for a zero is not worth it).
-                    instrs.Add(new MInstr(MOp.Mov, v, a2) { Line = move.Line });
+                    instrs.Add(new MInstr(MOp.Mov, v, a2) { Width = move.Width, Line = move.Line });
                     // The same value either way is the move alone.
                     if (Same(a2, b)) continue;
                 }
                 if (b is MImm imm)
                 {
                     MReg t = m.NewReg();
-                    MInstr load = new(MOp.Mov, t, imm) { Line = move.Line };
+                    MInstr load = new(MOp.Mov, t, imm) { Width = move.Width, Line = move.Line };
                     if (before) instrs.Insert(compare++, load); else instrs.Add(load);
                     b = t;
                 }
-                cmovs.Add(new MInstr(MOp.Cmov, v, b) { Cond = cc, Line = move.Line });
+                cmovs.Add(new MInstr(MOp.Cmov, v, b) { Cond = cc, Width = move.Width, Line = move.Line });
             }
             instrs.AddRange(cmovs);
             instrs.Add(new MInstr(MOp.Jmp, new MLabel(taken.Join)) { Line = line });
@@ -203,6 +214,43 @@ internal static class IfConvert
             if (forwarder is not null && --refs[forwarder] == 0) removed.Add(forwarder);
         }
         if (removed.Count > 0) m.Blocks.RemoveAll(removed.Contains);
+    }
+
+    /// <summary>
+    /// WHETHER A CMOV OF THE MOVES' WIDTH DOES WHAT THEY DID. In long mode a
+    /// four-byte move zero-extends what it writes, and so does a four-byte
+    /// cmov -- also when its condition fails, to what it keeps: in a diamond
+    /// both arms' moves must be of one width, and in a triangle a move
+    /// narrower than the register only of a register every write of which
+    /// is four bytes (`narrow`), whose upper half is nought already. A cmov
+    /// of the whole register keeps all of what it keeps: on i386 every one.
+    /// </summary>
+    private static bool Widths(MFunction m, Arm taken, Arm? notTaken, ref bool[]? narrow)
+    {
+        foreach (MInstr move in taken.Moves)
+        {
+            int v = ((MReg)move.Operands[0]).Id;
+            if (notTaken is { } other)
+            {
+                if (other.Moves.First(o => ((MReg)o.Operands[0]).Id == v).Width != move.Width) return false;
+            }
+            else if (move.Width < X86Mode.Word && !(narrow ??= Narrow(m))[v]) return false;
+        }
+        return true;
+    }
+
+    /// <summary>Each virtual register every write of which is four bytes wide.</summary>
+    private static bool[] Narrow(MFunction m)
+    {
+        bool[] narrow = new bool[m.NextVReg];
+        Array.Fill(narrow, true);
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                    if (i.Operands[k] is MReg { IsMachine: false } r && (Roles.Of(i.Op, k) & Role.Def) != 0
+                        && (i.Width != 4 || i.Op is MOp.Movsx or MOp.Movzx or MOp.Lea or MOp.Pop or MOp.MovGx or MOp.CvtFToInt))
+                        narrow[r.Id] = false;
+        return narrow;
     }
 
     /// <summary>
@@ -254,6 +302,8 @@ internal static class IfConvert
         {
             MInstr i = instrs[k];
             MReg v = (MReg)i.Operands[0];
+            // `xor v, v` is the selector's zero: a move of it.
+            if (i.Op == MOp.Xor) i = new MInstr(MOp.Mov, v, new MImm(0)) { Width = 4, Line = i.Line };
             foreach (MInstr earlier in moves)
                 if (((MReg)earlier.Operands[0]).Id == v.Id) return null;
             moves.Add(i);
@@ -264,10 +314,10 @@ internal static class IfConvert
         Dictionary<int, int> here = new();
         foreach (MInstr i in instrs)
             foreach (MOperand o in i.Operands)
-                if (o is MReg { IsPhys: false } r) here[r.Id] = here.GetValueOrDefault(r.Id) + 1;
+                if (o is MReg { IsMachine: false } r) here[r.Id] = here.GetValueOrDefault(r.Id) + 1;
         foreach (MInstr i in computed)
         {
-            if (!Computes(i) || i.Operands[0] is not MReg { IsPhys: false } t || here[t.Id] != occurrences[t.Id]) return null;
+            if (!Computes(i) || i.Operands[0] is not MReg { IsMachine: false } t || here[t.Id] != occurrences[t.Id]) return null;
             // A move's value read from a register the computation writes is
             // the computed one: the move then reads that register, which
             // only this block names, so the cmov reads it too.
@@ -276,8 +326,9 @@ internal static class IfConvert
     }
 
     private static bool IsMove(MInstr i)
-        => i.Op == MOp.Mov && i.Width == 4 && !i.Lock && i.Operands.Count == 2
-           && i.Operands[0] is MReg { IsPhys: false } && Source(i.Operands[1]);
+        => i.Op == MOp.Mov && (i.Width == 4 || i.Width == X86Mode.Word) && !i.Lock && i.Operands.Count == 2
+           && i.Operands[0] is MReg { IsMachine: false, IsFloat: false } && Source(i.Operands[1])
+           || i.Op == MOp.Xor && i.Width == 4 && i.Operands is [MReg { IsMachine: false, IsFloat: false } x, MReg y] && x.Id == y.Id;
 
     /// <summary>
     /// Arithmetic that may run whichever way A goes: on registers and
@@ -286,9 +337,10 @@ internal static class IfConvert
     /// </summary>
     private static bool Computes(MInstr i)
     {
-        if (i.Lock || i.Width != 4 || i.Operands.Count == 0 || i.Operands[0] is not MReg { IsPhys: false }) return false;
+        if (i.Lock || i.Width != 4 && i.Width != X86Mode.Word || i.Operands.Count == 0 || i.Operands[0] is not MReg { IsMachine: false, IsFloat: false }) return false;
         foreach (MOperand o in i.Operands)
-            if (o is MMem || o is MReg { IsPhys: true } || o is MImm { IsPlain: false } || o is MLabel) return false;
+            if (o is MMem || o is MReg { IsMachine: true } || o is MReg { IsFloat: true } || X86Mode.Long && o is MImm { FitsInt32: false } && i.Op != MOp.Mov
+                || o is MImm { IsPlain: false } || o is MLabel) return false;
         return i.Op switch
         {
             MOp.Mov or MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Imul => i.Operands.Count == 2,
@@ -307,11 +359,11 @@ internal static class IfConvert
             foreach (MInstr i in b.Instrs)
                 foreach (MOperand o in i.Operands)
                 {
-                    if (o is MReg { IsPhys: false } r) counts[r.Id]++;
+                    if (o is MReg { IsMachine: false } r) counts[r.Id]++;
                     else if (o is MMem mem)
                     {
-                        if (mem.Base is { IsPhys: false } mb) counts[mb.Id]++;
-                        if (mem.Index is { IsPhys: false } mx) counts[mx.Id]++;
+                        if (mem.Base is { IsMachine: false } mb) counts[mb.Id]++;
+                        if (mem.Index is { IsMachine: false } mx) counts[mx.Id]++;
                     }
                 }
         return counts;
@@ -417,9 +469,10 @@ internal static class IfConvert
     /// </summary>
     private static bool Source(MOperand o) => o switch
     {
-        MReg r => !r.IsPhys,
-        MImm => true,
-        MMem mem => mem.Index is null && !mem.Device
+        MReg r => !r.IsMachine && !r.IsFloat,
+        // An address as a constant is one instruction on i386; long mode reaches it by an LEA, which is not this.
+        MImm imm => !X86Mode.Long || imm.IsPlain,
+        MMem mem => mem.Index is null && !mem.Device && mem.Segment == 0 && !mem.Got
             && (mem.Base is { IsPhys: true, Phys: Gpr.Ebp or Gpr.Esp }
                 || mem.Base is null && (mem.Symbol is not null || mem.Label is not null)),
         _ => false,

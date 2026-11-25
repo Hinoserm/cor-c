@@ -129,7 +129,7 @@ internal sealed class X86Target : ITarget
                 // A caller's register is read off the frame pointer (Encoder's CallerReg).
                 // An asm block that pushes, names ESP or EBP or a slot off EBP.
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
-                    or MOp.CallSafe or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.CallerReg) return false;
+                    or MOp.CallSafe or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.CallerReg) return false;
                 if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
@@ -287,7 +287,7 @@ internal sealed class X86Target : ITarget
             MayImmediate = mayImmediate,
             MayImmediateWide = i.Width == 4 ? mayImmediate : 0,
             Targets = targets,
-            Unconditional = i.Op is MOp.Jmp or MOp.Ret or MOp.JmpTable or MOp.JmpInd or MOp.Epilogue or MOp.Int3,
+            Unconditional = i.EndsFlow,
             JumpsAnywhere = i.Op == MOp.JmpInd,
             HomeSlot = _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null,
             Line = i.Line,

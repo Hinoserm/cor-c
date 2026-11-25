@@ -3,67 +3,9 @@ using Corsac.Asm;
 using Corsac.Lang.Ir;
 using Operand = Corsac.Lang.Ir.Operand;
 
+using Corsac.Lang.X86;
+
 namespace Corsac.Lang.X64;
-
-/// <summary>
-/// An asm block as an instruction (MOp.InlineAsm), long mode's: as i386's
-/// (Corsac.Lang.X86.InlineAsmCode), its registers by their ids -- the
-/// general ones 0-15, the XMM ones from MReg.XmmBase.
-/// </summary>
-public sealed class InlineAsmCode
-{
-    public required InlineAsm.Analysis Analysis { get; init; }
-    public required InlineAsm.Plan Plan { get; init; }
-    /// <summary>Per local: its slot's index among the instruction's operands, or -1 where it has none.</summary>
-    public required int[] OperandOf { get; init; }
-    /// <summary>The registers the head's bindings load, by id.</summary>
-    public required int[] Uses { get; init; }
-    /// <summary>The registers the block destroys, by id: general ones and XMM ones.</summary>
-    public required int[] Defs { get; init; }
-    /// <summary>Whether it needs the method's frame as it is (i386's InlineAsmCode.NeedsFrame).</summary>
-    public bool NeedsFrame => Analysis.UsesStack || Plan.InMemory.Contains(true);
-
-    private string? _text;
-    private byte[]? _bytes;
-
-    /// <summary>The block's text with its slots where they are now, and its bytes, assembled once a text.</summary>
-    public (string Text, byte[] Bytes) Assembled(MInstr i)
-    {
-        string text = InlineAsm.Render(Analysis, Plan, l => Address((MMem)i.Operands[OperandOf[l]]));
-        lock (this)
-        {
-            if (_text != text)
-            {
-                try
-                {
-                    _bytes = InlineAsm.Assemble(text, 64, InlineAsm.Baseline(Target.Current.X86Profile, 64));
-                }
-                catch (AsmException e)
-                {
-                    // Where the frame came out larger than the binder's trial
-                    // (a LOOP's eight bits of reach past slots far from EBP):
-                    // an error of the compile, at the source line, not a crash.
-                    // The call's line is the block's brace (LowerAsm), its line 1.
-                    throw new InvalidOperationException($"line {i.Line + Math.Max(1, e.Line) - 1}: asm: {e.Message}");
-                }
-                _text = text;
-            }
-            return (text, _bytes!);
-        }
-    }
-
-    private static readonly string[] Names64 =
-    {
-        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-    };
-
-    /// <summary>A frame slot as the assembler writes it: `[rbp - 12]`.</summary>
-    private static string Address(MMem m)
-    {
-        string base_ = m.Base is { } b && b.Id < 16 ? Names64[b.Id] : throw new InvalidOperationException("an asm slot has no base register");
-        return m.Disp < 0 ? $"[{base_} - {-(long)m.Disp}]" : $"[{base_} + {m.Disp}]";
-    }
-}
 
 internal sealed partial class Selector
 {
@@ -134,7 +76,7 @@ internal sealed partial class Selector
             operands.Add(slot[k]!);
             if (plan.StoreBefore[k] && input[k] is { } value) StoreFrom(slot[k]!, value, width);
         }
-        List<int> uses = new();
+        List<Gpr> uses = new();
         foreach ((int gpr, int k) in plan.Inputs)
         {
             if (input[k] is not { } value)
@@ -144,14 +86,12 @@ internal sealed partial class Selector
             }
             int width = spec.Locals[k].Width == 8 ? 8 : 4;
             Mov(MReg.Of((Gpr)gpr), RM(value, width), width);
-            uses.Add(gpr);
+            uses.Add((Gpr)gpr);
         }
-        List<int> defs = new();
-        for (int g = 0; g < 16; g++) if ((plan.Clobbered & (1u << g)) != 0) defs.Add(g);
-        for (int x = 0; x < 16; x++) if ((analysis.XmmWritten & (1u << x)) != 0) defs.Add(MReg.XmmBase + x);
         InlineAsmCode code = new()
         {
-            Analysis = analysis, Plan = plan, OperandOf = operandOf, Uses = uses.ToArray(), Defs = defs.ToArray(),
+            Analysis = analysis, Plan = plan, OperandOf = operandOf,
+            Uses = uses.ToArray(), Defs = InlineAsmCode.Registers(plan.Clobbered), XmmClobbers = analysis.XmmWritten,
         };
         Emit(new MInstr(MOp.InlineAsm, operands.ToArray()) { Asm = code });
         foreach ((int k, int gpr) in plan.Outputs)

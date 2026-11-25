@@ -1,6 +1,8 @@
 #nullable enable
 using Corsac.Lang.Ir;
 
+using Corsac.Lang.X86;
+
 namespace Corsac.Lang.X64;
 
 using Block = Corsac.Lang.Ir.Block;
@@ -37,8 +39,8 @@ internal sealed partial class Selector
     private int _tables;
     private int _line;
 
-    internal static readonly Gpr[] IntArgRegs = { Gpr.Rdi, Gpr.Rsi, Gpr.Rdx, Gpr.Rcx, Gpr.R8, Gpr.R9 };
-    internal const int FloatArgRegs = 8;
+    internal static Gpr[] IntArgRegs => LongAbi.IntArgRegs;
+    internal const int FloatArgRegs = LongAbi.FloatArgRegs;
 
     private static readonly MReg Rax = MReg.Of(Gpr.Rax);
     private static readonly MReg Rcx = MReg.Of(Gpr.Rcx);
@@ -575,7 +577,10 @@ internal sealed partial class Selector
                 SelectSyscall(i);
                 break;
             case Opcode.Trap:
-                Emit(MOp.Int3);
+                // A breakpoint the program may run on from: marked as i386's
+                // is, the operand telling it from the trap that ends a path
+                // (MInstr.EndsFlow).
+                Emit(MOp.Int3, new MImm(1));
                 break;
             case Opcode.Pause:
                 Emit(MOp.Pause);

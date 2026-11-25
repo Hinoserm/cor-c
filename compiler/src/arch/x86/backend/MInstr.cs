@@ -8,11 +8,33 @@ using Block = Corsac.Lang.Ir.Block;
 public sealed class MInstr : MOperandList
 {
     public MOp Op { get; init; }
+
+    /// <summary>
+    /// Whether control never runs on past this instruction: a jump that is
+    /// not conditional, a return, an epilogue, and the trap after what never
+    /// returns -- `ud2`, or `int3` with no operand (i386's, which has no ud2
+    /// on a 486). An `int3` WITH an operand is a breakpoint the program runs
+    /// on from (Opcode.Trap, both selectors), and ends nothing.
+    /// </summary>
+    public bool EndsFlow => Op is MOp.Jmp or MOp.Ret or MOp.JmpTable or MOp.JmpInd or MOp.Epilogue or MOp.Ud2 || Op == MOp.Int3 && Operands.Count == 0;
     /// <summary>Its operands, held in the instruction itself (MOperandList).</summary>
     public MOperandList Operands => this;
 
     /// <summary>Operand width in bytes: 1, 2, 4, or 8 for an x87 qword. Registers are always 32-bit except at width 1 and 2.</summary>
-    public int Width { get; init; } = 4;
+    public int Width { get; init; } = X86Mode.Word;
+
+    /// <summary>Long mode: the source's width where it differs from the destination's (a widening move).</summary>
+    public int SourceWidth { get; init; }
+
+    /// <summary>Long mode: a jump table's symbol (JmpTable).</summary>
+    public string? TableSymbol { get; init; }
+
+    /// <summary>Long mode: how many of a call's arguments are in XMM registers and how many in general ones (System V).</summary>
+    public int FloatArgs { get; init; }
+    public int IntArgs { get; init; }
+
+    /// <summary>Long mode: a call into C's variadic convention, AL the count of vector arguments.</summary>
+    public bool NativeAl { get; init; }
 
     /// <summary>
     /// The source line this came from, or 0 where there is none.

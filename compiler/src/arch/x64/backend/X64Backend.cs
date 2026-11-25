@@ -3,6 +3,8 @@ using System.Text;
 using Corsac.Lang.Ir;
 using Corsac.Lang.Lto;
 
+using Corsac.Lang.X86;
+
 namespace Corsac.Lang.X64;
 
 /// <summary>
@@ -113,6 +115,8 @@ public sealed class X64Backend : IBackend
 
     public ObjectFile Generate(Module module, List<string> errors)
     {
+        // Long mode, for the machine IR the two backends share (X86Mode).
+        X86Mode.Long = true;
         ObjectFile obj = new();
         // The processor --cpu named, its instructions what this unit may use.
         Target.X86_64.X86Profile.LongModeContract(false).Attach(obj);
@@ -430,7 +434,7 @@ public sealed class X64Backend : IBackend
         {
             MOp.Jcc => "j" + i.Cond.Mnemonic(),
             MOp.Setcc => "set" + i.Cond.Mnemonic(),
-            MOp.Cmovcc => "cmov" + i.Cond.Mnemonic(),
+            MOp.Cmov => "cmov" + i.Cond.Mnemonic(),
             _ => i.Op.ToString().ToLowerInvariant(),
         };
         string width = i.Op is MOp.Jcc or MOp.Jmp or MOp.Call or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas ? "" : $".{i.Width}";
@@ -466,7 +470,7 @@ public sealed class X64Backend : IBackend
             || b.Instrs.Any(i => i.Op is MOp.Syscall or MOp.SoftInt or MOp.SaveRegs));
         try
         {
-            AddressFold.Run(m);
+            AddressFold.Run(m, absolute: false, compareMemory: true);
             IfConvert.Run(m);
             Allocator.Run(m);
             Layout.Run(m);

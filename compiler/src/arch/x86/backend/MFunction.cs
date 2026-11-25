@@ -29,7 +29,7 @@ public sealed class MFunction
     public Function Source { get; }
     public List<MBlock> Blocks { get; } = new();
     public Frame Frame { get; }
-    public int NextVReg { get; set; } = MReg.FirstVirtual + 1;
+    public int NextVReg { get; set; } = X86Mode.Long ? MReg.FirstVirtual : MReg.FirstVirtual + 1;
 
     /// <summary>Whether a card mark calls the object's stub (X86Backend.CardStub).</summary>
     public bool UsesCardStub { get; set; }
@@ -150,6 +150,35 @@ public sealed class MFunction
     }
 
     public MReg NewReg() => new(NextVReg++);
+
+    // ---- long mode's (X64's selector, target and encoder) -------------------------------
+
+    /// <summary>Which virtual registers are floating point, by id (long mode; i386 keeps XmmRegs).</summary>
+    public HashSet<int> FloatRegs { get; } = new();
+
+    public MReg NewFloat()
+    {
+        MReg r = new(NextVReg++, true);
+        FloatRegs.Add(r.Id);
+        return r;
+    }
+
+    /// <summary>
+    /// Every callee-saved register is saved, used or not. A function that
+    /// enters the collector needs this: a caller's reference may live only in
+    /// one of them, and the scan reads memory. See GcRoots.Enter.
+    /// </summary>
+    public bool SavesEverything { get; set; }
+
+    /// <summary>
+    /// The process entry: the loader jumps to it with RSP sixteen-byte aligned
+    /// and no return address pushed, so after `push rbp` the frame is eight
+    /// bytes off the alignment every call assumes. Its prologue realigns.
+    /// </summary>
+    public bool RealignsStack { get; set; }
+
+    /// <summary>Bytes of arguments this function passes on the stack at its widest call.</summary>
+    public int OutgoingBytes { get; set; }
 
     /// <summary>
     /// Successors(index) into a list the caller keeps (emptied first): the

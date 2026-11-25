@@ -1,6 +1,8 @@
 #nullable enable
 using Corsac.Lang.Ir;
 
+using Corsac.Lang.X86;
+
 namespace Corsac.Lang.X64;
 
 /// <summary>
@@ -446,7 +448,7 @@ internal sealed class Encoder
             case MOp.Setcc:
                 Op(1, 0, i.Operands[0], 0, 0x0F, 0x90 + (int)i.Cond);
                 break;
-            case MOp.Cmovcc:
+            case MOp.Cmov:
                 Op(w, Hw(i.Operands[0]), i.Operands[1], 0, 0x0F, 0x40 + (int)i.Cond);
                 break;
             case MOp.Jmp:

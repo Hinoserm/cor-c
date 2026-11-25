@@ -4,14 +4,16 @@ using Corsac.Lang.RegAlloc;
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// --count-spills on i386 (Corsac.Lang.RegAlloc.SpillCounter): each counted
-/// block entered by pushfd, an add and an adc to each 64-bit total's two
-/// halves and to its own run count, then popfd -- nothing it inserts
-/// touches a register or the flags, so the allocation and the code around
-/// it are as they are without it. Absolute addresses: code that is not
-/// position-independent only, refused elsewhere (Driver). Run after every
-/// pass that moves or removes a spill access (Peephole, FrameCompact), so
-/// what is counted is what the encoder writes.
+/// --count-spills, in both modes of the family (Corsac.Lang.RegAlloc.
+/// SpillCounter): each counted block entered by a push of the flags, a
+/// 32-bit add and an adc to each 64-bit total's two halves and to its own
+/// run count, then their pop -- nothing it inserts touches a register or
+/// the flags, so the allocation and the code around it are as they are
+/// without it. The counters by MMem.Data: absolute addresses on i386 (code
+/// that is not position-independent only, refused elsewhere: Driver), from
+/// the instruction in long mode. Run after every pass that moves or removes
+/// a spill access (Peephole, FrameCompact), so what is counted is what the
+/// encoder writes.
 /// </summary>
 internal static class SpillCount
 {
@@ -19,15 +21,15 @@ internal static class SpillCount
     {
         counter.Count(m.Source.Name, m.Blocks.Count, b => Accesses(m.Blocks[b]), (b, reads, writes, at) =>
         {
-            List<MInstr> count = new() { new MInstr(MOp.Pushfd) };
+            List<MInstr> count = new() { new MInstr(MOp.Pushf) };
             Add(count, SpillCounter.ReadsLow, SpillCounter.ReadsHigh, reads);
             Add(count, SpillCounter.WritesLow, SpillCounter.WritesHigh, writes);
             if (at >= 0)
             {
-                count.Add(new MInstr(MOp.Add, MMem.Abs(SpillCounter.BlocksSymbol, at), new MImm(1)));
-                count.Add(new MInstr(MOp.Adc, MMem.Abs(SpillCounter.BlocksSymbol, at + 4), new MImm(0)));
+                count.Add(new MInstr(MOp.Add, MMem.Data(SpillCounter.BlocksSymbol, at), new MImm(1)) { Width = 4 });
+                count.Add(new MInstr(MOp.Adc, MMem.Data(SpillCounter.BlocksSymbol, at + 4), new MImm(0)) { Width = 4 });
             }
-            count.Add(new MInstr(MOp.Popfd));
+            count.Add(new MInstr(MOp.Popf));
             // After the prologue: a function starts with it, where a fault
             // reads its frame's shape (Runtime.FrameAt).
             List<MInstr> instrs = m.Blocks[b].Instrs;
@@ -52,8 +54,8 @@ internal static class SpillCount
     private static void Add(List<MInstr> into, string low, string high, int n)
     {
         if (n == 0) return;
-        into.Add(new MInstr(MOp.Add, MMem.Abs(low, 0), new MImm(n)));
-        into.Add(new MInstr(MOp.Adc, MMem.Abs(high, 0), new MImm(0)));
+        into.Add(new MInstr(MOp.Add, MMem.Data(low, 0), new MImm(n)) { Width = 4 });
+        into.Add(new MInstr(MOp.Adc, MMem.Data(high, 0), new MImm(0)) { Width = 4 });
     }
 
     /// <summary>
