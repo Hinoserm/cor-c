@@ -1789,6 +1789,7 @@ public static class Driver
         }
         Corsac.Lang.X64.X64Backend x64Backend = new()
         {
+            OptimizeSize = args.Contains("--opt-size"),
             PositionIndependent = x86Backend.PositionIndependent,
             Workers = workers,
             EmitLinkSummary = x86Backend.EmitLinkSummary,

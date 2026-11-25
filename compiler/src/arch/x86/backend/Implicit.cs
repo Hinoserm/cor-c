@@ -243,7 +243,7 @@ internal static class Implicit
     // For the passes that ask of every instruction, often (Peephole.Masks):
     // no iterator made, no register an object. General registers are bits
     // 0 to 15, XMM ones 16 to 31. WHAT THESE SAY IS WHAT Uses AND Defs SAY,
-    // register for register (ImplicitTests holds the two together).
+    // register for register (X86FamilyTests holds the two together).
 
     private const long Rax = 1L << (int)Gpr.Rax, Rcx = 1L << (int)Gpr.Rcx, Rdx = 1L << (int)Gpr.Rdx, Rbx = 1L << (int)Gpr.Rbx,
         Rsi = 1L << (int)Gpr.Rsi, Rdi = 1L << (int)Gpr.Rdi, R11 = 1L << (int)Gpr.R11;

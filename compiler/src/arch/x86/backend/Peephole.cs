@@ -1593,6 +1593,8 @@ internal static partial class Peephole
     }
 
     /// <summary>
+    /// (Long mode's register-to-register MovF is MOVSS or MOVSD today, which
+    /// keeps the destination's upper lanes: read MOVAPS below as that there.)
     /// AN XMM VALUE RELOADED FROM THE SLOT A REGISTER STILL HOLDS IT IN:
     /// `movups [s], x6 ; movaps x6', x5 ; ... ; movups x2, [s]` -- the
     /// allocator gave x6 to something else, so it reloaded for x2 what x6
@@ -1922,7 +1924,11 @@ internal static partial class Peephole
     /// </summary>
     private static bool ForwardCopy(MInstr copy, MInstr user, HashSet<int> deadAfter)
     {
+        // (Never the stack pointer or the frame's base read in the copy's
+        // place: a push or a pop between moves the one with no operand that
+        // says so, and neither may be an index.)
         if (!IsMov(copy) || copy.Operands[0] is not MReg a || copy.Operands[1] is not MReg b || a.Id == b.Id
+            || b.Id is (int)Gpr.Esp or (int)Gpr.Ebp
             || !deadAfter.Contains(a.Id) || !Understood(user) || user.Op is MOp.Xchg or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallKeepRax or MOp.CallKeepCas or MOp.CallSafe)
         {
             return false;
@@ -2125,12 +2131,23 @@ internal static partial class Peephole
                 instrs.RemoveAt(k);
                 continue;
             }
-            if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallKeepRax or MOp.CallKeepCas or MOp.CallSafe)
+            if (X86Mode.Long)
             {
-                // None survives it; what it reads unnamed -- long mode's
-                // float arguments, in the registers XMM0 on -- is read.
-                Unnamed(i, out long passed, out _);
-                dead = (X86Mode.Long ? 0xFFFF : 0xFF) & ~(int)(passed >> MReg.XmmBase);
+                // LONG MODE'S OWN ACCOUNT (Implicit): a call or a poll changes
+                // every XMM register and reads the ones its float arguments
+                // are in; A STORE SEQUENCE'S STUB KEEPS ALL SIXTEEN (CallKeep,
+                // CallKeepRax, CallKeepCas: X64Backend.EmitStoreSequences),
+                // so the allocation holds a float in its register across one,
+                // and the move that made it is no dead move. Taken with the
+                // calls, as i386's stubs are, that move went.
+                Unnamed(i, out long passed, out long changed);
+                dead |= (int)(changed >> MReg.XmmBase) & 0xFFFF;
+                dead &= ~(int)(passed >> MReg.XmmBase);
+            }
+            else if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe)
+            {
+                // i386: none survives a call or a stub (X86Target's calls).
+                dead = 0xFF;
                 continue;
             }
             if (i.Op is MOp.Jcc or MOp.Jmp or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Epilogue)
@@ -2971,6 +2988,11 @@ internal static partial class Peephole
     /// </summary>
     private static void IncDec(List<MInstr> instrs)
     {
+        // NOT ON THE PENTIUM 4: INC and DEC leave CF as it was, which there
+        // is a wait on the flags' last writer and a micro-operation more
+        // (Agner Fog, "The microarchitecture of Intel, AMD and VIA CPUs",
+        // Pentium 4: "always replace INC EAX with ADD EAX,1").
+        if (CpuModel.NetBurst) return;
         for (int k = 0; k < instrs.Count; k++)
         {
             MInstr i = instrs[k];

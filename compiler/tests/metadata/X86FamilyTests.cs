@@ -33,7 +33,7 @@ public static class X86FamilyTests
                 // An asm block's are its own record's, read by both from it.
                 if (op == MOp.InlineAsm) continue;
                 for (int ints = 0; ints <= LongAbi.IntArgRegs.Length; ints++)
-                    for (int floats = 0; floats <= LongAbi.FloatArgRegs; floats += 4)
+                    for (int floats = 0; floats <= LongAbi.FloatArgRegs; floats++)
                         foreach (bool al in new[] { false, true })
                         {
                             MInstr i = new(op) { IntArgs = ints, FloatArgs = floats, NativeAl = al };

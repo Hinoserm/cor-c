@@ -128,6 +128,9 @@ internal static class CpuModel
         ZeroByPxor ? Target.Current.X86Profile.Has(X86Feature.Sse2)
         : IntelCore || K10 || LevelAboveBaseline || (K8 || Baseline64) && width == 4;
 
+    /// <summary>The NetBurst processors: the Pentium 4 and its sixty-four-bit Nocona.</summary>
+    public static bool NetBurst => Name is "pentium4" or "nocona";
+
     /// <summary>The zeroing BreaksMerge asks for: PXOR only where XORPS is no zero idiom (the Pentium 4 and Nocona, which need SSE2 for it); XORPS, SSE1's, everywhere else.</summary>
     public static bool ZeroByPxor => Name is "pentium4" or "nocona";
 

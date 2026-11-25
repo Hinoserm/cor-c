@@ -541,6 +541,7 @@ public sealed class UnitBackend : IUnitBackend
         {
             Corsac.Lang.X64.X64Backend backend = new()
             {
+                OptimizeSize = read.Settings?.OptimizeSize ?? false,
                 PositionIndependent = positionIndependent,
                 EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,

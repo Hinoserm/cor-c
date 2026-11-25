@@ -38,20 +38,13 @@ internal static class FramePointerFree
                             i.Operands[o] = MReg.Of(Gpr.Rbp);
                             break;
                         case MMem mem when mem.Base?.Id == (int)Gpr.Rbp:
-                            i.Operands[o] = new MMem(MReg.Of(Gpr.Rsp), mem.Disp + k)
-                            {
-                                Index = mem.Index?.Id == MReg.RbpDataId ? MReg.Of(Gpr.Rbp) : mem.Index, Scale = mem.Scale,
-                                Symbol = mem.Symbol, Got = mem.Got, Label = mem.Label, IsSpill = mem.IsSpill, Segment = mem.Segment,
-                            };
+                            i.Operands[o] = mem.WithRegisters(MReg.Of(Gpr.Rsp), mem.Index?.Id == MReg.RbpDataId ? MReg.Of(Gpr.Rbp) : mem.Index).WithDisp(k);
                             break;
                         // A new operand, not this one changed: one shared by two
                         // instructions, met again, would be taken for the frame.
                         case MMem mem when mem.Base?.Id == MReg.RbpDataId || mem.Index?.Id == MReg.RbpDataId:
-                            i.Operands[o] = new MMem(mem.Base?.Id == MReg.RbpDataId ? MReg.Of(Gpr.Rbp) : mem.Base, mem.Disp)
-                            {
-                                Index = mem.Index?.Id == MReg.RbpDataId ? MReg.Of(Gpr.Rbp) : mem.Index, Scale = mem.Scale,
-                                Symbol = mem.Symbol, Got = mem.Got, Label = mem.Label, IsSpill = mem.IsSpill, Segment = mem.Segment,
-                            };
+                            i.Operands[o] = mem.WithRegisters(mem.Base?.Id == MReg.RbpDataId ? MReg.Of(Gpr.Rbp) : mem.Base,
+                                mem.Index?.Id == MReg.RbpDataId ? MReg.Of(Gpr.Rbp) : mem.Index);
                             break;
                     }
                 }

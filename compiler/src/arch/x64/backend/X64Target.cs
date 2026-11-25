@@ -209,7 +209,7 @@ internal sealed class X64Target : ITarget
         uint mayMemory = 0, mayMemoryWrite = 0, isMemory = 0, mayImmediate = 0, mayImmediateWide = 0;
         for (int k = 0; k < i.Operands.Count && k < 32; k++)
         {
-            if (Allocator.Foldable(i, k))
+            if (Allocator.Foldable(_m, i, k))
             {
                 mayMemory |= 1u << k;
                 // A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a

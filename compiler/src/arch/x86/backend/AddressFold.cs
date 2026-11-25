@@ -156,9 +156,10 @@ internal static class AddressFold
     /// spill's store and reload saved on a machine of six. One image runs on
     /// the 486, the Pentium and the K6 alike (--cpu 486), so it is done for all.
     /// Long mode's processors take it as one operation where the load and
-    /// the compare are two (Agner Fog's instruction tables: the K8's `CMP
-    /// r,m` one macro-operation, ALU and AGU; Core 2's `CMP m,r/i` one fused
-    /// micro-operation), so it is done there too.
+    /// the compare are two (AMD 25112, the Software Optimization Guide for
+    /// AMD64 Processors, instruction latencies: `CMP mem, imm` one
+    /// DirectPath operation on the K8; Agner Fog's instruction tables: Core
+    /// 2's `CMP m,r/i` one fused micro-operation), so it is done there too.
     /// </summary>
     public static void Run(MFunction m, bool absolute = false, bool compareMemory = false)
     {

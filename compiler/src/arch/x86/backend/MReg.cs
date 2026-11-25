@@ -22,9 +22,11 @@ public sealed class MReg : MOperand
     public int Id { get; }
 
     /// <summary>
-    /// A floating-point register: a vector machine register, or a virtual
-    /// one made as one (long mode's selector says so on the operand; i386's
-    /// keeps the set on its function, MFunction.XmmRegs).
+    /// A vector machine register -- always -- or a virtual register made as
+    /// one, where what made it said so. A NOTE FOR A LISTING ON A VIRTUAL
+    /// REGISTER, NO MORE: a pass that renames a register makes its operands
+    /// without it (XmmLocalSplit), and which virtual registers are of the
+    /// XMM class is asked of the function, in both modes (MFunction.XmmRegs).
     /// </summary>
     public bool IsFloat { get; }
 

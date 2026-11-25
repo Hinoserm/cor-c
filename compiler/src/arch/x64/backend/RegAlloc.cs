@@ -52,7 +52,7 @@ internal static class Allocator
     }
 
     /// <summary>Whether an operand position may be a memory operand: a spill slot read or written in place.</summary>
-    internal static bool Foldable(MInstr i, int operand)
+    internal static bool Foldable(MFunction m, MInstr i, int operand)
     {
         switch (i.Op)
         {
@@ -101,8 +101,10 @@ internal static class Allocator
             case MOp.MovF:
                 return true;
             case MOp.MovGx:
-                // The general register's side may be memory; the XMM side may not.
-                return i.Operands[operand] is MReg r && !r.IsFloat;
+                // The general register's side may be memory; the XMM side may
+                // not. (By the function's record of which registers are XMM
+                // ones: a renamed operand does not say, MReg.IsFloat.)
+                return i.Operands[operand] is MReg r && !r.IsFloat && !m.XmmRegs.Contains(r.Id);
             default:
                 return false;
         }

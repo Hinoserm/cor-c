@@ -70,13 +70,25 @@ modes: the general ones below sixteen (eight of them on i386), the XMM ones
 from sixteen (`MReg.XmmBase`), virtual ones from thirty-two.
 
 Passes with a single implementation, in `x86/backend`, used by both modes:
-`AddressFold`, `IfConvert`, `Layout`, `LoopRotate`, `SpillCount`,
-`FrameSlotLiveness` (the adapter of `arch/shared/frames`), the inline
-assembly record `InlineAsmCode`, and `Peephole` -- whose long-mode part
+`AddressFold`, `IfConvert`, `XmmLocalSplit`, `Layout`, `LoopRotate`,
+`FrameCompact`, `SpillCount`, `FrameSlotLiveness` (the adapter of
+`arch/shared/frames`), the inline assembly record `InlineAsmCode`, and
+`Peephole` (with `Peephole.UnusedSaves`, the callee-saved registers nothing
+names any more) -- whose long-mode part
 (`Peephole.Long.cs`: the zero-extensions `mov r32, r32`, jump threading, the
 jump to the next block) is what i386 has no need of. Long mode's calling
 conventions and the registers its instructions touch unnamed are
 `LongAbi` and `Implicit` (`x86/backend/Implicit.cs`).
+
+ONE ENCODER (`x86/backend/Encoder.cs`, `Encoder.Long.cs`). An instruction is
+written as i386 writes it, and long mode's REX prefix, segment prefix and
+RIP-relative displacements are put in when it is whole; `Encoder.Long.cs`
+has long mode's forms where they are not i386's with a prefix (64-bit
+immediates, MOVSXD, the stack operations, calls, the frame's prologue and
+epilogue with callee-saved registers in slots, jump tables), with the SIB
+form for an absolute `[disp32]` (mod 00 r/m 101 is RIP-relative there) and
+SSE's mandatory prefix before REX. Branches are relaxed to a fixed point by
+whole passes; loop heads are padded by `--cpu` unless `--opt-size`.
 
 What is still x86-64's own, in `compiler/src/arch/x64/backend`:
 
@@ -93,9 +105,6 @@ What is still x86-64's own, in `compiler/src/arch/x64/backend`:
   words, so a sub-word integer definition is never folded into its slot (the
   slot's upper half would survive into the reload), and only constants a
   sign-extended imm32 can carry are folded as immediates.
-- **Encoder.cs** -- REX, ModRM/SIB (with the SIB form for an absolute
-  `[disp32]`, since mod 00 r/m 101 is RIP-relative in long mode), SSE2 with
-  its mandatory prefix before REX, and branch relaxation to a fixed point.
 - **FramePointerFree.cs** -- a leaf that gives RBP a value addresses its
   frame off RSP.
 

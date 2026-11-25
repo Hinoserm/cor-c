@@ -7,6 +7,9 @@ using Corsac.Lang.X86;
 
 namespace Corsac.Lang.X64;
 
+using Encoder = Corsac.Lang.X86.Encoder;
+
+
 /// <summary>
 /// The x86-64 code generator: IR module in, relocatable object out, for a
 /// long-mode Linux program on anything from the first AMD64 processor (K8)
@@ -14,7 +17,7 @@ namespace Corsac.Lang.X64;
 ///
 /// Per function: instruction selection (Select.cs), address arithmetic
 /// folded into the addressing modes (AddressFold.cs), register allocation
-/// (RegAlloc.cs), encoding (Encoder.cs). Data items go in .rodata, .data or
+/// (RegAlloc.cs), encoding (the family's Encoder, x86/backend). Data items go in .rodata, .data or
 /// .bss by their flags, holding 64-bit absolute relocations where they hold
 /// addresses; the frame table is the x86 format. The stack maps are the
 /// same table i386 writes (StackMapTable), in this target's layout: at each
@@ -55,6 +58,9 @@ public sealed class X64Backend : IBackend
     /// itself (BackEdgePolls), as the x86 backend's: an image with a
     /// collector and an operating system to run its threads.
     /// </summary>
+    /// <summary>--opt-size: no loop head padded to its line (Encoder.OptimizeSize), as i386's.</summary>
+    public bool OptimizeSize { get; set; }
+
     public bool SafepointPolls { get; set; }
 
     /// <summary>
@@ -151,7 +157,7 @@ public sealed class X64Backend : IBackend
         bool loaderRelocates = PositionIndependent || Imported.Count > 0;
 
         HashSet<string> defined = new(StringComparer.Ordinal);
-        Encoder encoder = new(text);
+        Encoder encoder = new(text, OptimizeSize);
         List<Corsac.Lang.X86.FrameTable.Entry> frames = new();
         // The stack maps' records as each function is encoded, starts from the first function with a call (the table's base).
         List<StackMapTable.Function> mapFunctions = new();

@@ -14,7 +14,7 @@ namespace Corsac.Lang.X86;
 /// linker; a block's address is a relocation against the function's own
 /// symbol with the block's offset as the addend.
 /// </summary>
-internal sealed class Encoder
+internal sealed partial class Encoder
 {
     private readonly Section _text;
     private readonly ChunkedBytes _out;
@@ -33,7 +33,8 @@ internal sealed class Encoder
 
     /// <summary>--opt-size: no loop head padded (LoopAlign), the bytes kept.</summary>
     public bool OptimizeSize { get; init; }
-    private bool _widen;
+    /// <summary>The short jumps of the pass under way: each with where it ends and where it goes.</summary>
+    private readonly List<(MInstr Jump, int End, MBlock Target)> _short = new();
 
     /// <summary>Jump tables this function needs in .rodata: the symbol to place them at, and their entries.</summary>
     public List<(string Symbol, List<MBlock> Targets)> Tables { get; } = new();
@@ -61,7 +62,7 @@ internal sealed class Encoder
     /// counts from: its own name, or the body's own where the name is the
     /// way in to a body that keeps its arguments on the stack (RegisterArgs.StackEntry).
     /// </summary>
-    private string BodySymbol => !RegisterArgs.BodyInRegisters(_m.Source) && RegisterArgs.Of(_m.Source) > 0 ? RegisterArgs.StackBodyName(_m.Source.Name) : _m.Source.Name;
+    private string BodySymbol => X86Mode.Long ? _m.Source.Name : !RegisterArgs.BodyInRegisters(_m.Source) && RegisterArgs.Of(_m.Source) > 0 ? RegisterArgs.StackBodyName(_m.Source.Name) : _m.Source.Name;
 
     public Encoder(Section text, bool optimizeSize = false)
     {
@@ -81,6 +82,7 @@ internal sealed class Encoder
     {
         Audit(m);
         _m = m;
+        if (X86Mode.Long) _frameBytes = FrameBytes(m);
         _funcStart = _out.Count;
         _long.Clear();
         _loopHeads.Clear();
@@ -127,19 +129,20 @@ internal sealed class Encoder
         {
             b.Offset = 0;
         }
-        // The first pass sees forward targets at offset 0, so it must not
-        // widen anything: a widening decision is permanent, and one made
-        // against a stale offset would leave a five-byte jump where two
-        // bytes would do.
-        _widen = false;
-        Pass();
-        _widen = true;
+        // The first pass writes every jump short and its displacements
+        // against offsets not yet known; what it settles is the layout, and
+        // which jumps that layout cannot reach by (Pass, at its end).
+        bool last = Pass();
         // AND UNTIL THE LAYOUT HOLDS where loop heads are padded: a pad is what
         // the head's offset leaves of its line, so code before it that grew
         // can shrink it, and a pass that widened nothing may still have moved
         // the blocks after the pad from where the forward jumps took them to
         // be. With the jumps' sizes settled every pass lays out the same, so
         // one more pass than the widening needed is the end of it.
+        // (A PASS AFTER THE LAST THAT WIDENED, always: a jump found too short
+        // is long only from the next pass on, and that pass's forward
+        // displacements are still measured to where the one before it put
+        // their targets. The pass after it has every offset its own.)
         bool grew, moved;
         int passes = 0;
         do
@@ -147,7 +150,10 @@ internal sealed class Encoder
             int[]? before = _loopHeads.Count == 0 ? null : m.Blocks.Select(b => b.Offset).ToArray();
             _pending.Clear();
             _out.Truncate(_funcStart);
+            bool widened = last;
             grew = Pass();
+            last = grew;
+            grew |= widened;
             moved = before is not null && !before.SequenceEqual(m.Blocks.Select(b => b.Offset));
             if (_loopHeads.Count > 0 && ++passes > 64) throw new InvalidOperationException($"{m.Source.Name}: the layout of its loop heads did not settle");
         }
@@ -181,6 +187,9 @@ internal sealed class Encoder
             if (missing != X86Feature.None && !i.Probed)
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} needs {Isa.Describe(missing)}, which --cpu={profile.Name} does not permit");
+            // (Whose state the code may use is i386's question: long mode's
+            // baseline has SSE2, and its floats are in XMM registers always.)
+            if (X86Mode.Long) continue;
             if (!m.AutomaticPacked && i.OwnsState == 0 && Isa.UsesPackedState(i.Op))
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} uses the MMX registers in code that does not own the x87 state");
@@ -198,6 +207,7 @@ internal sealed class Encoder
         Tables.Clear();
         CallSites.Clear();
         Lines.Clear();
+        _short.Clear();
         for (int b = 0; b < _m.Blocks.Count; b++)
         {
             MBlock block = _m.Blocks[b];
@@ -238,6 +248,15 @@ internal sealed class Encoder
                 }
             }
         }
+        // Every short jump the layout just made cannot reach its target by
+        // is a long one from the next pass on: widening only ever grows the
+        // code, so this ends, at the fewest long jumps there can be.
+        foreach ((MInstr jump, int end, MBlock target) in _short)
+            if (target.Offset - end is < -128 or > 127)
+            {
+                _long.Add(jump);
+                grew = true;
+            }
         return grew;
     }
 
@@ -260,6 +279,138 @@ internal sealed class Encoder
     }
 
     private int Here => _out.Count - _funcStart;
+
+    private void D64(long v)
+    {
+        D32(v);
+        D32(v >> 32);
+    }
+
+    // ---- long mode: REX, the segment prefix and RIP-relative fields, by fix-up --------
+    //
+    // ONE ENCODER FOR BOTH MODES. An instruction is written as i386 writes
+    // it -- its prefixes, its opcode, its ModRM -- and what long mode adds
+    // is noted on the way and put in when the machine instruction is whole
+    // (EndInstr):
+    //
+    //   - REX: a bit for each register numbered eight or above, by the field
+    //     it went in (RegR: ModRM.reg; RegB: ModRM.rm, a base, a register in
+    //     the opcode byte; an index: X), W where the operation is of sixty-
+    //     four bits (RexW), and a REX with no bit where a byte operand names
+    //     SPL, BPL, SIL or DIL. It goes after the legacy and mandatory
+    //     prefixes, none of which is an opcode's first byte in long mode.
+    //   - a segment prefix (FS, GS), first of all.
+    //   - a RIP-relative displacement counts from the instruction's END: what
+    //     follows it (an immediate) is known only then.
+    //
+    // Every relocation and label field noted since the instruction began
+    // moves with the bytes put in before it. On i386 none of this is ever
+    // noted and EndInstr does nothing.
+    private int _rex;
+    private bool _rexEmpty, _byteOp;
+    private byte _segment;
+    private int _instrAt, _instrPending;
+    private readonly List<int> _ripRelocs = new();
+    private readonly List<(int At, MBlock Label, int Disp)> _ripLabels = new();
+
+    private const int RexW8 = 8, RexR = 4, RexX = 2, RexB = 1;
+
+    /// <summary>A machine instruction begins: `wide` where its operation is of sixty-four bits, `bytes` where its register operands are byte registers.</summary>
+    private void BeginInstr(bool wide, bool bytes)
+    {
+        _rex = wide ? RexW8 : 0;
+        _rexEmpty = false;
+        _byteOp = bytes;
+        _segment = 0;
+        _instrAt = _out.Count;
+        _instrPending = _pending.Count;
+        _ripRelocs.Clear();
+        _ripLabels.Clear();
+    }
+
+    /// <summary>The machine instruction is whole: long mode's prefixes go in, and its RIP-relative fields are counted from here.</summary>
+    private void EndInstr()
+    {
+        if (!X86Mode.Long) return;
+        // The prefixes first: every field after one moves up with it.
+        // (The segment's after a LOCK, where the instruction begins with one.)
+        if (_segment != 0) Insert(_instrAt < _out.Count && _out[_instrAt] == 0xF0 ? _instrAt + 1 : _instrAt, _segment);
+        if (_rex != 0 || _rexEmpty)
+        {
+            int at = _instrAt;
+            while (at < _out.Count && _out[at] is 0x66 or 0x67 or 0xF0 or 0xF2 or 0xF3 or 0x26 or 0x2E or 0x36 or 0x3E or 0x64 or 0x65) at++;
+            Insert(at, (byte)(0x40 | _rex));
+        }
+        // Then what counts from the instruction's end, now that it is where it will be.
+        int end = _out.Count;
+        foreach (int k in _ripRelocs)
+        {
+            Relocation r = _pending[k];
+            _pending[k] = new Relocation(r.Offset, r.Symbol, r.Addend - (end - (r.Offset + 4)), r.Kind);
+        }
+        foreach ((int at, MBlock label, int disp) in _ripLabels)
+            _out.WriteInt32(at, label.Offset + disp - (end - _funcStart));
+        _rex = 0;
+        _rexEmpty = false;
+        _segment = 0;
+    }
+
+    /// <summary>One byte put in at `at`, within the instruction being written: what was noted after it moves up.</summary>
+    private void Insert(int at, byte value)
+    {
+        _out.Add(0);
+        for (int k = _out.Count - 1; k > at; k--) _out[k] = _out[k - 1];
+        _out[at] = value;
+        for (int k = _instrPending; k < _pending.Count; k++)
+        {
+            Relocation r = _pending[k];
+            if (r.Offset >= at) _pending[k] = new Relocation(r.Offset + 1, r.Symbol, r.Addend, r.Kind);
+        }
+        for (int k = 0; k < _ripLabels.Count; k++)
+            if (_ripLabels[k].At >= at) _ripLabels[k] = (_ripLabels[k].At + 1, _ripLabels[k].Label, _ripLabels[k].Disp);
+    }
+
+    /// <summary>
+    /// Whether the instruction's operation is of sixty-four bits in long
+    /// mode (REX.W). Width says so for the integer forms; not for the ones
+    /// whose Width means something else -- a scalar float's (F2 or F3), an
+    /// extension's source, a stack operation's (always the word).
+    /// </summary>
+    private static bool RexW(MInstr i) => i.Op switch
+    {
+        MOp.Lea => true,
+        // The destination is the whole register; Width is the source's.
+        MOp.Movsx => true,
+        MOp.Movzx => false,
+        MOp.CvtIntToF => i.SourceWidth == 8,
+        MOp.CvtFToInt => i.SourceWidth == 8,
+        MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas
+            or MOp.Jmp or MOp.Jcc or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Setcc
+            or MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.XorF or MOp.XorPs => false,
+        _ => i.Width == 8,
+    };
+
+    /// <summary>A general machine register's number, or the fault of one left unallocated.</summary>
+    private static int Gp(MOperand o) => o is MReg { IsPhys: true } r ? r.Id
+        : throw new InvalidOperationException($"register {o} left unallocated (the base register's value is made the register by FramePointerFree)");
+
+    /// <summary>A general register for ModRM.reg: its low three bits, REX.R noted for its fourth.</summary>
+    private int RegR(MOperand o)
+    {
+        int id = Gp(o);
+        if (id >= 8) _rex |= RexR;
+        else if (_byteOp && id >= 4 && X86Mode.Long) _rexEmpty = true;
+        return id & 7;
+    }
+
+    /// <summary>A general register for ModRM.rm, a base or the opcode byte: its low three bits, REX.B noted for its fourth.</summary>
+    private int RegB(MOperand o)
+    {
+        int id = Gp(o);
+        if (id >= 8) _rex |= RexB;
+        else if (_byteOp && id >= 4 && X86Mode.Long) _rexEmpty = true;
+        return id & 7;
+    }
 
     /// <summary>A 32-bit field holding an absolute address: a relocation and a placeholder.</summary>
     private void Abs32(string symbol, long addend)
@@ -308,8 +459,6 @@ internal sealed class Encoder
         }
     }
 
-    private static int Reg(MOperand o) => ((MReg)o).Id is var id && id < 8 ? id
-        : throw new InvalidOperationException($"register v{id} left unallocated (EBP's value is made EBP by FramePointerFree)");
 
     /// <summary>
     /// PXOR (the Pentium 4) or XORPS (elsewhere) of the instruction's register
@@ -321,20 +470,32 @@ internal sealed class Encoder
     /// </summary>
     private void ZeroFirst(MInstr i)
     {
-        if (!i.ZeroFirst || i.Operands[1] is MReg { IsXmm: true } from && Xmm(from) == Xmm(i.Operands[0])) return;
+        if (!i.ZeroFirst || i.Operands[1] is MReg { IsXmm: true } from && XmmNumber(from) == XmmNumber(i.Operands[0])) return;
         if (CpuModel.ZeroByPxor) B(0x66, 0x0F, 0xEF);
         else B(0x0F, 0x57);
         XmmRM(Xmm(i.Operands[0]), i.Operands[0]);
     }
 
-    /// <summary>An XMM register's hardware number.</summary>
-    private static int Xmm(MOperand o) => o is MReg { IsXmm: true } r ? r.XmmNumber
+    /// <summary>An XMM register's number, whole (0 to 15): for comparing two, never for a field.</summary>
+    private static int XmmNumber(MOperand o) => o is MReg { IsXmm: true } r ? r.XmmNumber
         : throw new InvalidOperationException($"{o} is not an XMM register (one left unallocated?)");
+
+    /// <summary>An XMM register for ModRM.reg: its low three bits, REX.R noted for its fourth.</summary>
+    private int Xmm(MOperand o)
+    {
+        int n = XmmNumber(o);
+        if (n >= 8) _rex |= RexR;
+        return n & 7;
+    }
 
     /// <summary>ModRM for a register field and an r/m that is an XMM register or memory.</summary>
     private void XmmRM(int reg, MOperand rm)
     {
-        if (rm is MReg { IsXmm: true } r) _out.Add((byte)(0xC0 | ((reg & 7) << 3) | r.XmmNumber));
+        if (rm is MReg { IsXmm: true } r)
+        {
+            if (r.XmmNumber >= 8) _rex |= RexB;
+            _out.Add((byte)(0xC0 | ((reg & 7) << 3) | (r.XmmNumber & 7)));
+        }
         else ModRM(reg, rm);
     }
 
@@ -360,15 +521,20 @@ internal sealed class Encoder
     private void ModRM(int reg, MOperand rm)
     {
         reg &= 7;
-        if (rm is MReg { Id: >= 8 } or MMem { Base.Id: >= 8 } or MMem { Index.Id: >= 8 })
-            throw new InvalidOperationException("a register left unallocated (EBP's value is made EBP by FramePointerFree)");
+        if (rm is MReg { IsPhys: false } or MMem { Base.IsPhys: false } or MMem { Index.IsPhys: false })
+            throw new InvalidOperationException("a register left unallocated (the base register's value is made the register by FramePointerFree)");
         if (rm is MReg r)
         {
-            _out.Add((byte)(0xC0 | (reg << 3) | (r.Id & 7)));
+            _out.Add((byte)(0xC0 | (reg << 3) | RegB(r)));
             return;
         }
         MMem m = (MMem)rm;
         int scaleBits = m.Scale switch { 1 => 0, 2 => 1, 4 => 2, 8 => 3, _ => throw new InvalidOperationException("scale") };
+        if (X86Mode.Long)
+        {
+            ModRMLong(reg, m, scaleBits);
+            return;
+        }
         if (m.Base is null)
         {
             if (m.Index is null)
@@ -422,6 +588,71 @@ internal sealed class Encoder
         }
     }
 
+    /// <summary>
+    /// LONG MODE'S MEMORY OPERAND. What differs from i386's:
+    ///
+    ///   - a named thing (a symbol, a block of this function) is reached
+    ///     FROM THE INSTRUCTION: mod 00 r/m 101 and a displacement counted
+    ///     from the instruction's end (EndInstr), no register beside it;
+    ///   - a bare [disp32] is therefore the SIB form with no base and no
+    ///     index (mod 00 r/m 100, SIB 0x25);
+    ///   - a base whose low three bits are 101 (RBP, R13) always takes a
+    ///     displacement, one whose low bits are 100 (RSP, R12) a SIB;
+    ///   - RSP is never an index; R12 is (REX.X tells them apart);
+    ///   - a segment's prefix (FS, GS) is noted for EndInstr.
+    /// </summary>
+    private void ModRMLong(int reg, MMem m, int scaleBits)
+    {
+        if (m.Segment != 0) _segment = m.Segment;
+        if (m.Symbol is not null || m.Label is not null)
+        {
+            if (m.Base is not null || m.Index is not null)
+                throw new InvalidOperationException("a named operand takes no register in long mode: it is reached from the instruction");
+            _out.Add((byte)((reg << 3) | 5));
+            if (m.Symbol is not null)
+            {
+                _ripRelocs.Add(_pending.Count);
+                // (Less the four bytes of the field itself; less what follows it, at EndInstr.)
+                _pending.Add(new Relocation(_out.Count, m.Symbol, (long)m.Disp - 4, m.Got ? RelocKind.GotPcRel : RelocKind.Rel32));
+            }
+            else _ripLabels.Add((_out.Count, m.Label!, m.Disp));
+            D32(0);
+            return;
+        }
+        if (m.Base is null && m.Index is null)
+        {
+            _out.Add((byte)((reg << 3) | 4));
+            _out.Add(0x25);
+            D32(m.Disp);
+            return;
+        }
+        int index = 4;
+        if (m.Index is { } x)
+        {
+            if (x.Id == (int)Gpr.Rsp) throw new InvalidOperationException("RSP cannot be an index");
+            if (x.Id >= 8) _rex |= RexX;
+            index = x.Id & 7;
+        }
+        if (m.Base is null)
+        {
+            // [index*scale + disp32]: SIB with base 101 under mod 00.
+            _out.Add((byte)((reg << 3) | 4));
+            _out.Add((byte)((scaleBits << 6) | (index << 3) | 5));
+            D32(m.Disp);
+            return;
+        }
+        int low = RegB(m.Base);
+        int mod = m.Disp == 0 && low != 5 ? 0 : m.Disp is >= -128 and <= 127 ? 1 : 2;
+        if (m.Index is not null || low == 4)
+        {
+            _out.Add((byte)((mod << 6) | (reg << 3) | 4));
+            _out.Add((byte)((scaleBits << 6) | (index << 3) | low));
+        }
+        else _out.Add((byte)((mod << 6) | (reg << 3) | low));
+        if (mod == 1) _out.Add((byte)m.Disp);
+        else if (mod == 2) D32(m.Disp);
+    }
+
     /// <summary>The four-byte displacement of a memory operand, relocated if it names anything.</summary>
     private void MemDisp32(MMem m)
     {
@@ -466,7 +697,27 @@ internal sealed class Encoder
         MOp.Add => 0, MOp.Or => 1, MOp.Adc => 2, MOp.Sbb => 3, MOp.And => 4, MOp.Sub => 5, MOp.Xor => 6, _ => 7,
     };
 
+    /// <summary>
+    /// One instruction: begun and ended as one machine instruction (the
+    /// brackets long mode's prefixes are put in by, EndInstr), which nearly
+    /// every one is; a case that writes more than one says where each
+    /// begins (NextInstr).
+    /// </summary>
     private void EncodeInstr(MInstr i)
+    {
+        BeginInstr(X86Mode.Long && RexW(i), i.Width == 1 || i.Op == MOp.Setcc);
+        if (!X86Mode.Long || !EncodeLong(i)) EncodeOne(i);
+        EndInstr();
+    }
+
+    /// <summary>The machine instruction written so far is whole, and another begins.</summary>
+    private void NextInstr(bool wide = false, bool bytes = false)
+    {
+        EndInstr();
+        BeginInstr(X86Mode.Long && wide, bytes);
+    }
+
+    private void EncodeOne(MInstr i)
     {
         Prefixes(i);
         int w = i.Width;
@@ -478,7 +729,7 @@ internal sealed class Encoder
             case MOp.Bswap:
                 if (w != 4 || i.Operands.Count != 1 || i.Operands[0] is not MReg { IsPhys: true })
                     throw new InvalidOperationException("BSWAP requires a 32-bit register");
-                B(0x0f); B((byte)(0xc8 + Reg(i.Operands[0])));
+                B(0x0f); B((byte)(0xc8 + RegB(i.Operands[0])));
                 break;
             case MOp.Add:
             case MOp.Adc:
@@ -516,12 +767,12 @@ internal sealed class Encoder
                 else if (src is MReg)
                 {
                     B(Wide((byte)(0x01 + 8 * n), w));
-                    ModRM(Reg(src), dst);
+                    ModRM(RegR(src), dst);
                 }
                 else
                 {
                     B(Wide((byte)(0x03 + 8 * n), w));
-                    ModRM(Reg(dst), src);
+                    ModRM(RegR(dst), src);
                 }
                 break;
             }
@@ -535,7 +786,7 @@ internal sealed class Encoder
                 else
                 {
                     B(Wide(0x85, w));
-                    ModRM(Reg(i.Operands[1]), i.Operands[0]);
+                    ModRM(RegR(i.Operands[1]), i.Operands[0]);
                 }
                 break;
             case MOp.Movzx:
@@ -543,16 +794,16 @@ internal sealed class Encoder
             {
                 byte op = (byte)((i.Op == MOp.Movzx ? 0xB6 : 0xBE) + (w == 2 ? 1 : 0));
                 B(0x0F, op);
-                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                ModRM(RegR(i.Operands[0]), i.Operands[1]);
                 break;
             }
             case MOp.Lea:
                 B(0x8D);
-                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                ModRM(RegR(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.Xchg:
                 B(Wide(0x87, w));
-                ModRM(Reg(i.Operands[1]), i.Operands[0]);
+                ModRM(RegR(i.Operands[1]), i.Operands[0]);
                 break;
             case MOp.Push:
                 switch (i.Operands[0])
@@ -574,17 +825,17 @@ internal sealed class Encoder
                 }
                 break;
             case MOp.Pop:
-                _out.Add((byte)(0x58 + Reg(i.Operands[0])));
+                _out.Add((byte)(0x58 + RegB(i.Operands[0])));
                 break;
             case MOp.Imul:
                 B(0x0F, 0xAF);
-                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                ModRM(RegR(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.Imul3:
             {
                 MImm imm = (MImm)i.Operands[2];
                 B(imm.FitsSbyte ? (byte)0x6B : (byte)0x69);
-                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                ModRM(RegR(i.Operands[0]), i.Operands[1]);
                 if (imm.FitsSbyte)
                 {
                     _out.Add((byte)imm.Value);
@@ -649,14 +900,14 @@ internal sealed class Encoder
                 if (i.Operands[2] is MImm imm)
                 {
                     B(0x0F, baseOp);
-                    ModRM(Reg(i.Operands[1]), i.Operands[0]);
+                    ModRM(RegR(i.Operands[1]), i.Operands[0]);
                     _out.Add((byte)imm.Value);
                 }
                 else
                 {
                     RequireCl(i, 2);
                     B(0x0F, (byte)(baseOp + 1));
-                    ModRM(Reg(i.Operands[1]), i.Operands[0]);
+                    ModRM(RegR(i.Operands[1]), i.Operands[0]);
                 }
                 break;
             }
@@ -680,7 +931,7 @@ internal sealed class Encoder
                 if (i.Width != 4 || i.Operands[0] is not MReg)
                     throw new InvalidOperationException("CMOV takes a register destination");
                 B(0x0F, (byte)(0x40 + (int)i.Cond));
-                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                ModRM(RegR(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.JmpTable:
             {
@@ -756,11 +1007,11 @@ internal sealed class Encoder
                 break;
             case MOp.Xadd:
                 B(0x0F, Wide(0xC1, w));
-                ModRM(Reg(i.Operands[1]), i.Operands[0]);
+                ModRM(RegR(i.Operands[1]), i.Operands[0]);
                 break;
             case MOp.Cmpxchg:
                 B(0x0F, Wide(0xB1, w));
-                ModRM(Reg(i.Operands[1]), i.Operands[0]);
+                ModRM(RegR(i.Operands[1]), i.Operands[0]);
                 break;
             case MOp.RepMovsb:
                 B(0xF3, 0xA4);
@@ -827,10 +1078,10 @@ internal sealed class Encoder
                 B(0x0f, 0x70); PackedSource(i.Operands[0], Packed(i, 2)); B((byte)((MImm)i.Operands[1]).Value); break;
             case MOp.MmxExtractW:
                 // pextrw r32, mmS, ib: 0F C5 /r, the register in reg.
-                B(0x0f, 0xc5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3) | Packed(i, 2)), (byte)((MImm)i.Operands[1]).Value); break;
+                B(0x0f, 0xc5, (byte)(0xC0 | (RegR(i.Operands[0]) << 3) | Packed(i, 2)), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.MmxInsertW:
                 // pinsrw mmD, r32, ib: 0F C4 /r, mmD in reg, the register in r/m.
-                B(0x0f, 0xc4, (byte)(0xC0 | (Packed(i, 2) << 3) | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
+                B(0x0f, 0xc4, (byte)(0xC0 | (Packed(i, 2) << 3) | RegB(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.XmmLoad:
                 // movups xmmN, m128: 0F 10 /r.
                 B(0x0f, 0x10); ModRM((int)((MImm)i.Operands[0]).Value, i.Operands[1]); break;
@@ -865,9 +1116,9 @@ internal sealed class Encoder
             case MOp.XmmShiftImm:
                 B(0x66, 0x0f, (byte)((MImm)i.Operands[0]).Value, (byte)(0xC0 | (int)(((MImm)i.Operands[1]).Value << 3) | Packed(i, 3)), (byte)((MImm)i.Operands[2]).Value); break;
             case MOp.XmmExtractW:
-                B(0x66, 0x0f, 0xc5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3) | Packed(i, 2)), (byte)((MImm)i.Operands[1]).Value); break;
+                B(0x66, 0x0f, 0xc5, (byte)(0xC0 | (RegR(i.Operands[0]) << 3) | Packed(i, 2)), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.XmmInsertW:
-                B(0x66, 0x0f, 0xc4, (byte)(0xC0 | (Packed(i, 2) << 3) | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
+                B(0x66, 0x0f, 0xc4, (byte)(0xC0 | (Packed(i, 2) << 3) | RegB(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.ThreeDNowOp:
                 B(0x0f, 0x0f); PackedSource(i.Operands[1], Packed(i, 2)); B((byte)((MImm)i.Operands[0]).Value); break;
             case MOp.Emms:
@@ -947,7 +1198,7 @@ internal sealed class Encoder
                 if (i.Operands.Count != 2 || i.Operands[0] is not MReg || i.Operands[1] is not (MMem or MReg { IsXmm: true }))
                     throw new InvalidOperationException("Truncating conversion takes a register and memory or an XMM register");
                 B(i.Op == MOp.Cvttss2si ? (byte)0xF3 : (byte)0xF2, 0x0F, 0x2C);
-                XmmRM(Reg(i.Operands[0]), i.Operands[1]);
+                XmmRM(RegR(i.Operands[0]), i.Operands[1]);
                 break;
             // ---- scalar SSE (Select.Sse) -------------------------------------
             case MOp.MovF when i.Width == 16 && !(i.Operands[0] is MReg { IsXmm: true } && i.Operands[1] is MReg { IsXmm: true }):
@@ -1020,10 +1271,10 @@ internal sealed class Encoder
                 B(0x66, 0x0F, (byte)((MImm)i.Operands[1]).Value, (byte)(0xC0 | (int)(((MImm)i.Operands[2]).Value << 3) | Xmm(i.Operands[0])), (byte)((MImm)i.Operands[3]).Value);
                 break;
             case MOp.XmmExtractV:
-                B(0x66, 0x0F, 0xC5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3) | Xmm(i.Operands[1])), (byte)((MImm)i.Operands[2]).Value);
+                B(0x66, 0x0F, 0xC5, (byte)(0xC0 | (RegR(i.Operands[0]) << 3) | (XmmNumber(i.Operands[1]) & 7)), (byte)((MImm)i.Operands[2]).Value);
                 break;
             case MOp.XmmInsertV:
-                B(0x66, 0x0F, 0xC4, (byte)(0xC0 | (Xmm(i.Operands[0]) << 3) | Reg(i.Operands[1])), (byte)((MImm)i.Operands[2]).Value);
+                B(0x66, 0x0F, 0xC4, (byte)(0xC0 | (Xmm(i.Operands[0]) << 3) | RegB(i.Operands[1])), (byte)((MImm)i.Operands[2]).Value);
                 break;
             case MOp.XmmStoreNtV:
                 B(0x66, 0x0F, 0xE7);
@@ -1060,7 +1311,7 @@ internal sealed class Encoder
                 // Never in a leaf, which has no frame (X86Target.Leaf).
                 if (_m.Frameless) throw new InvalidOperationException($"{_m.Source.Name}: Sys.CallerRegister in a function without a frame");
                 Gpr kept = ((MImm)i.Operands[1]).Value switch { 0 => Gpr.Ebx, 1 => Gpr.Esi, _ => Gpr.Edi };
-                int to = Reg(i.Operands[0]), saved = _m.SavedRegs.IndexOf(kept);
+                int to = Gp(i.Operands[0]), saved = _m.SavedRegs.IndexOf(kept);
                 if (saved >= 0)
                 {
                     B(0x8B); ModRM(to, MMem.Frame(-_m.Frame.Size - 4 * (saved + 1)));   // mov r, [ebp-...]
@@ -1107,11 +1358,11 @@ internal sealed class Encoder
                 break;
             case MOp.Bsf:
                 B(0x0F, 0xBC);
-                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                ModRM(RegR(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.Bsr:
                 B(0x0F, 0xBD);
-                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                ModRM(RegR(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.MmxStoreNt:
                 B(0x0F, 0xE7);
@@ -1136,7 +1387,7 @@ internal sealed class Encoder
                 break;
             case MOp.MmxFindW4:
             {
-                int r = Reg(i.Operands[0]);
+                int r = Gp(i.Operands[0]);
                 B(0x0F, 0x6F); ModRM(0, i.Operands[1]);         // movq mm0, m
                 B(0x0F, 0x75); ModRM(0, i.Operands[2]);         // pcmpeqw mm0, p
                 B(0x0F, 0x63, 0xC0);                            // packsswb mm0, mm0
@@ -1145,7 +1396,7 @@ internal sealed class Encoder
             }
             case MOp.MmxFindW8:
             {
-                int r = Reg(i.Operands[0]);
+                int r = Gp(i.Operands[0]);
                 MMem at = (MMem)i.Operands[1];
                 MMem next = new(at.Base, at.Disp + 8) { Index = at.Index, Scale = at.Scale, Symbol = at.Symbol, Reloc = at.Reloc, Label = at.Label };
                 B(0x0F, 0x6F); ModRM(0, at);                    // movq mm0, m
@@ -1158,7 +1409,7 @@ internal sealed class Encoder
             }
             case MOp.MmxEqual8:
             {
-                int r = Reg(i.Operands[0]);
+                int r = Gp(i.Operands[0]);
                 B(0x0F, 0x6F); ModRM(0, i.Operands[1]);         // movq mm0, a
                 B(0x0F, 0x76); ModRM(0, i.Operands[2]);         // pcmpeqd mm0, b
                 B(0x0F, 0x6B, 0xC0);                            // packssdw mm0, mm0
@@ -1434,16 +1685,16 @@ internal sealed class Encoder
             // `mov ebp, esp` in a frameless leaf written 8B EC: its first bytes
             // after its `push ebp` are then never a framed function's 55 89 E5
             // (Runtime.FrameAt).
-            case MReg when _m.Frameless && w == 4 && dst is MReg { Id: (int)Gpr.Ebp } && Reg(src) == (int)Gpr.Esp:
+            case MReg when _m.Frameless && w == 4 && dst is MReg { Id: (int)Gpr.Ebp } && Gp(src) == (int)Gpr.Esp:
                 B(0x8B, 0xEC);
                 break;
             case MReg:
                 B(Wide(0x89, w));
-                ModRM(Reg(src), dst);
+                ModRM(RegR(src), dst);
                 break;
             default:
                 B(Wide(0x8B, w));
-                ModRM(Reg(dst), src);
+                ModRM(RegR(dst), src);
                 break;
         }
     }
@@ -1585,20 +1836,17 @@ internal sealed class Encoder
             return false;
         }
         bool isLong = _long.Contains(i);
-        bool widened = false;
         int size = i.Op == MOp.Jmp ? (isLong ? 5 : 2) : (isLong ? 6 : 2);
         int disp = target.Offset - (Here + size);
-        if (_widen && !isLong && disp is < -128 or > 127)
-        {
-            // Offsets of blocks after this one are from the previous pass
-            // and may still shrink relative to here; on a backward jump
-            // they are exact. Either way, widening is safe and monotone.
-            _long.Add(i);
-            isLong = true;
-            widened = true;
-            size += i.Op == MOp.Jmp ? 3 : 4;
-            disp = target.Offset - (Here + size);
-        }
+        // A SHORT JUMP IS ASKED ABOUT WHEN THE PASS IS WHOLE (Pass), against
+        // offsets all of that one layout. Widened here, as it was met, a
+        // forward jump was measured from where this pass had put it to where
+        // the LAST pass had put its target -- short of the truth by every
+        // byte the jumps before it had grown this pass -- and past a hundred
+        // and twenty-eight such bytes its displacement came out below -128:
+        // jumps of a few bytes' reach written in six, two in a hundred bytes
+        // of a large function.
+        if (!isLong) _short.Add((i, Here + size, target));
         if (i.Op == MOp.Jmp)
         {
             if (isLong)
@@ -1620,7 +1868,7 @@ internal sealed class Encoder
         {
             B((byte)(0x70 + (int)i.Cond), (byte)disp);
         }
-        return widened;
+        return false;
     }
 
     /// <summary>
