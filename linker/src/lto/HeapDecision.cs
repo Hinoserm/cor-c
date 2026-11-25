@@ -180,9 +180,12 @@ public static class HeapDecision
                             if (why is null && counted.Add((node, k))) sites.Add(node.Name + ": " + e.Name + " (reached: " + Path(node) + ")");
                             else if (why is not null) excused.Add(node.Name + ": " + e.Name + ": " + why);
                         }
+                        // A call that runs once makes what it returns once,
+                        // as a call that frees it does nothing more
+                        // (Escape.CollectorSites).
                         if ((e.Flags & HeapFlags.OwnedAllocation) == 0)
                             Reach(world.Resolve(node.Unit, e.Name, f => Reach(f, true), everyMethod, dataSeen),
-                                (e.Flags & HeapFlags.OwnedResult) != 0 || Held(e) ? false : origin ? unowned : true);
+                                (e.Flags & HeapFlags.OwnedResult) != 0 || Held(e) || once.RunsOnce(node.Name, e) ? false : origin ? unowned : true);
                         break;
                     case HeapEventKind.Named or HeapEventKind.Target when !e.Name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal):
                         Reach(world.Resolve(node.Unit, e.Name, f => Reach(f, true), everyMethod, dataSeen), true);

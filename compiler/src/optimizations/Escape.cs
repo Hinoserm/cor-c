@@ -5214,6 +5214,11 @@ continue;
         HashSet<string> madeTypes = new(StringComparer.Ordinal);
         bool Made(DataItem d) => madeTypes.Contains(d.Name);
 
+        // WHETHER A SLOT HAS A TYPE THAT ANSWERS IT IN NO TABLE (MayAnswer:
+        // an array's sequence faces, a box's or a string's system
+        // interfaces): an empty slot is then a call this cannot see the
+        // targets of. Without one, an empty slot is a call no object can take.
+        HashSet<(string, long)> faced = new();
         string[] Slot(string declaring, long slot)
         {
             if (bySlot.TryGetValue((declaring, slot), out string[]? known)) return known;
@@ -5231,6 +5236,7 @@ continue;
                 // List<DictionaryEntry>'s FreeStorage, reached from Runtime.Free,
                 // kept a collector for a program that needs none (1821).
                 if (!Made(d) && !Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) continue;
+                if (Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) faced.Add((declaring, slot));
                 foreach (DataReloc r in d.Relocs)
                     if (r.Addend == 0 && bases.Contains(r.Offset - slot)) found.Add(r.Symbol);
             }
@@ -5349,6 +5355,20 @@ continue;
                         continue;
                     }
                     string[] targets = Slot(declaring, method.Offset);
+                    // A SLOT NO TYPE MADE FILLS, where none answers it in no
+                    // table: every concrete type that is the declaring one
+                    // fills each of its slots, so only a type with no objects
+                    // answered -- an abstract one an `is` names, which made
+                    // it look made (__RectangularArray, named by Array.Rank:
+                    // three unresolved calls in the array faces, and with
+                    // them every method of every live type reached and a
+                    // collector, 1821) -- and the call reaches nothing.
+                    if (targets.Length == 0 && !faced.Contains((declaring, method.Offset)))
+                    {
+                        if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}+{method.Offset}: no made type fills it");
+                        result[i] = Array.Empty<string>();
+                        continue;
+                    }
                     // A slot no descriptor fills is not a call this knows.
                     if (targets.Length == 0 || targets.Any(t => !byName.ContainsKey(t)))
                     {
@@ -7288,8 +7308,13 @@ continue;
                         // The callee's returned object is freed here when the
                         // call is owned; handed on as this function's own
                         // result, it is owned exactly as far as this one is.
+                        // A CALL THAT RUNS ONCE makes the object it returns
+                        // once, kept or not: as a call that frees it, the
+                        // callee's fresh result counts nothing here (a static
+                        // initialiser's failure message, String.Concat into
+                        // TypeInitializationException, 1823).
                         bool ownedCall = _ownedCalls.Contains(i) && !(_heldCalls.Contains(i) && Leaky(i));
-                        bool callUnowned = ownedCall ? false : origin ? unowned : true;
+                        bool callUnowned = ownedCall || once.RunsOnce(f, b) ? false : origin ? unowned : true;
                         Reach(i.Callee, callUnowned, f.Name);
                     }
                     foreach (Operand o in i.Operands) if (o is SymOperand sym) Reach(sym.Name, true, f.Name);
