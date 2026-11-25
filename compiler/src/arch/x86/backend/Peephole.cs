@@ -1015,7 +1015,7 @@ internal static class Peephole
         {
             MInstr store = instrs[k];
             MInstr load = instrs[k + 1];
-            if (!IsMov(store) || !IsMov(load) || store.Operands[0] is not MMem sm || store.Operands[1] is not MReg sr
+            if (!IsMov(store) || !IsMov(load) || store.Lock || load.Lock || store.Operands[0] is not MMem sm || store.Operands[1] is not MReg sr
                 || load.Operands[0] is not MReg lr || load.Operands[1] is not MMem lm || !SameMem(sm, lm))
             {
                 continue;
@@ -1216,6 +1216,14 @@ internal static class Peephole
         && m.Base?.Id == (int)Gpr.Ebp && m.Index is null
         && m.Symbol is null && m.Label is null;
 
+    /// <summary>
+    /// A reload of an allocator slot whose value a register still holds:
+    /// looking back up to 16 instructions for the last load or store of the
+    /// slot, through plain register arithmetic only (SpillTransparent; any
+    /// other memory operand, jump, call or write of the frame stops it), the
+    /// reload becomes a move from that register -- or goes, when it is the
+    /// register it loads -- where nothing between wrote the register.
+    /// </summary>
     internal static void ForwardSpillLoads(List<MInstr> instrs)
     {
         for (int k = 0; k < instrs.Count; k++)
