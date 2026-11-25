@@ -310,12 +310,6 @@ internal sealed partial class Selector
             case Opcode.FToU:
                 SelectFloatToInteger(i);
                 break;
-            case Opcode.Load:
-                SelectLoadL(i);
-                break;
-            case Opcode.Store:
-                SelectStoreL(i);
-                break;
             case Opcode.MemCopy:
                 SelectMemCopyL(i);
                 break;
@@ -747,99 +741,6 @@ internal sealed partial class Selector
     }
 
     // ---- memory --------------------------------------------------------------------
-
-    private void SelectLoadL(Instr i) => LoadIntoL(i.Dest!, AddressL(i.Operands[0], i.Offset), i.Size, i.Signed);
-
-    /// <summary>`size` bytes at `m` into d, widened as d's type and `signed` say: SelectLoadL's, and an asm block's slot read back (TryInlineAsmL).</summary>
-    private void LoadIntoL(VReg d, MMem m, int size, bool signed)
-    {
-        if (d.Type.IsFloat())
-        {
-            int fw = Width(d.Type);
-            if (size == fw)
-            {
-                EmitW(MOp.MovF, fw, V(d), m);
-            }
-            else
-            {
-                MReg t = FTemp();
-                EmitW(MOp.MovF, size, t, m);
-                Emit(new MInstr(MOp.CvtFToF, V(d), t) { Width = fw, SourceWidth = size });
-            }
-            return;
-        }
-        MReg r = V(d);
-        switch (size)
-        {
-            case 1:
-            case 2:
-                if (signed)
-                {
-                    EmitW(MOp.Movsx, size, r, m);
-                    if (d.Type == IrType.I32) MovL(r, r, 4);
-                }
-                else
-                {
-                    EmitW(MOp.Movzx, size, r, m);
-                }
-                break;
-            case 4:
-                if (d.Type == IrType.I64 && signed)
-                {
-                    EmitW(MOp.Movsx, 4, r, m);
-                }
-                else
-                {
-                    MovL(r, m, 4);
-                }
-                break;
-            case 8:
-                if (d.Type != IrType.I64)
-                {
-                    Error("8-byte load into a 32-bit register");
-                    return;
-                }
-                MovL(r, m, 8);
-                break;
-            default:
-                Error($"load of size {size}");
-                break;
-        }
-    }
-
-    private void SelectStoreL(Instr i) => StoreFromL(AddressL(i.Operands[0], i.Offset), i.StoredValue, i.Size);
-
-    /// <summary>`size` bytes of v at `m`: SelectStoreL's, and an asm block's slot filled (TryInlineAsmL).</summary>
-    private void StoreFromL(MMem m, Operand v, int size)
-    {
-        if (v.Type.IsFloat())
-        {
-            int fw = Width(v.Type);
-            MReg x = F(v);
-            if (size == fw)
-            {
-                EmitW(MOp.MovF, fw, m, x);
-            }
-            else
-            {
-                MReg t = FTemp();
-                Emit(new MInstr(MOp.CvtFToF, t, x) { Width = size, SourceWidth = fw });
-                EmitW(MOp.MovF, size, m, t);
-            }
-            return;
-        }
-        if (size is not (1 or 2 or 4 or 8))
-        {
-            Error($"store of size {size}");
-            return;
-        }
-        MOperand src = RML(v, size == 8 ? 8 : 4);
-        if (src is MImm imm && size < 4)
-        {
-            src = Imm(imm.Value & (size == 1 ? 0xFF : 0xFFFF));
-        }
-        MovL(m, src, size);
-    }
 
     /// <summary>The most bytes a constant clear or copy is written out as moves.</summary>
     private const long InlineBytes = 128;

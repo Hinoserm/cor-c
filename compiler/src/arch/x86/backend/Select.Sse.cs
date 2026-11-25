@@ -6,7 +6,10 @@ using Block = Corsac.Lang.Ir.Block;
 
 /// <summary>
 /// FLOATS IN THE XMM REGISTERS, where --cpu has SSE (floats) and SSE2
-/// (doubles) and the code owns that state (hosted code: Lowering.OwnsFpuState):
+/// (doubles) and the code owns that state (hosted code: Lowering.OwnsFpuState)
+/// -- and every float of long mode, whose processor has SSE2 and whose code
+/// has no x87 (there a constant's pool word is named RIP-relative, and bits
+/// cross between the classes by MOVD and MOVQ):
 /// each float value a virtual register of the allocator's XMM class
 /// (MFunction.XmmRegs), worked on by the scalar instructions -- ADDSS and its
 /// kin -- in registers across instructions and blocks, where the x87 path
@@ -341,8 +344,9 @@ internal sealed partial class Selector
 
     /// <summary>
     /// The bits of an integer as a float of the XMM class: a constant from the
-    /// pool; a word with MOVD where --cpu has SSE2, else through the scratch;
-    /// two words through the scratch.
+    /// pool (long mode's zero by XORPS); in long mode the one register by MOVD
+    /// or MOVQ; on i386 a word with MOVD where --cpu has SSE2, else through
+    /// the scratch, and two words by two MOVDs joined.
     /// </summary>
     private void SseFromBits(VReg d, Operand src)
     {

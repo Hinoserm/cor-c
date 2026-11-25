@@ -72,7 +72,7 @@ internal sealed partial class Selector
             slot[k] = MMem.Frame(_m.Frame.Allocate(width, Math.Max(8, width)));
             operandOf[k] = operands.Count;
             operands.Add(slot[k]!);
-            if (plan.StoreBefore[k] && input[k] is { } value) StoreFromL(slot[k]!, value, width);
+            if (plan.StoreBefore[k] && input[k] is { } value) StoreFrom(slot[k]!, value, width);
         }
         List<Gpr> uses = new();
         foreach ((int gpr, int k) in plan.Inputs)
@@ -96,7 +96,7 @@ internal sealed partial class Selector
             if (output[k] is { } d) MovL(V(d), MReg.Of((Gpr)gpr), spec.Locals[k].Width == 8 ? 8 : 4);
         for (int k = 0; k < count; k++)
             if (plan.LoadAfter[k] && output[k] is { } d)
-                LoadIntoL(d, slot[k]!, spec.Locals[k].Width, spec.Locals[k].Kind == 's');
+                LoadInto(d, slot[k]!, spec.Locals[k].Width, spec.Locals[k].Kind == 's');
         return true;
     }
 }

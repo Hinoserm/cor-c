@@ -53,6 +53,13 @@ internal static class CpuModel
     public static bool IntelCore => Name is "core2" or "nehalem" or "sandybridge" or "haswell" or "skylake" or "skylake-avx512";
 
     /// <summary>
+    /// The Core 2 alone of that line (Merom, Wolfdale): its 64-bit IMUL is
+    /// five clocks where its 32-bit one, and both from Nehalem on, are three
+    /// (Agner Fog's instruction tables).
+    /// </summary>
+    public static bool Core2 => Name == "core2";
+
+    /// <summary>
     /// The psABI's levels above the baseline, which name instructions and no
     /// processor: tuned for what has them -- the Core line and the K10 on, whose
     /// rules here are alike (GCC tunes them generically, PTA_NO_TUNE). The

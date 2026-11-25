@@ -1690,7 +1690,7 @@ internal sealed partial class Selector
             or Opcode.LabelAddr or Opcode.StackPointer or Opcode.FramePointer or Opcode.Trunc64 or Opcode.SExt32 or Opcode.ZExt32
             or Opcode.Add or Opcode.Sub or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Mul or Opcode.Copy
             or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas) or Opcode.FAdd or Opcode.FSub or Opcode.FMul or Opcode.FDiv or Opcode.FNeg
-            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits;
+            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store;
 
     private void SelectInstr(Instr i)
     {
@@ -2333,20 +2333,25 @@ internal sealed partial class Selector
         // LONG MODE'S PROCESSORS, BY LATENCY: each step waits on the last, so
         // a recipe is its steps' clocks added, and it replaces IMUL only
         // where that is less than IMUL's. The K8 (and the baseline tuned as
-        // it) and the K10: IMUL three clocks at 32 bits and four at 64, a
-        // LEA with an index two, a shift, an add or a move one -- AMD 25112
-        // 8.2: a replacement only at two clocks or fewer for 32 bits, three
-        // for 64. The Core line and the levels tuned as it: IMUL three at
-        // either width, a LEA of a base and a scaled index one (Agner Fog's
-        // tables; uops.info for IMUL). The Pentium 4's sixty-four-bit Nocona:
-        // IMUL ten, a LEA with an index near three, the rest one.
+        // it): IMUL three clocks at 32 bits and four at 64, a LEA with an
+        // index two, a shift, an add or a move one -- AMD 25112 8.2: a
+        // replacement only at two clocks or fewer for 32 bits, three for 64.
+        // The K10 the same (Agner Fog's instruction tables, as all of what
+        // follows). The Core line and the levels tuned as it: IMUL three --
+        // five at 64 bits on the Core 2 -- and a LEA of a base and a scaled
+        // index one. The Pentium 4's sixty-four-bit Nocona: IMUL ten, a LEA
+        // with an index three and a half, the rest one.
         if (X86Mode.Long)
         {
-            int lea = CpuModel.IntelCore || CpuModel.LevelAboveBaseline ? 1 : CpuModel.NetBurst ? 3 : 2;
-            int imul = CpuModel.NetBurst ? 10 : CpuModel.IntelCore || CpuModel.LevelAboveBaseline ? 3 : width == 8 ? 4 : 3;
-            // The odd part: a move; one LEA; two; a move, a shift and an add or a subtract.
-            int clocks = kind switch { 0 => 1, 1 => lea, 2 or 3 => 2 * lea, 4 or 5 => 3, _ => int.MaxValue };
-            if (clocks != int.MaxValue) clocks += (k > 0 ? 1 : 0) + (negate ? 1 : 0) + (copies ? 1 : 0);
+            int lea = CpuModel.IntelCore || CpuModel.LevelAboveBaseline ? 1 : CpuModel.NetBurst ? 4 : 2;
+            int imul = CpuModel.NetBurst ? 10 : CpuModel.Core2 && width == 8 ? 5 : CpuModel.IntelCore || CpuModel.LevelAboveBaseline ? 3
+                : width == 8 ? 4 : 3;
+            // The odd part: a move; one LEA; two, and the source's copy before
+            // them where the second reads it after the first wrote; a move, a
+            // shift and an add or a subtract -- or, the source being the
+            // destination, its copy beside the shift and then the add: two.
+            int clocks = kind switch { 0 => 1, 1 => lea, 2 => 2 * lea, 3 => 2 * lea + (copies ? 1 : 0), 4 or 5 => copies ? 2 : 3, _ => int.MaxValue };
+            if (clocks != int.MaxValue) clocks += (k > 0 ? 1 : 0) + (negate ? 1 : 0);
             cost = clocks < imul ? 0 : int.MaxValue;
         }
         if (cost > limit)
@@ -2380,13 +2385,16 @@ internal sealed partial class Selector
                 EmitW(MOp.Lea, width, dest, Scaled(src, src, Scale(a)));
                 EmitW(MOp.Lea, width, dest, Scaled(src, dest, b));
                 break;
+            // (The source copied because it is the destination: the
+            // destination holds it already. Long mode leaves the move out;
+            // i386's code is as it was.)
             case 4:
-                MovW(dest, src, width);
+                if (!(copies && X86Mode.Long)) MovW(dest, src, width);
                 EmitW(MOp.Shl, width, dest, Imm(j));
                 EmitW(MOp.Sub, width, dest, src);
                 break;
             case 5:
-                MovW(dest, src, width);
+                if (!(copies && X86Mode.Long)) MovW(dest, src, width);
                 EmitW(MOp.Shl, width, dest, Imm(j));
                 EmitW(MOp.Add, width, dest, src);
                 break;
@@ -3722,15 +3730,22 @@ internal sealed partial class Selector
             Fstp(d);
             return;
         }
+        // AN INTEGER'S ONE REGISTER IN LONG MODE holds all of it: MOVSX there
+        // is written for the whole register (so an I32's sign extension
+        // clears its upper half again), four signed bytes into an I64 are
+        // MOVSXD, four unsigned a 32-bit move, and eight one move. On i386
+        // an I64 is the pair, its high word made after.
         MReg lo = Lo(d);
         switch (size)
         {
             case 1:
             case 2:
                 EmitW(signed ? MOp.Movsx : MOp.Movzx, size, lo, m);
+                if (X86Mode.Long && signed && d.Type == IrType.I32) MovW(lo, lo, 4);
                 break;
             case 4:
-                Mov(lo, m);
+                if (X86Mode.Long && signed && d.Type == IrType.I64) EmitW(MOp.Movsx, 4, lo, m);
+                else MovW(lo, m, 4);
                 break;
             case 8:
             {
@@ -3738,6 +3753,11 @@ internal sealed partial class Selector
                 {
                     Error("8-byte load into a 32-bit register");
                     return;
+                }
+                if (X86Mode.Long)
+                {
+                    MovW(lo, m, 8);
+                    break;
                 }
                 MMem m4 = Displaced(m, 4);
                 // Load the half that is not the base register last, so the
@@ -3758,7 +3778,7 @@ internal sealed partial class Selector
                 Error($"load of size {size}");
                 break;
         }
-        if (d.Type == IrType.I64 && size < 8)
+        if (Pairs(d.Type) && size < 8)
         {
             if (signed)
             {
@@ -3790,8 +3810,10 @@ internal sealed partial class Selector
             case 1:
             case 2:
             {
-                MOperand src = v.Type == IrType.I64 ? PairRM(v).Lo : RM(v);
-                if (src is MReg r && size == 1)
+                // The low bytes of the value's (low) register. Any of long
+                // mode's registers has a low byte.
+                MOperand src = Pairs(v.Type) ? PairRM(v).Lo : RM(v, 4);
+                if (src is MReg r && size == 1 && !X86Mode.Long)
                 {
                     _m.ByteRegs.Add(r.Id);
                 }
@@ -3803,10 +3825,16 @@ internal sealed partial class Selector
                 break;
             }
             case 4:
-                Mov(m, v.Type == IrType.I64 ? PairRM(v).Lo : RM(v));
+                MovW(m, Pairs(v.Type) ? PairRM(v).Lo : RM(v, 4), 4);
                 break;
             case 8:
             {
+                if (X86Mode.Long)
+                {
+                    // One register, or an immediate thirty-two bits hold sign-extended (RM).
+                    MovW(m, RM(v, 8), 8);
+                    break;
+                }
                 (MOperand lo, MOperand hi) = PairRM(v);
                 Mov(m, lo);
                 Mov(Displaced(m, 4), hi);
@@ -4028,9 +4056,8 @@ internal sealed partial class Selector
             // through a temporary (DestPair, every operand counted, so one
             // that is the value too: a move the allocator makes nothing of):
             // written first, the instruction addressed through the value.
-            // The shift's count is masked as the hardware masks CL at either
-            // width, and the 64-bit LOCK XADD, XCHG and CMPXCHG are the
-            // K8's: a 486 had none (the error above).
+            // (The 64-bit LOCK XADD, XCHG and CMPXCHG are long mode's: a 486
+            // had none, the error above.)
             case Opcode.AtomicSwap:
             {
                 // xchg with a memory operand locks the bus by itself.

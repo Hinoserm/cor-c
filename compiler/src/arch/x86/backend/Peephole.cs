@@ -1593,8 +1593,6 @@ internal static partial class Peephole
     }
 
     /// <summary>
-    /// (Long mode's register-to-register MovF is MOVSS or MOVSD today, which
-    /// keeps the destination's upper lanes: read MOVAPS below as that there.)
     /// AN XMM VALUE RELOADED FROM THE SLOT A REGISTER STILL HOLDS IT IN:
     /// `movups [s], x6 ; movaps x6', x5 ; ... ; movups x2, [s]` -- the
     /// allocator gave x6 to something else, so it reloaded for x2 what x6

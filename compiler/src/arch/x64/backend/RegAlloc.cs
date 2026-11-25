@@ -15,7 +15,39 @@ internal static class Allocator
 {
     internal static Gpr[] CalleeSaved => LongAbi.CalleeSaved;
 
-    public static void Run(MFunction m) => Corsac.Lang.RegAlloc.Allocator.Run(new X64Target(m).Lower());
+    public static void Run(MFunction m)
+    {
+        PruneUnusedPoolLoads(m);
+        Corsac.Lang.RegAlloc.Allocator.Run(new X64Target(m).Lower());
+    }
+
+    /// <summary>
+    /// A FLOAT CONSTANT'S OWN LOAD, WHERE EVERY READER TOOK THE POOL'S WORD
+    /// ITSELF (Select.Sse's XSource: `addsd xmm, [rip + constant]`): the
+    /// register it filled is read by nothing, and the load goes -- a
+    /// read-only word read for no one, which no later pass removes where the
+    /// register is not written again in its block. i386's allocator drops
+    /// these among the unused values it prunes (its PruneUnusedValues, by
+    /// i386's own reading of what an instruction names); here only the
+    /// pool's loads are taken, judged by long mode's (RegsOf).
+    /// </summary>
+    private static void PruneUnusedPoolLoads(MFunction m)
+    {
+        static bool PoolLoad(MInstr i) => i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false }
+            && i.Operands[1] is MMem { Base: null, Index: null, Symbol: { } pool } && pool.StartsWith(X86Backend.FloatPoolPrefix, StringComparison.Ordinal);
+        bool any = false;
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                if (PoolLoad(i)) { any = true; break; }
+        if (!any) return;
+        HashSet<int> read = new();
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                foreach ((MReg reg, Roles.Role role, int _, bool _) in RegsOf(i))
+                    if (role != Roles.Role.Def) read.Add(reg.Id);
+        foreach (MBlock b in m.Blocks)
+            b.Instrs.RemoveAll(i => PoolLoad(i) && !read.Contains(((MReg)i.Operands[0]).Id));
+    }
 
     internal static IEnumerable<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> RegsOf(MInstr i)
     {
