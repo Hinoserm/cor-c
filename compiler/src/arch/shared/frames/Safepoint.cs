@@ -24,7 +24,7 @@ public sealed class Safepoint
 /// each site with the words its map names -- its live spill slots
 /// (Safepoint.SlotOffsets) and the IR frame slot words live or exposed at
 /// it (FrameSlotLiveness), or every IR slot word where the liveness left
-/// the function as it was or never met the call (a map must not lack).
+/// the function as it was.
 /// </summary>
 public static class StackMapRecords
 {
@@ -43,7 +43,14 @@ public static class StackMapRecords
     {
         if (map is null) return new(ret, true, 0, Array.Empty<int>());
         IEnumerable<int> named = map.SlotOffsets;
-        if (liveness is not null) named = named.Concat(liveness.At.TryGetValue(call, out int[]? words) ? words : slotWordOffsets);
+        if (liveness is null) named = named.Concat(slotWordOffsets);
+        // A CALL THE LIVENESS NEVER MET IS REFUSED, not given every word:
+        // the zeroing covers only what the calls it met name, so a word
+        // named here could hold whatever an earlier call left. The targets'
+        // readers flag every instruction their encoders record as a call.
+        else if (liveness.At.TryGetValue(call, out int[]? words)) named = named.Concat(words);
+        else if (liveness.NoSlots) { }
+        else throw new InvalidOperationException("stack maps: a call site the frame slots' liveness did not see");
         int[] site = Corsac.Lang.Ir.StackMapTable.Words(named, layout.WordBytes);
         // No live slot is one shared empty list of words.
         return new(ret, false, map.Registers, site.Length == 0 ? Array.Empty<int>() : site);

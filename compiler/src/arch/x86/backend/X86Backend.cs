@@ -609,6 +609,8 @@ public sealed class X86Backend : IBackend
                 // such function's start (the table's base), as EmitStackMaps
                 // made them from the sites.
                 StackMapTable.Function? record = null;
+                // Every IR slot word, where the liveness left the function whole: made once a function, and only then.
+                List<int> slotWords = m.SlotLiveness is null ? ObjectWords(m) : new List<int>();
                 foreach ((MInstr call, int ret) in encoder.CallSites)
                 {
                     if (record is null)
@@ -618,11 +620,11 @@ public sealed class X86Backend : IBackend
                         // Its IR frame slots are in each call's own map where
                         // their liveness is known (FrameSlotLiveness), and
                         // read whole at every call where it is not.
-                        record = StackMapRecords.Function(StackMapLayout.I386, start - mapBaseAt, m.Frame.Size, SavedMask(m), ObjectWords(m), m.SlotLiveness);
+                        record = StackMapRecords.Function(StackMapLayout.I386, start - mapBaseAt, m.Frame.Size, SavedMask(m), slotWords, m.SlotLiveness);
                         mapFunctions.Add(record);
                     }
                     if (ret > 0x7FFFFF) throw new InvalidOperationException("a function over 8 MB has no stack map");
-                    record.Sites.Add(StackMapRecords.Site(StackMapLayout.I386, call, ret, m.Safepoints.GetValueOrDefault(call), ObjectWords(m), m.SlotLiveness));
+                    record.Sites.Add(StackMapRecords.Site(StackMapLayout.I386, call, ret, m.Safepoints.GetValueOrDefault(call), slotWords, m.SlotLiveness));
                 }
             }
 

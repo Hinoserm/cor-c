@@ -93,27 +93,36 @@ internal static class FrameSlotLiveness
         return result;
     }
 
-    /// <summary>The function's final code as the frame analyses read it.</summary>
+    /// <summary>
+    /// The function's final code as the frame analyses read it. A block
+    /// with a branch before its last instruction is read as the blocks it
+    /// really is -- what follows the branch runs only where it was not
+    /// taken -- so a store after a branch is never taken as made on the
+    /// branch's path.
+    /// </summary>
     private static FrameCode Read(MFunction m)
     {
         FrameCode code = new(4, m.Frame.Size);
         foreach ((int offset, int bytes) in m.Frame.SlotRanges()) code.Slot(offset, bytes);
         Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
         foreach (MBlock b in m.Blocks) index[b] = code.NewBlock(b.Source is { IsLandingPad: true });
-        List<MBlock> into = new();
+        void Edge(int from, MBlock to)
+        {
+            // A jump out of the blocks known: not a shape this reads.
+            if (index.TryGetValue(to, out int t)) code.Edge(from, t);
+            else code.Opaque = true;
+        }
         for (int b = 0; b < m.Blocks.Count; b++)
         {
-            m.SuccessorsInto(b, into);
-            foreach (MBlock to in into)
+            List<MInstr> instrs = m.Blocks[b].Instrs;
+            int at = index[m.Blocks[b]];
+            // Whether control can run off the end of the part being read.
+            bool falls = true;
+            for (int k = 0; k < instrs.Count; k++)
             {
-                // A jump out of the blocks known: not a shape this reads.
-                if (index.TryGetValue(to, out int t)) code.Edge(b, t);
-                else code.Opaque = true;
-            }
-            foreach (MInstr i in m.Blocks[b].Instrs)
-            {
+                MInstr i = instrs[k];
                 bool call = i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe || m.Safepoints.ContainsKey(i);
-                code.Instr(b, call ? i : null);
+                code.Instr(at, call ? i : null);
                 if (i.Asm is not null || i.Native) code.Opaque = true;
                 bool wholeStore = i.Op == MOp.Mov && i.Width == 4 && !i.Lock && i.Operands.Count == 2
                     && i.Operands[0] is MMem { Index: null } stored && (stored.Disp & 3) == 0 && i.Operands[1] is not MMem;
@@ -125,14 +134,36 @@ internal static class FrameSlotLiveness
                     if (o is MReg { Id: Ebp }) code.BaseEscapes = true;
                     if (o is not MMem mem) continue;
                     if (mem.Index?.Id == Ebp) code.Opaque = true;
-                    if (mem.Base?.Id != Ebp || mem.IsSpill || mem.Disp >= 0) continue;
-                    if (i.Op == MOp.Lea) code.Does(b, FrameCode.Effect.Address, mem.Disp);
-                    else if (n == 0 && wholeStore) code.Does(b, FrameCode.Effect.WholeStore, mem.Disp);
+                    if (mem.Base?.Id != Ebp || mem.IsSpill) continue;
+                    // AN INDEXED ACCESS reaches wherever its index takes it,
+                    // whatever slot its displacement happens to lie in (a
+                    // constant folded into it may put it below its array's
+                    // first element, or in the slot beside): every slot, as
+                    // the base escaping.
+                    if (mem.Index is not null) { code.BaseEscapes = true; continue; }
+                    // An address above the base, or the base's own, is a
+                    // pointer into the frame all the same (Effect.Address).
+                    if (i.Op == MOp.Lea) { code.Does(at, FrameCode.Effect.Address, mem.Disp); continue; }
+                    if (mem.Disp >= 0) continue;
+                    if (n == 0 && wholeStore) code.Does(at, FrameCode.Effect.WholeStore, mem.Disp);
                     else if (n == 0 && otherStore) { }
-                    else if (i.Op == MOp.Mov && i.Width == 4 && mem.Index is null && (mem.Disp & 3) == 0) code.Does(b, FrameCode.Effect.ReadWord, mem.Disp);
-                    else code.Does(b, FrameCode.Effect.ReadSlot, mem.Disp);
+                    else if (i.Op == MOp.Mov && i.Width == 4 && (mem.Disp & 3) == 0) code.Does(at, FrameCode.Effect.ReadWord, mem.Disp);
+                    else code.Does(at, FrameCode.Effect.ReadSlot, mem.Disp);
                 }
+                bool jump = i.Op is MOp.Jmp or MOp.Jcc;
+                if (jump) Edge(at, ((MLabel)i.Operands[0]).Target);
+                else if (i.Op == MOp.JmpTable) foreach (MBlock to in i.Table!) Edge(at, to);
+                bool ends = i.Op is MOp.Jmp or MOp.JmpTable or MOp.JmpInd or MOp.Ret or MOp.Epilogue;
+                if ((jump || ends || i.Op == MOp.JmpTable) && k + 1 < instrs.Count)
+                {
+                    // What follows a branch inside a block: a part of its own.
+                    int next = code.NewBlock(false);
+                    if (!ends) code.Edge(at, next);
+                    at = next;
+                }
+                falls = !ends;
             }
+            if (falls && !m.Blocks[b].EndsUnconditionally && b + 1 < m.Blocks.Count) code.Edge(at, index[m.Blocks[b + 1]]);
         }
         return code;
     }

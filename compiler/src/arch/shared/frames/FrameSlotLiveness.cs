@@ -24,7 +24,7 @@ public sealed class FrameCode
         ReadWord,
         /// <summary>A read of the slot the word is in, whole: any access whose width or reach is not one word's.</summary>
         ReadSlot,
-        /// <summary>The address of the slot the word is in, taken: the slot is read (what holds the address may read it) and exposed from here on.</summary>
+        /// <summary>The address of the slot the word is in, taken: the slot is read (what holds the address may read it) and exposed from here on. An address in the frame but in no IR slot, at any offset, is the base escaping.</summary>
         Address,
     }
 
@@ -142,6 +142,8 @@ public static class FrameSlotLiveness
         public readonly Dictionary<object, int[]> At = new(ReferenceEqualityComparer.Instance);
         /// <summary>The words to zero where the function begins, as byte offsets from the frame's base, ascending by word.</summary>
         public int[] Zero = Array.Empty<int>();
+        /// <summary>The function has no IR slot word at all: no call names any, and At is empty.</summary>
+        public bool NoSlots;
     }
 
     /// <summary>Why a function was left as it was (Run's `why`): for a target's report.</summary>
@@ -154,7 +156,7 @@ public static class FrameSlotLiveness
         int word = code.WordBytes;
         int words = (code.FrameBytes + word - 1) / word;
         int nb = code.Blocks.Count;
-        if (words == 0 || nb == 0 || code.Slots.Count == 0) return new Result();
+        if (words == 0 || nb == 0 || code.Slots.Count == 0) return new Result { NoSlots = true };
         // The IR slots' words, each with its slot: word b is the one at base - word(b + 1).
         int[] slotOf = new int[words];
         Array.Fill(slotOf, -1);
@@ -174,7 +176,7 @@ public static class FrameSlotLiveness
             }
             if (count > 0) slots.Add((first, count));
         }
-        if (slots.Count == 0) return new Result();
+        if (slots.Count == 0) return new Result { NoSlots = true };
         List<int>[] predecessors = new List<int>[nb];
         for (int b = 0; b < nb; b++) predecessors[b] = new();
         for (int b = 0; b < nb; b++)
@@ -183,6 +185,17 @@ public static class FrameSlotLiveness
         if (predecessors[0].Count > 0 || code.Blocks[0].LandingPad) { why = LeftEntry; return null; }
         bool handlers = false;
         foreach (FrameCode.Block block in code.Blocks) if (block.LandingPad) handlers = true;
+        // AN ADDRESS TAKEN IN THE FRAME BUT IN NO IR SLOT -- a scratch area's,
+        // an argument's above the base, the base's own -- is a pointer from
+        // which arithmetic reaches any slot: the base escaping.
+        bool baseEscapes = code.BaseEscapes;
+        foreach (FrameCode.Block block in code.Blocks)
+            foreach ((FrameCode.Effect kind, int offset) in block.Effects)
+                if (kind == FrameCode.Effect.Address)
+                {
+                    int b = offset >= 0 ? -1 : -(offset & ~(word - 1)) / word - 1;
+                    if (b < 0 || b >= words || slotOf[b] < 0) baseEscapes = true;
+                }
 
         int cells = (words + 63) / 64;
         static void Set(ulong[] set, int b) => set[b >> 6] |= 1UL << (b & 63);
@@ -257,7 +270,7 @@ public static class FrameSlotLiveness
         // FORWARDS: the slots whose address may have been taken (any path),
         // and the words wholly written (every path).
         ulong[] everExposed = new ulong[cells];
-        if (code.BaseEscapes)
+        if (baseEscapes)
             for (int k = 0; k < slots.Count; k++) SetSlot(everExposed, k);
         foreach (FrameCode.Block block in code.Blocks)
             foreach ((FrameCode.Effect kind, int offset) in block.Effects)
@@ -268,7 +281,7 @@ public static class FrameSlotLiveness
         for (int b = 0; b < nb; b++)
         {
             // With a handler anywhere, or the base escaped, exposure is the whole function's; nothing is taken as written inside a handler.
-            exposedIn[b] = handlers || code.BaseEscapes ? (ulong[])everExposed.Clone() : new ulong[cells];
+            exposedIn[b] = handlers || baseEscapes ? (ulong[])everExposed.Clone() : new ulong[cells];
             writtenIn[b] = b == 0 || code.Blocks[b].LandingPad ? new ulong[cells] : (ulong[])all.Clone();
         }
         void WalkForward(int b, ulong[] exposed, ulong[] written, Action<object, ulong[], ulong[]>? before)

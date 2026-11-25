@@ -44,6 +44,7 @@ public static class Program
             StructuralOwnershipTests.Run(work);
             KeyNarrowingTests.Run(work);
             ParamClassLoweringTests.Run(work);
+            StackMapTests.Run(work);
             string path = Path.Combine(work, "declarations.idx");
             DeclarationRecord[] records = Enumerable.Range(0, 1000).Select(i =>
                 new DeclarationRecord("Namespace.Type" + i.ToString("D4"), BitConverter.GetBytes(i))).ToArray();

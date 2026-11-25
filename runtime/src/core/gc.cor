@@ -1638,7 +1638,9 @@ public static class Gc
     /// `copy` at `at` (a stack copied at STAMP). Answers where the next goes.
     static nuint KeepWord(nuint word, nuint copy, nuint at)
     {
-        MapWords = MapWords + 1;
+        // (Counted only while the statistics are asked for: this is every
+        // word of every stack, and the count is shared by every thread.)
+        if (StatsAsked) MapWords = MapWords + 1;
         if (copy != 0)
         {
             Sys.WriteAddress(copy + at * WordSize.Bytes, word);
@@ -11449,20 +11451,26 @@ public static class Gc
     /// front end let go, a unit ended), before anything is laid over it.
     ///
     /// Downward from under this frame until sixteen pages in a row hold
-    /// nothing: pages never reached read as zeros and are not written, so
-    /// nothing is committed by clearing, and a stack's guard is never met
-    /// short of a depth that had all but overflowed it. A signal taken
+    /// nothing, and never below `floor`, the lowest address that is surely
+    /// this thread's stack (Scheduler.StackFloor; 0: not known, and nothing
+    /// is cleared): pages never reached read as zeros and are not written,
+    /// so nothing is committed by clearing, and the stack's guard is never
+    /// touched however deep the calls before had gone. A signal taken
     /// meanwhile runs on what is being cleared and is done before the next
     /// word is.
-    public static void ScrubStack()
+    public static void ScrubStack(nuint floor)
     {
         const int w = WordSize.Bytes;
         const int quiet = 16 * 4096;
         // Under its own frame and whatever its code keeps just below the
         // stack pointer (long mode's red zone).
         nuint at = (Sys.Stack() - 512) & ~(nuint)(w - 1);
+        if (floor == 0 || floor >= at)
+        {
+            return;
+        }
         nuint clean = 0;
-        while (clean < quiet)
+        while (clean < quiet && at - w >= floor)
         {
             at = at - w;
             if (Sys.ReadAddress(at) == 0)

@@ -526,7 +526,8 @@ public sealed class IndexedDeclarations : IDisposable
     /// so neither the unit's own names nor its headers' lead to them, and
     /// discovery met each one only when a pass asked for it -- and a pass
     /// that asks is thrown away whole and run again. The four after the
-    /// primitives cost every unit of the kernel a whole pass between them.
+    /// primitives cost every unit of the kernel a whole pass between them,
+    /// and the five at the end every unit of the compiler two.
     /// A name the index lacks is skipped: a program compiled without the
     /// runtime has no __Delegates.
     ///

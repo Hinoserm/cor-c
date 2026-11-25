@@ -98,7 +98,7 @@ public static class Switches
 
     /// <summary>--report-phases: time and allocation per phase of one unit.</summary>
     public static bool ReportPhases;
-    /// <summary>--no-slot-liveness: every IR frame slot word in every call's stack map, as before the i386 backend's FrameSlotLiveness.</summary>
+    /// <summary>--no-slot-liveness: every IR frame slot word in every call's stack map, as before the frame slots' liveness (Frames.FrameSlotLiveness, both backends).</summary>
     public static bool NoSlotLiveness;
     /// <summary>--no-argument-facts: the link judges no function's arguments (ArgumentSolver), and a program in one module none of its own.</summary>
     public static bool NoArgumentFacts;

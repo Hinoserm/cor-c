@@ -311,6 +311,8 @@ public static class Driver
               --obj              write a relocatable object rather than an executable
               --no-lto           omit link-time optimization summaries
               --no-stackmaps     omit precise stack-map metadata (no precise-GC consumer)
+              --no-slot-liveness name every IR frame slot word in every call's
+                                 stack map, as before the frame slots' liveness
               --dump-ir          print the IR after lowering
               --dump-opt         print the IR after optimisation
               --asm              print the generated assembly
@@ -712,14 +714,6 @@ public static class Driver
     private static readonly UnitFront Checked = new(null!, new(), new(), new(), new(), new(), new(), new(), null);
 
     /// <summary>
-    /// Parses, binds and lowers a unit, and takes from its syntax and
-    /// bindings what is written into the object after code generation: the
-    /// definitions' semantics, the managed layouts and the registry schemas.
-    /// Null on an error, which is reported here. Never inlined, so that
-    /// everything the front end makes is dead when it returns.
-    /// </summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    /// <summary>
     /// A WHOLE COLLECTION WHERE A UNIT'S LARGEST STRUCTURE HAS JUST DIED: the
     /// front end's trees once the module is lowered, and everything a unit
     /// made once it is written. The native collector runs a whole collection
@@ -737,11 +731,12 @@ public static class Driver
     {
         // Not beside other units' threads in one heap: it would stop them
         // all for a mark of what they hold, once a unit.
-        // WHAT THE FINISHED CALLS LEFT ON THE STACK FIRST (Gc.ScrubStack): the
-        // native collector reads a frame's slots written or not, and one laid
-        // over the front end's dead frames kept all of it reachable -- the
-        // collection alone gave nothing back, and cost its mark. A switch .NET
-        // only stores; this thread's stack, whoever else is compiling.
+        // WHAT THE FINISHED CALLS LEFT ON THE STACK FIRST (Gc.ScrubStack), on
+        // every target: a frame no stack map describes -- the runtime's own
+        // stubs, C, a function left whole -- is read as it is, and one laid
+        // over the front end's dead frames kept all of it reachable. A
+        // switch .NET only stores; this thread's stack, whoever else is
+        // compiling.
         AppContext.SetSwitch("Corsac.GC.ScrubStack", true);
         if (UnitsAtOnce > 1 || GC.GetTotalMemory(false) < LetGoAbove) return;
         GC.Collect(2, GCCollectionMode.Forced, true);
@@ -753,6 +748,14 @@ public static class Driver
     /// <summary>The heap below which a unit's dead structures are left to the collector's own pace (LetGo).</summary>
     private const long LetGoAbove = 96L * 1024 * 1024;
 
+    /// <summary>
+    /// Parses, binds and lowers a unit, and takes from its syntax and
+    /// bindings what is written into the object after code generation: the
+    /// definitions' semantics, the managed layouts and the registry schemas.
+    /// Null on an error, which is reported here. Never inlined, so that
+    /// everything the front end makes is dead when it returns.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private static UnitFront? FrontToModule(List<string> files, string name, bool library, List<string> libraryMark, List<string> symbols,
         List<string> references, int workers, IndexedDeclarations? declarations, Action<string> phase, List<string> classLibrary)
     {
