@@ -393,14 +393,15 @@ public static class ArgumentSolver
             // (Many already, read without the lock: a cell never comes back from it.)
             if (parameter >= of.Length || Volatile.Read(ref of[parameter].State) == Many) return false;
             lock (of) if (!of[parameter].Meet(met)) return false;
-            // ITS CALLERS' UNITS READ AGAIN: what a unit's sweep finds depends
+            // THE UNITS HOLDING IT READ AGAIN: what a unit's sweep finds depends
             // on its own functions' cells alone, so only the units holding
             // this function -- whose calls hand its parameters on -- have
             // anything new to say. Marked after the cell is raised; a unit
             // clears its mark before it reads, so a raise it misses marks it
             // for the next round.
-            if (holders.TryGetValue(target, out List<int>? units_))
-                foreach (int u in units_) Volatile.Write(ref stale[u], 1);
+            // (A full fence, as the clearing is: no order of the two to argue on any processor.)
+            if (holders.TryGetValue(target, out List<int>? holding))
+                foreach (int u in holding) Interlocked.Exchange(ref stale[u], 1);
             return true;
         }
         bool Sweep(ArgumentHints unit)
