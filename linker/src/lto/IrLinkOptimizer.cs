@@ -63,15 +63,7 @@ public static class IrLinkOptimizer
         // inputs' order: an archive is its object's alone, and the hints, the
         // pool they share and the owners (first one wins) are read in order
         // below as before.
-        IrArchive?[] unitArchives = new IrArchive?[inputs.Count];
-        Exception?[] failed = new Exception?[inputs.Count];
-        Parallel.For(0, inputs.Count, k =>
-        {
-            try { unitArchives[k] = ElfFormatException.Of(inputs[k].Name, () => IrArchive.Read(inputs[k].Object)); }
-            catch (Exception error) { failed[k] = error; }
-        });
-        for (int k = 0; k < inputs.Count; k++)
-            if (failed[k] is Exception error) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+        IrArchive?[] unitArchives = Lanes.Each(inputs.Count, k => ElfFormatException.Of(inputs[k].Name, () => IrArchive.Read(inputs[k].Object)));
         for (int k = 0; k < inputs.Count; k++)
         {
             var input = inputs[k];
@@ -193,6 +185,7 @@ public static class IrLinkOptimizer
         VirtualTargets.Made? made = enabled && madeOnly && !openTypes && closedImageEntry is not null && !foreign.Contains("*")
             ? VirtualTargets.MadeIn(inputs, archives, closedImageEntry is not null ? reachability : null) : null;
         VirtualTargets.Made? lifetimeMade = made?.Again();
+        LinkTimings.Phase("types made");
         // NOT WHERE THE TYPES ARE OPEN: a kernel linked with exports has
         // modules that derive from its classes and override what it calls, so
         // the image's own overrides are not every one a call can reach, and
@@ -212,7 +205,9 @@ public static class IrLinkOptimizer
                 .SelectMany(name => name.Contains('@') ? new[] { name, VirtualTargets.Plain(name) } : new[] { name }), lifetimeMade)
             : new(StringComparer.Ordinal);
         if (regionReport is not null) Console.Error.WriteLine("lifetimes: rta " + (lifetimeMade is null ? "off" : lifetimeMade.Summary()));
+        LinkTimings.Phase("virtual targets");
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
+        LinkTimings.Phase("lifetime solve");
         // THE ARGUMENTS THE WHOLE PROGRAM FINDS NO ARGUMENTS (ArgumentSolver),
         // where every unit with IR said its own and the image has an entry:
         // a function keeps its parameters where anything the units' IR does
@@ -322,7 +317,7 @@ public static class IrLinkOptimizer
         argumentHints.Clear();
         argumentHints.TrimExcess();
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
-        LinkTimings.Phase("virtual targets and lifetime solve");
+        LinkTimings.Phase("argument solve");
         // THE WHOLE PROGRAM'S ANSWERS, for a closed image only -- a library's
         // consumers could throw anything -- and only where every unit with
         // IR said what it throws.
@@ -330,8 +325,13 @@ public static class IrLinkOptimizer
         // reach the catches are judged over, and the heap decision's below.
         Dictionary<ObjectFile, HeapRecords> heapRecords = new(ReferenceEqualityComparer.Instance);
         if (enabled && lifetimes is not null && closedImageEntry is not null)
-            foreach (ObjectFile obj in archives.Keys)
-                if (HeapRecords.Read(obj) is HeapRecords records) heapRecords[obj] = records;
+        {
+            // Each unit's read on a thread of its own (Lanes), kept in the units' order.
+            ObjectFile[] recordOf = archives.Keys.ToArray();
+            HeapRecords?[] read = Lanes.Each(recordOf.Length, k => HeapRecords.Read(recordOf[k]));
+            for (int k = 0; k < recordOf.Length; k++)
+                if (read[k] is HeapRecords records) heapRecords[recordOf[k]] = records;
+        }
         // Only what the program can reach throws anything (Escape.ForeignThrows):
         // a throw in code the program never runs made every catch keep.
         string[]? catchable = null;
@@ -364,7 +364,9 @@ public static class IrLinkOptimizer
                         if (key.Kind == IrKey.Function) reachedNames.Add(key.Name);
             neverRun = recorded.SelectMany(unit => unit.Records.Functions).Select(function => function.Name)
                 .Where(name => !reachedNames.Contains(name)).ToHashSet(StringComparer.Ordinal);
+            LinkTimings.Phase("reach and never run");
             catchable = ForeignCatchable(inputs, hintOrder, hints, throwing, lifetimes);
+            LinkTimings.Phase("catches");
         }
         // LET GO UNTIL THE HEAP DECISION, which reads them again from each
         // unit's file (HeapRecords is left there, ElfReader.LeftInFile): held
@@ -398,7 +400,7 @@ public static class IrLinkOptimizer
                 + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
                 + ", elements owned through " + ownedFields.Elements.Count
                 + (Switches.AllocReport ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
-        LinkTimings.Phase("catches and owned fields");
+        LinkTimings.Phase("owned fields");
         // REGIONS OVER EVERY UNIT (RegionSolver): the boundaries to open and
         // the allocation sites to make in the innermost open region, for a
         // closed image whose every unit with IR said what its functions do
@@ -420,13 +422,15 @@ public static class IrLinkOptimizer
                 using Stream stream = sections[0].OpenRead();
                 return RegionHints.Read(stream, sections[0].Size);
             }
-            List<RegionHints> regionUnits = regionOrder.Select(ReadRegions).ToList();
+            List<RegionHints> regionUnits = Lanes.Each(regionOrder.Count, k => ReadRegions(regionOrder[k])).ToList();
             // Each symbol's address a constant or the unknown object, from every object's data.
             List<(string Table, long At)> dataObjects = new();
             int constants = RegionConstants.Resolve(regionUnits, regionOrder, inputs.Select(input => input.Object), dataObjects);
             if (regionReport is not null) Console.Error.WriteLine("regions: " + constants + " symbol addresses constants");
             VirtualTargets.Made? regionMade = made?.Again();
+            LinkTimings.Phase("region hints and constants");
             Dictionary<string, string[]> regionVirtuals = VirtualTargets.Resolve(inputs, RegionSolver.VirtualNames(regionUnits), regionMade);
+            LinkTimings.Phase("region virtual targets");
             if (regionReport is not null)
             {
                 Console.Error.WriteLine("regions: rta " + (regionMade is null ? "off" : regionMade.Summary()));
@@ -845,11 +849,13 @@ public static class IrLinkOptimizer
             HeapRecords?[] now = new HeapRecords?[inputs.Count];
             List<(ObjectFile Object, HeapRecords Records)> units = new();
             bool complete = true;
+            // Each unit's read on a thread of its own (Lanes), taken in the inputs' order.
+            HeapRecords?[] readNow = Lanes.Each(inputs.Count, index => archives.ContainsKey(originals[index]) ? HeapRecords.Read(inputs[index].Object) : null);
             for (int index = 0; index < inputs.Count && complete; index++)
             {
                 if (!archives.ContainsKey(originals[index])) continue;
                 ObjectFile current = inputs[index].Object;
-                now[index] = HeapRecords.Read(current);
+                now[index] = readNow[index];
                 if (now[index] is HeapRecords records) units.Add((current, records)); else complete = false;
             }
             if (complete)

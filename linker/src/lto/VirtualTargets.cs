@@ -199,16 +199,48 @@ public static class VirtualTargets
         Func<string, bool>? elsewhere = null)
     {
         Dictionary<string, string[]> answers = new(StringComparer.Ordinal);
-        Index? index = null;
-        foreach (string name in wanted.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+        string[] names = wanted.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        if (names.Length == 0) return answers;
+        Index index = IndexOf(inputs);
+        // EACH NAME ON WHICHEVER THREAD IS FREE. A name's answer is the
+        // index's alone -- read-only once made whole (Whole) -- so the names
+        // are answered side by side, each thread taking the next and
+        // counting into a tally of its own (Made.Again), and the answers are
+        // then put in the names' order and the tallies added: sums and a
+        // set's union, the same whoever counted what. A trace is said in
+        // order, on one thread.
+        string[]?[] reached = new string[]?[names.Length];
+        int threads = Switches.TraceVirtuals ? 1 : Math.Max(1, Math.Min(Environment.ProcessorCount, names.Length / 64));
+        index.Whole();
+        Made?[] tallies = new Made?[threads];
+        Exception?[] failed = new Exception?[threads];
+        int next = -1;
+        void Answer(int thread)
         {
-            if (Parse(name) is not var (declaring, within, slot)) continue;
-            index ??= IndexOf(inputs);
-            string[]? reached = index.Targets(declaring, slot, made, within, elsewhere);
-            if (reached is string[] targets) answers[name] = targets;
-            if (Switches.TraceVirtuals)
-                Console.Error.WriteLine("virtual " + name + " slot " + slot + " -> " + (reached is null ? "unresolved" : "[" + string.Join(",", reached) + "]"));
+            Made? tally = tallies[thread] = made?.Again();
+            try
+            {
+                for (int k; (k = Interlocked.Increment(ref next)) < names.Length;)
+                {
+                    if (Parse(names[k]) is not var (declaring, within, slot)) continue;
+                    reached[k] = index.Targets(declaring, slot, tally, within, elsewhere);
+                    if (Switches.TraceVirtuals)
+                        Console.Error.WriteLine("virtual " + names[k] + " slot " + slot + " -> " + (reached[k] is null ? "unresolved" : "[" + string.Join(",", reached[k]!) + "]"));
+                }
+            }
+            catch (Exception error) { failed[thread] = error; }
         }
+        Task[] others = new Task[threads - 1];
+        for (int t = 0; t < others.Length; t++) { int thread = t + 1; others[t] = Task.Run(() => Answer(thread)); }
+        Answer(0);
+        Task.WaitAll(others);
+        foreach (Exception? error in failed)
+            if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+        for (int k = 0; k < names.Length; k++)
+            if (reached[k] is string[] targets) answers[names[k]] = targets;
+        if (made is not null)
+            foreach (Made? tally in tallies)
+                if (tally is not null) made.Add(tally);
         return answers;
     }
 
@@ -301,6 +333,12 @@ public static class VirtualTargets
 
         /// <summary>The same types, counted afresh: one tally for each resolve that asks (the lifetimes', the regions').</summary>
         public Made Again() => new(Descriptors, Defined);
+        /// <summary>Another tally of the same types, counted on another thread (Resolve), added to this one.</summary>
+        public void Add(Made other)
+        {
+            Calls += other.Calls; Narrowed += other.Narrowed; Targets += other.Targets; Removed += other.Removed; ResolvedOnly += other.ResolvedOnly;
+            Dropped.UnionWith(other.Dropped);
+        }
         /// <summary>The virtual calls asked about, those that lost a target, the targets they had and those they lost, and those only this resolved.</summary>
         public int Calls, Narrowed, Targets, Removed, ResolvedOnly;
         /// <summary>The descriptors nothing makes that some call reached a slot of, each once.</summary>
@@ -924,12 +962,45 @@ public static class VirtualTargets
         /// <summary>Every descriptor that is some instantiation of `generic` (a name up to its first type argument), whatever its arguments.</summary>
         private List<int> Instantiations(string generic)
         {
-            _instantiations ??= new(StringComparer.Ordinal);
-            if (_instantiations.TryGetValue(generic, out List<int>? known)) return known;
-            HashSet<int> found = new();
-            foreach ((string type, List<int> under) in _derived!)
-                if (type.StartsWith(generic, StringComparison.Ordinal)) found.UnionWith(under);
-            return _instantiations[generic] = found.Order().ToList();
+            // Asked from several threads at once (Resolve): the one table
+            // that still grows once the index is whole, so under its lock.
+            lock (_instantiationsGate)
+            {
+                _instantiations ??= new(StringComparer.Ordinal);
+                if (_instantiations.TryGetValue(generic, out List<int>? known)) return known;
+                HashSet<int> found = new();
+                foreach ((string type, List<int> under) in _derived!)
+                    if (type.StartsWith(generic, StringComparison.Ordinal)) found.UnionWith(under);
+                return _instantiations[generic] = found.Order().ToList();
+            }
+        }
+        private readonly object _instantiationsGate = new();
+
+        /// <summary>
+        /// Everything Targets reads made now, on this thread: each
+        /// descriptor's relocations and ancestry, the types turned round
+        /// (_derived) and the shared faces' families. After it, Targets only
+        /// reads the index (but Instantiations, which locks), and may be
+        /// asked from many threads at once.
+        /// </summary>
+        public void Whole()
+        {
+            Derived();
+            for (int d = 0; d < _descriptors.Count; d++) Relocs(d);
+            foreach (int _ in OfSharedFaces("")) { }
+        }
+
+        private Dictionary<string, List<int>> Derived()
+        {
+            if (_derived is not null) return _derived;
+            Dictionary<string, List<int>> derived = new(StringComparer.Ordinal);
+            for (int d = 0; d < _descriptors.Count; d++)
+                foreach (string type in Ancestors(d))
+                {
+                    if (!derived.TryGetValue(type, out List<int>? list)) derived[type] = list = new();
+                    list.Add(d);
+                }
+            return _derived = derived;
         }
 
         private Dictionary<string, List<int>>? _ofSharedFaces;
@@ -954,19 +1025,10 @@ public static class VirtualTargets
 
         public string[]? Targets(string declaring, long slot, Made? made = null, string? within = null, Func<string, bool>? elsewhere = null)
         {
-            if (_derived is null)
-            {
-                _derived = new(StringComparer.Ordinal);
-                for (int d = 0; d < _descriptors.Count; d++)
-                    foreach (string type in Ancestors(d))
-                    {
-                        if (!_derived.TryGetValue(type, out List<int>? list)) _derived[type] = list = new();
-                        list.Add(d);
-                    }
-            }
+            Derived();
             bool everyType = declaring == "t_object";
             IEnumerable<int> reaching = everyType ? Enumerable.Range(0, _descriptors.Count)
-                : _derived.TryGetValue(declaring, out List<int>? derived) ? derived : Enumerable.Empty<int>();
+                : _derived!.TryGetValue(declaring, out List<int>? derived) ? derived : Enumerable.Empty<int>();
             // And every type that answers the interface outside its table
             // (MayAnswer): a box and the string their system interfaces, an
             // array its sequence faces, the array's walker IEnumerator<T> --
@@ -995,7 +1057,7 @@ public static class VirtualTargets
             // derives from has no objects, and the call reaches nothing.
             if (within is not null)
             {
-                HashSet<int> below = _derived.TryGetValue(within, out List<int>? under) ? new(under) : new();
+                HashSet<int> below = _derived!.TryGetValue(within, out List<int>? under) ? new(under) : new();
                 below.UnionWith(OfSharedFaces(within));
                 reaching = reaching.Where(below.Contains);
                 everyType = false;

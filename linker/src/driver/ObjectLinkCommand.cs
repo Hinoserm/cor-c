@@ -219,24 +219,36 @@ public static class ObjectLinkCommand
         // place, then taken in the order given: what is read of one object
         // depends on that object alone, and the order the link sees them in
         // is the command line's as before.
+        // Each thread takes the next object not yet taken, so one large
+        // object holds up only its own; a failure is said as the serial read
+        // said it, the first object's in order.
         string?[] hashes = new string?[given.Count];
         ObjectFile?[] read = new ObjectFile?[given.Count];
-        string?[] failed = new string?[given.Count];
-        Parallel.For(0, given.Count, k =>
+        Exception?[] failed = new Exception?[given.Count];
+        int nextObject = -1;
+        void ReadSome()
         {
-            // Read so that each unit's IR stays in its file (ReadObjectFile):
-            // a link holds the objects' code and tables, never their IR.
-            try
+            for (int k; (k = Interlocked.Increment(ref nextObject)) < given.Count;)
             {
-                // Streamed: an object is IR mostly, never held whole for its hash.
-                using (FileStream bytes = File.OpenRead(given[k].Full)) hashes[k] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
-                read[k] = ElfReader.ReadObjectFile(given[k].Full);
+                // Read so that each unit's IR stays in its file (ReadObjectFile):
+                // a link holds the objects' code and tables, never their IR.
+                try
+                {
+                    // Streamed: an object is IR mostly, never held whole for its hash.
+                    using (FileStream bytes = File.OpenRead(given[k].Full)) hashes[k] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+                    read[k] = ElfReader.ReadObjectFile(given[k].Full);
+                }
+                catch (Exception error) { failed[k] = error; }
             }
-            catch (ElfFormatException error) { failed[k] = error.Message; }
-        });
+        }
+        Task[] readers = new Task[Math.Max(0, Math.Min(given.Count, Environment.ProcessorCount) - 1)];
+        for (int t = 0; t < readers.Length; t++) readers[t] = Task.Run(ReadSome);
+        ReadSome();
+        Task.WaitAll(readers);
         for (int k = 0; k < given.Count; k++)
         {
-            if (failed[k] is string message) return Fail(given[k].Path + ": " + message);
+            if (failed[k] is ElfFormatException format) return Fail(given[k].Path + ": " + format.Message);
+            if (failed[k] is Exception error) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
             objectHashes.Add(hashes[k]!);
             inputs.Add((given[k].Path, read[k]!));
             // EACH INPUT SAID as it is read (Hino: a line for every file built or linked).

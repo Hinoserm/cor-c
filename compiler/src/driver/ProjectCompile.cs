@@ -98,7 +98,9 @@ public static class ProjectCompile
         // A WORKER PROCESS (--claim-dir) RUNS --jobs UNITS AT ONCE, one, as it
         // is told: given the budget's size it ran as many threads in one heap
         // as the budget has, the pauses worker processes are there to end.
-        int limit = pool is null || Driver.Value(args, "--claim-dir") is not null ? workers : Math.Max(workers, pool.Size);
+        // Where a pooled child's siblings claim their units (--claim-dir; claims, below).
+        string? claimedIn = Driver.Value(args, "--claim-dir");
+        int limit = pool is null || claimedIn is not null ? workers : Math.Max(workers, pool.Size);
         Driver.Session = session;
         int failures = 0;
         object gate = new();
@@ -227,6 +229,19 @@ public static class ProjectCompile
             Corsac.Lang.Opt.Escape.ForgetThread();
         }
 
+        // How many threads a unit begun now may take (above): every processor
+        // shared among the units still unclaimed and this one, once those are
+        // fewer than the processors.
+        int TailLanes()
+        {
+            int claimed;
+            try { claimed = Directory.EnumerateFiles(claimedIn!).Count(); }
+            catch (IOException) { return 1; }
+            int unclaimed = Math.Max(0, units.Count - claimed);
+            int lanes = Environment.ProcessorCount / (unclaimed + 1);
+            return Math.Clamp(lanes, 1, Environment.Is64BitProcess ? 16 : 4);
+        }
+
         int One(Unit unit)
         {
             ForgetUnit();
@@ -279,6 +294,21 @@ public static class ProjectCompile
             }
             List<string> one = new() { unit.Source };
             one.AddRange(common);
+            // THE LAST UNITS ON MORE THAN ONE THREAD. A pooled child (--claim-
+            // dir) compiles one unit at a time on one: right while siblings
+            // fill every processor, but the last and largest units of a build
+            // -- the binder, the escape passes -- then ran alone on one core
+            // each, the rest of the machine done and idle. Once fewer units are
+            // left unclaimed than there are processors, a unit's late passes
+            // and code generation (FunctionWorkers) share out over the
+            // processors the unclaimed ones leave, no more than four in a
+            // 32-bit space, whose four gigabytes hold one large unit. The
+            // object is the same on any number (FunctionWorkers; not part of
+            // the stamp, OptionsOf).
+            if (claimedIn is not null && TailLanes() is int lanes && lanes > 1)
+            {
+                one.Add("--jobs"); one.Add(lanes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
             // ONE INITIALISER PER LIBRARY. A shared object gets a function
             // the loader calls before anything uses it -- __corsac_init,
             // which hands the image's statics to the collector and its frame
@@ -630,8 +660,9 @@ public static class ProjectCompile
         // nothing (an edit of one file). Two or more: worker processes, as
         // many as there are stale units, threads and free memory for, two
         // gigabytes each (WorkerSpaces) -- one at the least, so units never
-        // share a heap however little memory there is. Never from a hosted
-        // `dotnet corc.dll`, whose path is the host's.
+        // share a heap however little memory there is. Hosted as `dotnet
+        // corc.dll` too, the host started again with the compiler's assembly
+        // (ProjectCommand.SelfStart).
         bool mayUseProcesses = pool is not null && claims is null && threads > 1 && Corsac.Projects.ProjectCommand.CanStartWorkers;
         // A receipt whose bytes are not what a receipt is makes its unit
         // stale (UnitDependencies.Stale answers it): whoever compiles it
@@ -778,7 +809,7 @@ public static class ProjectCompile
         List<System.Diagnostics.ProcessStartInfo> starts = new();
         for (int i = 0; i < count; i++)
         {
-            System.Diagnostics.ProcessStartInfo start = Corsac.Projects.ProjectCommand.SelfStart();
+            System.Diagnostics.ProcessStartInfo start = Corsac.Projects.ProjectCommand.SelfStart(count);
             start.ArgumentList.Add("--compiler-identity"); start.ArgumentList.Add(CompilerIdentity());
             // ITS SHARE OF THE PROCESSORS FOR ITS COLLECTOR, as ProjectCommand's
             // children have it: markers enough for its share, less its own.

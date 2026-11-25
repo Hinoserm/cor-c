@@ -50,10 +50,26 @@ public static class ProjectCommand
     /// </summary>
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("SingleFile", "IL3000",
         Justification = "Hosted only, where the compiler is an assembly file.")]
-    internal static System.Diagnostics.ProcessStartInfo SelfStart()
+    internal static System.Diagnostics.ProcessStartInfo SelfStart(int siblings)
     {
         System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
-        if (Hosted) start.ArgumentList.Add(typeof(ProjectCommand).Assembly.Location);
+        if (!Hosted) return start;
+        start.ArgumentList.Add(typeof(ProjectCommand).Assembly.Location);
+        // ITS SHARE FOR .NET'S COLLECTOR, which reads no flag of ours (the
+        // native compiler's is --gc-workers): its own settings for a child,
+        // hexadecimal as the runtime reads every DOTNET_GC one (.NET's GC
+        // configuration docs: "values ... are hexadecimal"). The project asks
+        // for four server heaps; sixteen children of four put sixty-four
+        // collector threads on sixteen processors. And not pinned: a server
+        // collector with fewer heaps than processors pins heap N to processor
+        // N, so every child's would sit on the same first cores. A count the
+        // build itself was given is left as it is.
+        if (Environment.GetEnvironmentVariable("DOTNET_GCHeapCount") is null)
+        {
+            start.Environment["DOTNET_GCHeapCount"] = Math.Max(1, Environment.ProcessorCount / Math.Max(1, siblings))
+                .ToString("x", System.Globalization.CultureInfo.InvariantCulture);
+            start.Environment["DOTNET_GCNoAffinitize"] = "1";
+        }
         return start;
     }
 
@@ -144,10 +160,9 @@ public static class ProjectCommand
         if (regionReport is not null) { linkArguments.Add("--region-report"); linkArguments.Add(regionReport); }
         if (unusedReport is not null) { linkArguments.Add("--unused-report"); linkArguments.Add(unusedReport); }
         if (timings) linkArguments.Add("--timings");
-        // THE LINK'S BACKENDS THE BUILD'S BUDGET (--lto-jobs): by itself it
-        // takes half the processors it sees, and under a build's pinned share
-        // that was half the workers, the link the longest stretch of a build
-        // of the compiler. Its own cap by memory still holds (IrLinkOptimizer).
+        // THE LINK'S BACKENDS THE BUILD'S BUDGET (--lto-jobs), where by itself
+        // it would take every processor it sees. Its own cap by memory still
+        // holds (IrLinkOptimizer).
         if (workers > 0) { linkArguments.Add("--lto-jobs"); linkArguments.Add(workers.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
         string directory = Path.GetDirectoryName(project.Path)!;
         string work = Path.Combine(directory, "obj", "cor-c", configuration, project.Framework);
@@ -250,7 +265,9 @@ public static class ProjectCommand
         Func<bool>? runtimeStep = null;
         {
             string runtime = Path.Combine(work, "runtime.o");
-            List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
+            // Four threads at most: it runs in one slot of the pool beside the
+            // units' children (InPool), not with the whole budget to itself.
+            List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", Math.Min(4, workers).ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
             runtimeArgs.AddRange(runtimeSources);
             runtimeArgs.AddRange(cpuArguments);
             runtimeArgs.AddRange(factsArguments);
@@ -415,8 +432,7 @@ public static class ProjectCommand
     /// </summary>
     private static int LinkApart(List<string> link)
     {
-        bool hosted = Environment.ProcessPath is string path
-            && Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+        bool hosted = Hosted;
         // Hosted, the link reads this process's switches again from its own
         // command line: handed them first, as a child would be -- the region
         // engine among them -- and this process's list kept as it was.
@@ -511,7 +527,7 @@ public static class ProjectCommand
             string claims = group.List[..^4] + "-claims";
             if (Directory.Exists(claims)) Directory.Delete(claims, recursive: true);
             Directory.CreateDirectory(claims);
-            System.Diagnostics.ProcessStartInfo start = SelfStart();
+            System.Diagnostics.ProcessStartInfo start = SelfStart(processes);
             // The same executable: its identity, hashed once here.
             start.ArgumentList.Add("--compiler-identity"); start.ArgumentList.Add(ProjectCompile.CompilerIdentity());
             // ITS SHARE OF THE MACHINE FOR ITS COLLECTOR: each child marks on
@@ -526,12 +542,6 @@ public static class ProjectCommand
                 start.ArgumentList.Add("--gc-workers");
                 start.ArgumentList.Add(Math.Min(7, Math.Max(0, cores - 1)).ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
-            // HOSTED, THE SAME SHARE FOR .NET'S COLLECTOR, which reads no flag
-            // of ours: its own setting for a child, in hexadecimal as it reads
-            // it. The project asks for four server heaps; sixteen children of
-            // four each put sixty-four collector threads on sixteen processors.
-            if (Hosted)
-                start.Environment["DOTNET_GCHeapCount"] = Math.Max(1, Environment.ProcessorCount / Math.Max(1, processes)).ToString("x", System.Globalization.CultureInfo.InvariantCulture);
             foreach (string flag in Driver.ChildFlags) start.ArgumentList.Add(flag);
             start.ArgumentList.Add("compile-project");
             start.ArgumentList.Add("--units"); start.ArgumentList.Add(share);
@@ -558,76 +568,117 @@ public static class ProjectCommand
         bool ok = true;
         object gate = new();
         List<Thread> slots = new();
+        // What is running now, to stop when the build has failed: a child
+        // left to it compiled the rest of its group for a build already lost.
+        List<System.Diagnostics.Process> live = new();
+        Exception? thrown = null;
+        void Failed(string? said)
+        {
+            lock (gate)
+            {
+                ok = false;
+                if (said is not null) Console.Error.WriteLine(said);
+                foreach (System.Diagnostics.Process running in live)
+                    try { running.Kill(); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            }
+        }
+        // A child started and waited for; null where it could not be started (said).
+        int? RunChild(System.Diagnostics.ProcessStartInfo start, string which, int spent, out int id)
+        {
+            id = 0;
+            System.Diagnostics.Process child;
+            lock (gate)
+            {
+                if (!ok) return null;
+                try { child = System.Diagnostics.Process.Start(start)!; }
+                catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException or OutOfMemoryException)
+                {
+                    ok = false;
+                    Console.Error.WriteLine("corc: the compile-project process for " + which + " could not be started"
+                        + (spent != 0 ? " again after pid " + spent : "") + ": " + e.Message + "; the build fails");
+                    return null;
+                }
+                live.Add(child);
+                if (spent != 0) Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + spent + ") is spent; pid " + child.Id + " takes its place");
+            }
+            child.WaitForExit();
+            int code = child.ExitCode;
+            id = child.Id;
+            lock (gate) live.Remove(child);
+            child.Dispose();
+            return code;
+        }
         for (int slot = 0; slot < processes; slot++)
         {
             bool first = slot == 0;
+            // The stack every compile thread has (ProjectCompile's, the link's):
+            // the first slot compiles the runtime on it, and the default is a
+            // megabyte in a 32-bit compiler.
             Thread thread = new(() =>
             {
-                if (first && prelude is not null)
+                try
                 {
-                    bool made;
-                    try { made = prelude(); }
-                    catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+                    if (first && prelude is not null && !prelude()) { Failed("corc: the runtime's compile failed; the build fails"); return; }
+                    while (true)
                     {
-                        lock (gate) Console.Error.WriteLine("corc: the runtime's compile failed: " + e.Message);
-                        made = false;
-                    }
-                    if (!made) { lock (gate) ok = false; return; }
-                }
-                while (true)
-                {
-                    int g;
-                    lock (gate) g = ok ? Next() : -1;
-                    if (g < 0) return;
-                    string which = work[g].Share;
-                    System.Diagnostics.Process child;
-                    try { child = System.Diagnostics.Process.Start(work[g].Start)!; }
-                    catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException or OutOfMemoryException)
-                    {
-                        lock (gate) { ok = false; Console.Error.WriteLine("corc: a compile-project process for " + which + " could not be started: " + e.Message + "; the build fails"); }
-                        return;
-                    }
-                    child.WaitForExit();
-                    int code = child.ExitCode;
-                    // SPENT (ProjectCompile.Recycle): its heap past half its
-                    // ceiling, it took no more units; another takes its place.
-                    while (code == ProjectCompile.Recycle)
-                    {
-                        int spent = child.Id;
-                        child.Dispose();
-                        try { child = System.Diagnostics.Process.Start(work[g].Start)!; }
-                        catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException or OutOfMemoryException)
+                        int g, before;
+                        lock (gate)
                         {
-                            lock (gate)
-                            {
-                                ok = false;
-                                Console.Error.WriteLine("corc: the compile-project process for " + which + " could not be started again after pid " + spent + ": " + e.Message
-                                    + "; the build fails");
-                            }
+                            g = ok ? Next() : -1;
+                            before = g < 0 ? 0 : Directory.EnumerateFiles(work[g].Claims).Count();
+                        }
+                        if (g < 0) return;
+                        string which = work[g].Share;
+                        if (RunChild(work[g].Start, which, 0, out int id) is not int code) return;
+                        // SPENT (ProjectCompile.Recycle): its heap past half its
+                        // ceiling, it took no more units; another takes its place.
+                        while (code == ProjectCompile.Recycle)
+                        {
+                            if (RunChild(work[g].Start, which, id, out id) is not int again) return;
+                            code = again;
+                        }
+                        if (code != 0)
+                        {
+                            // (Killed because the build had already failed: nothing more to say.)
+                            bool lost;
+                            lock (gate) lost = !ok;
+                            Failed(lost ? null : "corc: the compile-project process for " + which + " (pid " + id + ") "
+                                + HowEnded(code) + "; units of it not yet compiled are not built");
                             return;
                         }
-                        lock (gate) Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + spent + ") is spent; pid " + child.Id + " takes its place");
-                        child.WaitForExit();
-                        code = child.ExitCode;
+                        // A CHILD THAT ENDED WELL HAS LEFT ITS GROUP NOTHING
+                        // UNCLAIMED, or the group is still being claimed by
+                        // its siblings. One that claimed nothing where units
+                        // were left and no sibling took one either would be
+                        // started again for ever: said, and the build fails.
+                        lock (gate)
+                        {
+                            int after = Directory.EnumerateFiles(work[g].Claims).Count();
+                            if (ok && after < work[g].Count && after == before)
+                            {
+                                ok = false;
+                                Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + id + ") ended without taking a unit, "
+                                    + (work[g].Count - after) + " left; the build fails");
+                            }
+                        }
                     }
-                    int id = child.Id;
-                    child.Dispose();
-                    if (code == 0) continue;
-                    lock (gate)
-                    {
-                        ok = false;
-                        Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + id + ") "
-                            + HowEnded(code) + "; units of it not yet compiled are not built");
-                    }
-                    return;
                 }
-            }) { IsBackground = true, Name = "pool-" + slot };
+                catch (Exception error)
+                {
+                    // ANY WAY OUT IS THE BUILD'S FAILURE, thrown again where
+                    // the pool was started: on this thread it would end the
+                    // process with the children running and nothing said.
+                    lock (gate) thrown ??= error;
+                    Failed(null);
+                }
+            }, 16 * 1024 * 1024) { IsBackground = true, Name = "pool-" + slot };
             thread.Start();
             slots.Add(thread);
         }
         foreach (Thread thread in slots) thread.Join();
         foreach (var group in work)
             try { Directory.Delete(group.Claims, recursive: true); } catch (IOException) { }
+        if (thrown is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(thrown).Throw();
         // THE CALLS BETWEEN UNITS INSIDE A KEPT STATE (ProjectCompile's
         // InsideRounds) need every unit's object, which no child had: one run
         // more over each whole list, which finds each unit current by its
@@ -635,7 +686,7 @@ public static class ProjectCommand
         foreach (var group in work)
         {
             if (!ok || !ProjectCompile.InsideFactsApply(group.Args)) continue;
-            System.Diagnostics.ProcessStartInfo last = SelfStart();
+            System.Diagnostics.ProcessStartInfo last = SelfStart(1);
             last.ArgumentList.Add("--compiler-identity"); last.ArgumentList.Add(ProjectCompile.CompilerIdentity());
             foreach (string flag in Driver.ChildFlags) last.ArgumentList.Add(flag);
             last.ArgumentList.Add("compile-project");

@@ -369,45 +369,88 @@ public static class ArgumentSolver
             for (int k = 0; k < of.Length; k++) of[k].State = Many;
         }
 
+        // EVERY UNIT'S CALLS ON WHICHEVER THREAD IS FREE, round after round
+        // until nothing moves. Each cell only ever rises -- unseen, one
+        // value, many -- and what a call hands on rises with the cell it
+        // reads, so the cells settle at the same least answer in whatever
+        // order the calls are read: a round here reads some cells as other
+        // threads have just raised them and some as they stood, and a round
+        // more follows whenever anything moved. A function's cells are read
+        // and raised under that function's lock (the array's), one lock at a
+        // time.
         bool Lower(string target, int parameter, ArgumentValue met)
         {
             Cell[] of = cells[target];
-            return parameter < of.Length && of[parameter].Meet(met);
+            // (Many already, read without the lock: a cell never comes back from it.)
+            if (parameter >= of.Length || Volatile.Read(ref of[parameter].State) == Many) return false;
+            lock (of) return of[parameter].Meet(met);
         }
-        // Until nothing moves: a parameter handed on is read as it stands,
-        // and read again when it has been lowered.
-        bool moved = true;
-        while (moved)
+        bool Sweep(ArgumentHints unit)
         {
-            moved = false;
-            foreach ((string caller, ArgumentCall call, string[]? targets) in Calls())
+            bool raised = false;
+            foreach ((string caller, ArgumentFunction f) in unit.Functions)
             {
                 Cell[]? own = cells.GetValueOrDefault(caller);
-                for (int t = 0, reached = targets?.Length ?? 1; t < reached; t++)
+                foreach (ArgumentCall call in f.Calls)
                 {
-                    string target = targets?[t] ?? call.Callee;
-                    if (!functions.TryGetValue(target, out ArgumentFunction? callee)) continue;
-                    // A call of other than its parameters says nothing of any of them.
-                    bool fits = call.Arguments.Length == callee.Kinds.Length;
-                    if (!fits) misfit.Add(target);
-                    for (int k = 0; k < callee.Kinds.Length; k++)
+                    string[]? targets = null;
+                    if (call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
                     {
-                        ArgumentValue met = default;
-                        if (fits)
+                        if (!virtuals.TryGetValue(call.Callee, out targets)) continue;
+                    }
+                    else if (!functions.ContainsKey(call.Callee)) continue;
+                    for (int t = 0, reached = targets?.Length ?? 1; t < reached; t++)
+                    {
+                        string target = targets?[t] ?? call.Callee;
+                        if (!functions.TryGetValue(target, out ArgumentFunction? callee)) continue;
+                        // A call of other than its parameters says nothing of any of them
+                        // (misfit holds its target already: every call was read for that above).
+                        bool fits = call.Arguments.Length == callee.Kinds.Length;
+                        for (int k = 0; k < callee.Kinds.Length; k++)
                         {
-                            met = call.Arguments[k];
-                            if (met.Kind == ArgumentValueKind.Parameter)
+                            ArgumentValue met = default;
+                            if (fits)
                             {
-                                Cell from = own is not null && met.Number < own.Length ? own[(int)met.Number] : new Cell { State = Many };
-                                // Unseen yet: nothing to say this round.
-                                if (from.State == Unseen) continue;
-                                met = from.State == One ? from.Value : default;
+                                met = call.Arguments[k];
+                                if (met.Kind == ArgumentValueKind.Parameter)
+                                {
+                                    Cell from = new() { State = Many };
+                                    if (own is not null && met.Number < own.Length && Volatile.Read(ref own[(int)met.Number].State) != Many)
+                                        lock (own) from = own[(int)met.Number];
+                                    // Unseen yet: nothing to say this round.
+                                    if (from.State == Unseen) continue;
+                                    met = from.State == One ? from.Value : default;
+                                }
                             }
+                            raised |= Lower(target, k, met);
                         }
-                        moved |= Lower(target, k, met);
                     }
                 }
             }
+            return raised;
+        }
+        int sweepers = Math.Max(1, Math.Min(Environment.ProcessorCount, units.Count));
+        bool moved = true;
+        while (moved)
+        {
+            int nextUnit = -1, any = 0;
+            Exception?[] failed = new Exception?[sweepers];
+            void Round(int thread)
+            {
+                try
+                {
+                    for (int u; (u = Interlocked.Increment(ref nextUnit)) < units.Count;)
+                        if (Sweep(units[u])) Volatile.Write(ref any, 1);
+                }
+                catch (Exception error) { failed[thread] = error; }
+            }
+            Task[] others = new Task[sweepers - 1];
+            for (int t = 0; t < others.Length; t++) { int thread = t + 1; others[t] = Task.Run(() => Round(thread)); }
+            Round(0);
+            Task.WaitAll(others);
+            foreach (Exception? error in failed)
+                if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+            moved = any != 0;
         }
 
         // Each function's calls by name, as the units said them.

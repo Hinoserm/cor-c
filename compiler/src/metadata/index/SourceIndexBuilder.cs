@@ -390,480 +390,483 @@ public static class SourceIndexBuilder
             // files at a time, and its records then written in the files'
             // order as before: what a file's records say depends on that file
             // alone (and the index under it, read only), so the index made is
-            // the same byte for byte. The window bounds what is held at once:
-            // every file's tokens together would be the whole tree's.
-            Read?[] window = new Read?[ReadWindow];
-            for (int from = 0; from < files.Length; from += ReadWindow)
+            // the same byte for byte. The window bounds what is held at once
+            // by bytes of source as well as files -- every file's tokens
+            // together would be the whole tree's, and sixty-four of the
+            // largest hundreds of megabytes in a 32-bit space.
+            for (int from = 0, count = 0; from < files.Length; from += count)
             {
-            int count = Math.Min(ReadWindow, files.Length - from);
-            int first = from;
-            Parallel.For(0, count, slot => window[slot] = ReadFile(files[first + slot], fileSymbols?.GetValueOrDefault(files[first + slot]) ?? symbols));
-            for (int slot = 0; slot < count; slot++)
-            {
-                Read read = window[slot]!;
-                window[slot] = null;
-                string path = read.Path, text = read.Text;
-                byte[] hash = read.Hash;
-                snapshots.Add((path, hash));
-                // WHICH TEXT OF THE FILE THIS INDEX WAS MADE FROM, by its full
-                // path (DeclarationCatalog.SourceHash): a unit compiled against
-                // the index is compiled from this text of itself, or refused --
-                // a source edited after the index was written read its new
-                // self against its neighbours' old declarations.
-                yield return new DeclarationRecord(SourceKey(path), hash);
-                List<Token> tokens = read.Tokens;
-                List<int> ends = read.Ends;
-                Parser parser = read.Parser;
-                CompilationUnit unit = read.Unit;
-                IReadOnlyCollection<string>? activeSymbols = read.Symbols;
-                string TypeName(TypeDecl type)
+                long bytes = 0;
+                count = 0;
+                while (from + count < files.Length && count < ReadWindow && (count == 0 || bytes < ReadWindowBytes))
+                    bytes += new FileInfo(files[from + count++]).Length;
+                Read?[] window = ReadAll(files, from, count, path => fileSymbols?.GetValueOrDefault(path) ?? symbols);
+                for (int slot = 0; slot < count; slot++)
                 {
-                    // Its own arity, as .NET's metadata names it: Box`1+Nested`1
-                    // for Box<T>.Nested<U>, whose parameters are T and U.
-                    int arity = type.TypeParams.Count - type.OuterParams;
-                    string own = type.Name + (arity == 0 ? "" : "`" + arity);
-                    TypeDecl? parent = type.Outer is null ? null : unit.Types
-                        .Where(candidate => candidate.SourceFrom < type.SourceFrom && candidate.SourceTo >= type.SourceTo)
-                        .OrderBy(candidate => candidate.SourceTo - candidate.SourceFrom).FirstOrDefault();
-                    return parent is null ? (type.Namespace.Length == 0 ? "" : type.Namespace + ".") + own
-                        : TypeName(parent) + "+" + own;
-                }
-                bool librarySide = librarySource?.Invoke(path) ?? true;
-                // THE FILE'S GLOBAL USINGS, which every file of its side reads
-                // as its own (IndexedDeclarations.GlobalUsings, Frontend.
-                // ApplyGlobalUsings): a unit compiled by itself parses only
-                // its own files, and the directive may be in any other.
-                foreach (string use in unit.GlobalUsings)
-                    yield return new DeclarationRecord(GlobalUsingKey(identity, librarySide), Encoding.UTF8.GetBytes(use));
-                foreach (TypeDecl type in unit.Types)
-                {
-                    // A DECLARATION THAT CAN MAKE AN INTERRUPT HANDLER
-                    // (Binder.DeclaresInterruptHandler): said to the build,
-                    // whose units keep their facts for one.
-                    if (interruptHandler is not null && !handlerSaid && Binder.DeclaresInterruptHandler(type))
+                    Read read = window[slot]!;
+                    window[slot] = null;
+                    string path = read.Path, text = read.Text;
+                    byte[] hash = read.Hash;
+                    snapshots.Add((path, hash));
+                    // WHICH TEXT OF THE FILE THIS INDEX WAS MADE FROM, by its full
+                    // path (DeclarationCatalog.SourceHash): a unit compiled against
+                    // the index is compiled from this text of itself, or refused --
+                    // a source edited after the index was written read its new
+                    // self against its neighbours' old declarations.
+                    yield return new DeclarationRecord(SourceKey(path), hash);
+                    List<Token> tokens = read.Tokens;
+                    List<int> ends = read.Ends;
+                    Parser parser = read.Parser;
+                    CompilationUnit unit = read.Unit;
+                    IReadOnlyCollection<string>? activeSymbols = read.Symbols;
+                    string TypeName(TypeDecl type)
                     {
-                        handlerSaid = true;
-                        interruptHandler();
+                        // Its own arity, as .NET's metadata names it: Box`1+Nested`1
+                        // for Box<T>.Nested<U>, whose parameters are T and U.
+                        int arity = type.TypeParams.Count - type.OuterParams;
+                        string own = type.Name + (arity == 0 ? "" : "`" + arity);
+                        TypeDecl? parent = type.Outer is null ? null : unit.Types
+                            .Where(candidate => candidate.SourceFrom < type.SourceFrom && candidate.SourceTo >= type.SourceTo)
+                            .OrderBy(candidate => candidate.SourceTo - candidate.SourceFrom).FirstOrDefault();
+                        return parent is null ? (type.Namespace.Length == 0 ? "" : type.Namespace + ".") + own
+                            : TypeName(parent) + "+" + own;
                     }
-                    skeletons.Add(InterfaceForms.Declared.Of(type, librarySide));
-                    StringBuilder declaration = new();
-                    var bodies = parser.OmittedBodies.Where(b => b.From >= type.SourceFrom && b.To <= type.SourceTo).OrderBy(b => b.From).ToArray();
-                    int bodyIndex = 0;
-                    bool wroteBody = false;
-                    // AND ITS TEMPLATE BODIES' SHAPE, kept apart: the bodies a
-                    // template is imported with (Parser.OmittedBodies' Template)
-                    // are read for what they name before a unit is bound
-                    // (IndexedDeclarations.AddHeaders), whether or not the unit
-                    // copies one, and what they name is loaded into the unit.
-                    // Their tokens, without a literal's value or any position:
-                    // neither decides what a body names, so an edit to a number,
-                    // or to a line above, leaves current a unit that never
-                    // copied a body (UnitDependencies, Dependence.Template). An
-                    // interpolated string keeps its text, whose holes are
-                    // expressions.
-                    using MemoryStream shape = new();
-                    using BinaryWriter shaped = new(shape, Encoding.UTF8, leaveOpen: true);
-                    // EACH TOKEN WHERE IT WAS WRITTEN: on its own line and at
-                    // its own column, the text read from the type's line
-                    // (IndexedDeclarations), so what a unit reading this header
-                    // says of it points into the file. Joined by single spaces,
-                    // every such error was at line 1 -- "Marked.cor(1,32)" for a
-                    // base named on line 3. A body left out leaves its lines
-                    // empty; a token its stand-in pushed right is moved over
-                    // by one space, and stays on its line.
-                    int line = type.Line, column = 1;
-                    // WHAT ANOTHER UNIT MAY READ, hashed apart from the text:
-                    // most of a private member is the type's own business,
-                    // and editing it leaves current the units compiled
-                    // against the type (DeclarationHash). What still counts is
-                    // what they read of it (Hiding): what lays the object out
-                    // -- an instance field, by its place, modifiers and type
-                    // -- whether it has a constructor of its own, and whether
-                    // it has statics to make. A type whose bodies another
-                    // unit may copy is hashed whole (HidesPrivate).
-                    StringBuilder visible = new();
-                    bool filtered = HidesPrivate(type) && !bodies.Any(b => b.Template);
-                    var nested = unit.Types.Where(other => other != type && other.SourceFrom >= type.SourceFrom && other.SourceTo <= type.SourceTo).ToArray();
-                    bool byMember = ByMember(type, librarySide);
-                    var members = filtered || byMember
-                        ? parser.MemberSpans.Where(m => m.From >= type.SourceFrom && m.To <= type.SourceTo
-                            && !nested.Any(n => m.From >= n.SourceFrom && m.To <= n.SourceTo)).OrderBy(m => m.From).ToArray()
-                        : Array.Empty<(int From, int To, MemberDecl Member)>();
-                    // EACH SPAN'S DECLARATORS: `static int a = 1, b = F();` is one
-                    // span, its b a member of its own with none (the parser's
-                    // More), found by where it is written. A span is an
-                    // initialised static where any of them is one, and where
-                    // any is a static with an initialiser, private or not,
-                    // the span is the shape's (Statics): what another unit
-                    // reads of it is whether the type has startup work and
-                    // where the run of statics the link may make ends.
-                    List<MemberDecl>[] declarators = new List<MemberDecl>[members.Length];
-                    PrivateMember[] spanHiding = new PrivateMember[members.Length];
-                    bool[] spanStatics = new bool[members.Length];
-                    for (int i = 0; i < members.Length; i++)
+                    bool librarySide = librarySource?.Invoke(path) ?? true;
+                    // THE FILE'S GLOBAL USINGS, which every file of its side reads
+                    // as its own (IndexedDeclarations.GlobalUsings, Frontend.
+                    // ApplyGlobalUsings): a unit compiled by itself parses only
+                    // its own files, and the directive may be in any other.
+                    foreach (string use in unit.GlobalUsings)
+                        yield return new DeclarationRecord(GlobalUsingKey(identity, librarySide), Encoding.UTF8.GetBytes(use));
+                    foreach (TypeDecl type in unit.Types)
                     {
-                        declarators[i] = new List<MemberDecl> { members[i].Member };
-                        spanHiding[i] = Hiding(members[i].Member);
-                    }
-                    if (members.Length > 0)
-                    {
-                        HashSet<MemberDecl> spannedOnce = new(members.Select(member => member.Member), ReferenceEqualityComparer.Instance);
-                        Dictionary<(int Line, int Col), int>? where = null;
-                        foreach (MemberDecl extra in type.Members)
+                        // A DECLARATION THAT CAN MAKE AN INTERRUPT HANDLER
+                        // (Binder.DeclaresInterruptHandler): said to the build,
+                        // whose units keep their facts for one.
+                        if (interruptHandler is not null && !handlerSaid && Binder.DeclaresInterruptHandler(type))
                         {
-                            if (extra is not FieldDecl || spannedOnce.Contains(extra)) continue;
-                            if (where is null)
-                            {
-                                where = new();
-                                foreach (Token placed in tokens)
-                                    if (placed.Pos >= type.SourceFrom && placed.Pos < type.SourceTo) where.TryAdd((placed.Line, placed.Col), placed.Pos);
-                            }
-                            if (!where.TryGetValue((extra.Line, extra.Col), out int pos)) continue;
-                            int holder = Array.FindIndex(members, member => pos >= member.From && pos < member.To);
-                            if (holder < 0) continue;
-                            declarators[holder].Add(extra);
-                            if (spanHiding[holder] == PrivateMember.Left && Hiding(extra) == PrivateMember.Initialised) spanHiding[holder] = PrivateMember.Initialised;
+                            handlerSaid = true;
+                            interruptHandler();
                         }
-                    }
-                    for (int i = 0; i < members.Length; i++) spanStatics[i] = declarators[i].Any(Statics);
-                    int memberIndex = 0, braces = 0, brackets = 0;
-                    // The span marked in the shape last, and whether the run of
-                    // statics the link may make has been marked ended.
-                    int markedMember = -1;
-                    bool runEnded = false;
-                    // Each `[` open: a length or an index (true), or a collection expression's.
-                    Stack<bool> squares = new();
-                    PrivateMember hiding = PrivateMember.Shown;
-                    bool markedCtor = false, markedStatics = false;
-                    // AND EACH MEMBER APART, where they can be told apart
-                    // (ByMember): what a token shows goes to its member's text
-                    // or to the type's shape, a nested type's to neither -- it
-                    // is a key of its own.
-                    StringBuilder shapeText = new();
-                    Dictionary<string, (MemberDecl Member, StringBuilder Text)> memberTexts = new(StringComparer.Ordinal);
-                    StringBuilder? routed = null;
-                    void Place(Token at)
-                    {
-                        if (at.Line > line) { declaration.Append('\n', at.Line - line); line = at.Line; column = 1; }
-                        if (at.Line == line && at.Col > column) { declaration.Append(' ', at.Col - column); column = at.Col; }
-                        else if (at.Line < line || at.Col < column) { declaration.Append(' '); column++; }
-                    }
-                    // A piece written, and where the next one starts: a token
-                    // may hold a line break (a verbatim string).
-                    void Write(string piece, int from, int count)
-                    {
-                        if (count == 0) return;
-                        declaration.Append(piece, from, count);
-                        int last = piece.LastIndexOf('\n', from + count - 1, count);
-                        if (last < 0) { column += count; return; }
-                        for (int i = from; i <= last; i++) if (piece[i] == '\n') line++;
-                        column = from + count - last;
-                    }
-                    for (int tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
-                    {
-                        Token token = tokens[tokenIndex];
-                        if (token.Pos < type.SourceFrom || token.Pos >= type.SourceTo || token.Kind == Tok.End) continue;
-                        while (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].To)
-                        { bodyIndex++; wroteBody = false; }
-                        while (memberIndex < members.Length && token.Pos >= members[memberIndex].To)
-                        { memberIndex++; markedCtor = false; braces = 0; brackets = 0; squares.Clear(); }
-                        PrivateMember ownHiding = memberIndex < members.Length && token.Pos >= members[memberIndex].From
-                            ? spanHiding[memberIndex] : PrivateMember.Shown;
-                        hiding = filtered ? ownHiding : PrivateMember.Shown;
-                        routed = null;
-                        if (byMember && !nested.Any(n => token.Pos >= n.SourceFrom && token.Pos < n.SourceTo))
+                        skeletons.Add(InterfaceForms.Declared.Of(type, librarySide));
+                        StringBuilder declaration = new();
+                        var bodies = parser.OmittedBodies.Where(b => b.From >= type.SourceFrom && b.To <= type.SourceTo).OrderBy(b => b.From).ToArray();
+                        int bodyIndex = 0;
+                        bool wroteBody = false;
+                        // AND ITS TEMPLATE BODIES' SHAPE, kept apart: the bodies a
+                        // template is imported with (Parser.OmittedBodies' Template)
+                        // are read for what they name before a unit is bound
+                        // (IndexedDeclarations.AddHeaders), whether or not the unit
+                        // copies one, and what they name is loaded into the unit.
+                        // Their tokens, without a literal's value or any position:
+                        // neither decides what a body names, so an edit to a number,
+                        // or to a line above, leaves current a unit that never
+                        // copied a body (UnitDependencies, Dependence.Template). An
+                        // interpolated string keeps its text, whose holes are
+                        // expressions.
+                        using MemoryStream shape = new();
+                        using BinaryWriter shaped = new(shape, Encoding.UTF8, leaveOpen: true);
+                        // EACH TOKEN WHERE IT WAS WRITTEN: on its own line and at
+                        // its own column, the text read from the type's line
+                        // (IndexedDeclarations), so what a unit reading this header
+                        // says of it points into the file. Joined by single spaces,
+                        // every such error was at line 1 -- "Marked.cor(1,32)" for a
+                        // base named on line 3. A body left out leaves its lines
+                        // empty; a token its stand-in pushed right is moved over
+                        // by one space, and stays on its line.
+                        int line = type.Line, column = 1;
+                        // WHAT ANOTHER UNIT MAY READ, hashed apart from the text:
+                        // most of a private member is the type's own business,
+                        // and editing it leaves current the units compiled
+                        // against the type (DeclarationHash). What still counts is
+                        // what they read of it (Hiding): what lays the object out
+                        // -- an instance field, by its place, modifiers and type
+                        // -- whether it has a constructor of its own, and whether
+                        // it has statics to make. A type whose bodies another
+                        // unit may copy is hashed whole (HidesPrivate).
+                        StringBuilder visible = new();
+                        bool filtered = HidesPrivate(type) && !bodies.Any(b => b.Template);
+                        var nested = unit.Types.Where(other => other != type && other.SourceFrom >= type.SourceFrom && other.SourceTo <= type.SourceTo).ToArray();
+                        bool byMember = ByMember(type, librarySide);
+                        var members = filtered || byMember
+                            ? parser.MemberSpans.Where(m => m.From >= type.SourceFrom && m.To <= type.SourceTo
+                                && !nested.Any(n => m.From >= n.SourceFrom && m.To <= n.SourceTo)).OrderBy(m => m.From).ToArray()
+                            : Array.Empty<(int From, int To, MemberDecl Member)>();
+                        // EACH SPAN'S DECLARATORS: `static int a = 1, b = F();` is one
+                        // span, its b a member of its own with none (the parser's
+                        // More), found by where it is written. A span is an
+                        // initialised static where any of them is one, and where
+                        // any is a static with an initialiser, private or not,
+                        // the span is the shape's (Statics): what another unit
+                        // reads of it is whether the type has startup work and
+                        // where the run of statics the link may make ends.
+                        List<MemberDecl>[] declarators = new List<MemberDecl>[members.Length];
+                        PrivateMember[] spanHiding = new PrivateMember[members.Length];
+                        bool[] spanStatics = new bool[members.Length];
+                        for (int i = 0; i < members.Length; i++)
                         {
-                            routed = shapeText;
-                            // A private member's tokens show nothing of their own
-                            // (Hiding): no name is made for one.
-                            if (memberIndex < members.Length && token.Pos >= members[memberIndex].From && hiding == PrivateMember.Shown
-                                && !spanStatics[memberIndex] && MemberName(members[memberIndex].Member) is string own)
-                            {
-                                if (!memberTexts.TryGetValue(own, out var said)) memberTexts[own] = said = (members[memberIndex].Member, new StringBuilder());
-                                routed = said.Text;
-                            }
+                            declarators[i] = new List<MemberDecl> { members[i].Member };
+                            spanHiding[i] = Hiding(members[i].Member);
                         }
-                        if (hiding == PrivateMember.Constructor && !markedCtor) { visible.Append("ctor ; "); if (byMember) shapeText.Append("ctor ; "); markedCtor = true; }
-                        markedStatics |= hiding == PrivateMember.Initialised;
-                        if (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].From)
+                        if (members.Length > 0)
                         {
-                            // A BODY WHOSE TEXT SAYS IT NEVER RETURNS STAYS ONE
-                            // THAT SAYS SO (Parser.NeverReturningBodies): a unit
-                            // reading this reads the same of the method as the
-                            // unit that compiles it, and code both compile -- a
-                            // generic copy calling it -- comes out the same in
-                            // both. An edit that lets it return changes the
-                            // declaration, and what was compiled against it.
-                            bool never = parser.NeverReturningBodies.Contains(bodies[bodyIndex].From);
-                            // A BODY THAT NAMES MemberwiseClone KEEPS THE NAME
-                            // (TypeDecl.MemberwiseCopied): a unit reading this
-                            // reads the type as one whose objects may be
-                            // copied by bytes, as the unit compiling it does.
-                            bool copies = false;
-                            for (int k = tokenIndex; k < tokens.Count && tokens[k].Pos < bodies[bodyIndex].To && !copies; k++)
-                                copies = tokens[k].Kind == Tok.Ident && tokens[k].Text == "MemberwiseClone";
-                            if (!wroteBody)
+                            HashSet<MemberDecl> spannedOnce = new(members.Select(member => member.Member), ReferenceEqualityComparer.Instance);
+                            Dictionary<(int Line, int Col), int>? where = null;
+                            foreach (MemberDecl extra in type.Members)
                             {
-                                string standIn = bodies[bodyIndex].Block ? (never ? (copies ? "{ MemberwiseClone ; throw null ; } " : "{ throw null ; } ") : copies ? "{ MemberwiseClone ; } " : "{} ")
-                                    : (never ? (copies ? "throw MemberwiseClone " : "throw null ") : copies ? "MemberwiseClone " : "default ");
-                                // AND THE PRIMARY CONSTRUCTOR'S PARAMETERS IT
-                                // NAMES (TypeDecl.PrimaryParameters): each is a
-                                // field of the object where a body names it
-                                // (Parser.AddPrimaryConstructor), and the unit
-                                // reading this lays the object out from what the
-                                // stand-ins name. Before a block's statements,
-                                // whose last says whether it returns; after an
-                                // expression, whose first does.
-                                if (type.PrimaryParameters is { Count: > 0 } primary)
+                                if (extra is not FieldDecl || spannedOnce.Contains(extra)) continue;
+                                if (where is null)
                                 {
-                                    StringBuilder? named = null;
-                                    foreach (string name in primary)
-                                        for (int k = tokenIndex; k < tokens.Count && tokens[k].Pos < bodies[bodyIndex].To; k++)
-                                            if (tokens[k].Kind == Tok.Ident && tokens[k].Text == name
-                                                && tokens[k - 1].Kind is not (Tok.Dot or Tok.QuestionDot or Tok.Arrow))
-                                            { (named ??= new()).Append(name).Append(bodies[bodyIndex].Block ? " ; " : " "); break; }
-                                    if (named is not null)
-                                        standIn = bodies[bodyIndex].Block ? "{ " + named + standIn[1..].TrimStart() : standIn + named;
+                                    where = new();
+                                    foreach (Token placed in tokens)
+                                        if (placed.Pos >= type.SourceFrom && placed.Pos < type.SourceTo) where.TryAdd((placed.Line, placed.Col), placed.Pos);
                                 }
-                                Place(token);
-                                Write(standIn, 0, standIn.Length);
-                                if (hiding == PrivateMember.Shown) { visible.Append(standIn); routed?.Append(standIn); }
-                                else if (copies) visible.Append("MemberwiseClone ; ");
-                                // Whether objects are copied by bytes is the type's.
-                                if (copies && byMember) shapeText.Append("MemberwiseClone ; ");
+                                if (!where.TryGetValue((extra.Line, extra.Col), out int pos)) continue;
+                                int holder = Array.FindIndex(members, member => pos >= member.From && pos < member.To);
+                                if (holder < 0) continue;
+                                declarators[holder].Add(extra);
+                                if (spanHiding[holder] == PrivateMember.Left && Hiding(extra) == PrivateMember.Initialised) spanHiding[holder] = PrivateMember.Initialised;
                             }
-                            wroteBody = true;
-                            if (bodies[bodyIndex].Template)
-                            {
-                                shaped.Write((byte)token.Kind);
-                                if (token.Kind is not (Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str)) shaped.Write(token.Text);
-                            }
-                            continue;
                         }
-                        Place(token);
-                        Write(text, token.Pos, ends[tokenIndex] - token.Pos);
-                        if (hiding == PrivateMember.Shown)
+                        for (int i = 0; i < members.Length; i++) spanStatics[i] = declarators[i].Any(Statics);
+                        int memberIndex = 0, braces = 0, brackets = 0;
+                        // The span marked in the shape last, and whether the run of
+                        // statics the link may make has been marked ended.
+                        int markedMember = -1;
+                        bool runEnded = false;
+                        // Each `[` open: a length or an index (true), or a collection expression's.
+                        Stack<bool> squares = new();
+                        PrivateMember hiding = PrivateMember.Shown;
+                        bool markedCtor = false, markedStatics = false;
+                        // AND EACH MEMBER APART, where they can be told apart
+                        // (ByMember): what a token shows goes to its member's text
+                        // or to the type's shape, a nested type's to neither -- it
+                        // is a key of its own.
+                        StringBuilder shapeText = new();
+                        Dictionary<string, (MemberDecl Member, StringBuilder Text)> memberTexts = new(StringComparer.Ordinal);
+                        StringBuilder? routed = null;
+                        void Place(Token at)
                         {
-                            visible.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
-                            // A private static's initialiser written out (a type
-                            // whose private members are shown): to its shape as
-                            // below, not as written.
-                            if (byMember && ownHiding == PrivateMember.Initialised && ReferenceEquals(routed, shapeText)) InitialiserToShape(token, tokenIndex);
-                            else routed?.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                            if (at.Line > line) { declaration.Append('\n', at.Line - line); line = at.Line; column = 1; }
+                            if (at.Line == line && at.Col > column) { declaration.Append(' ', at.Col - column); column = at.Col; }
+                            else if (at.Line < line || at.Col < column) { declaration.Append(' '); column++; }
                         }
-                        else if (hiding == PrivateMember.Field && !parser.FieldInitialisers.Any(i => token.Pos >= i.From && token.Pos < i.To))
+                        // A piece written, and where the next one starts: a token
+                        // may hold a line break (a verbatim string).
+                        void Write(string piece, int from, int count)
                         {
-                            if (parser.FieldNames.Contains(token.Pos))
+                            if (count == 0) return;
+                            declaration.Append(piece, from, count);
+                            int last = piece.LastIndexOf('\n', from + count - 1, count);
+                            if (last < 0) { column += count; return; }
+                            for (int i = from; i <= last; i++) if (piece[i] == '\n') line++;
+                            column = from + count - last;
+                        }
+                        for (int tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
+                        {
+                            Token token = tokens[tokenIndex];
+                            if (token.Pos < type.SourceFrom || token.Pos >= type.SourceTo || token.Kind == Tok.End) continue;
+                            while (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].To)
+                            { bodyIndex++; wroteBody = false; }
+                            while (memberIndex < members.Length && token.Pos >= members[memberIndex].To)
+                            { memberIndex++; markedCtor = false; braces = 0; brackets = 0; squares.Clear(); }
+                            PrivateMember ownHiding = memberIndex < members.Length && token.Pos >= members[memberIndex].From
+                                ? spanHiding[memberIndex] : PrivateMember.Shown;
+                            hiding = filtered ? ownHiding : PrivateMember.Shown;
+                            routed = null;
+                            if (byMember && !nested.Any(n => token.Pos >= n.SourceFrom && token.Pos < n.SourceTo))
                             {
-                                visible.Append("_ ");
-                                if (byMember) shapeText.Append("_ ");
+                                routed = shapeText;
+                                // A private member's tokens show nothing of their own
+                                // (Hiding): no name is made for one.
+                                if (memberIndex < members.Length && token.Pos >= members[memberIndex].From && hiding == PrivateMember.Shown
+                                    && !spanStatics[memberIndex] && MemberName(members[memberIndex].Member) is string own)
+                                {
+                                    if (!memberTexts.TryGetValue(own, out var said)) memberTexts[own] = said = (members[memberIndex].Member, new StringBuilder());
+                                    routed = said.Text;
+                                }
                             }
-                            else
+                            if (hiding == PrivateMember.Constructor && !markedCtor) { visible.Append("ctor ; "); if (byMember) shapeText.Append("ctor ; "); markedCtor = true; }
+                            markedStatics |= hiding == PrivateMember.Initialised;
+                            if (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].From)
+                            {
+                                // A BODY WHOSE TEXT SAYS IT NEVER RETURNS STAYS ONE
+                                // THAT SAYS SO (Parser.NeverReturningBodies): a unit
+                                // reading this reads the same of the method as the
+                                // unit that compiles it, and code both compile -- a
+                                // generic copy calling it -- comes out the same in
+                                // both. An edit that lets it return changes the
+                                // declaration, and what was compiled against it.
+                                bool never = parser.NeverReturningBodies.Contains(bodies[bodyIndex].From);
+                                // A BODY THAT NAMES MemberwiseClone KEEPS THE NAME
+                                // (TypeDecl.MemberwiseCopied): a unit reading this
+                                // reads the type as one whose objects may be
+                                // copied by bytes, as the unit compiling it does.
+                                bool copies = false;
+                                for (int k = tokenIndex; k < tokens.Count && tokens[k].Pos < bodies[bodyIndex].To && !copies; k++)
+                                    copies = tokens[k].Kind == Tok.Ident && tokens[k].Text == "MemberwiseClone";
+                                if (!wroteBody)
+                                {
+                                    string standIn = bodies[bodyIndex].Block ? (never ? (copies ? "{ MemberwiseClone ; throw null ; } " : "{ throw null ; } ") : copies ? "{ MemberwiseClone ; } " : "{} ")
+                                        : (never ? (copies ? "throw MemberwiseClone " : "throw null ") : copies ? "MemberwiseClone " : "default ");
+                                    // AND THE PRIMARY CONSTRUCTOR'S PARAMETERS IT
+                                    // NAMES (TypeDecl.PrimaryParameters): each is a
+                                    // field of the object where a body names it
+                                    // (Parser.AddPrimaryConstructor), and the unit
+                                    // reading this lays the object out from what the
+                                    // stand-ins name. Before a block's statements,
+                                    // whose last says whether it returns; after an
+                                    // expression, whose first does.
+                                    if (type.PrimaryParameters is { Count: > 0 } primary)
+                                    {
+                                        StringBuilder? named = null;
+                                        foreach (string name in primary)
+                                            for (int k = tokenIndex; k < tokens.Count && tokens[k].Pos < bodies[bodyIndex].To; k++)
+                                                if (tokens[k].Kind == Tok.Ident && tokens[k].Text == name
+                                                    && tokens[k - 1].Kind is not (Tok.Dot or Tok.QuestionDot or Tok.Arrow))
+                                                { (named ??= new()).Append(name).Append(bodies[bodyIndex].Block ? " ; " : " "); break; }
+                                        if (named is not null)
+                                            standIn = bodies[bodyIndex].Block ? "{ " + named + standIn[1..].TrimStart() : standIn + named;
+                                    }
+                                    Place(token);
+                                    Write(standIn, 0, standIn.Length);
+                                    if (hiding == PrivateMember.Shown) { visible.Append(standIn); routed?.Append(standIn); }
+                                    else if (copies) visible.Append("MemberwiseClone ; ");
+                                    // Whether objects are copied by bytes is the type's.
+                                    if (copies && byMember) shapeText.Append("MemberwiseClone ; ");
+                                }
+                                wroteBody = true;
+                                if (bodies[bodyIndex].Template)
+                                {
+                                    shaped.Write((byte)token.Kind);
+                                    if (token.Kind is not (Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str)) shaped.Write(token.Text);
+                                }
+                                continue;
+                            }
+                            Place(token);
+                            Write(text, token.Pos, ends[tokenIndex] - token.Pos);
+                            if (hiding == PrivateMember.Shown)
                             {
                                 visible.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
-                                if (byMember) shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                                // A private static's initialiser written out (a type
+                                // whose private members are shown): to its shape as
+                                // below, not as written.
+                                if (byMember && ownHiding == PrivateMember.Initialised && ReferenceEquals(routed, shapeText)) InitialiserToShape(token, tokenIndex);
+                                else routed?.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
                             }
-                        }
-                        else if (hiding == PrivateMember.Initialised && byMember) InitialiserToShape(token, tokenIndex);
-                    }
-                    // A PRIVATE STATIC'S INITIALISER, to the shape: what every
-                    // unit touching the type reads of it (Binder.StaticInitialisers,
-                    // Lowering.TouchType) and no more -- whether the type has
-                    // startup work, the type's own mark (`static ;`), and where
-                    // the run of statics the link may make ends, which decides
-                    // whether a public one after it is one: the first
-                    // declarator of the class "code" (Binder.InitialiserClasses),
-                    // marked where it is among the public ones, and nothing
-                    // else. A private static more or less, or in another order
-                    // -- Ide's shutdown list removed -- changes nothing another
-                    // unit compiles. An array made, which may be a table laid
-                    // down as data, by its tokens: a literal without its value
-                    // -- a table's bytes are its own unit's -- but a length's
-                    // with it, in `[ ]` outside any `{ }`: `new byte[60000]`
-                    // is a zeroed table and `new byte[70000]` code
-                    // (Binder.ZeroedArrayOf).
-                    void InitialiserToShape(Token token, int tokenIndex)
-                    {
-                        if (markedMember == memberIndex) return;
-                        if (Binder.InitialiserClasses(declarators[memberIndex]) is { } marks)
-                        {
-                            markedMember = memberIndex;
-                            if (!runEnded && marks.Contains("code"))
+                            else if (hiding == PrivateMember.Field && !parser.FieldInitialisers.Any(i => token.Pos >= i.From && token.Pos < i.To))
                             {
-                                runEnded = true;
-                                shapeText.Append("static static code ; ");
-                            }
-                            return;
-                        }
-                        {
-                            if (token.Kind == Tok.LBrace) braces++;
-                            else if (token.Kind == Tok.RBrace && braces > 0) braces--;
-                            // A `[` after a type, a name, `)` or `]` holds a length
-                            // or an index; any other begins a collection
-                            // expression, whose elements are a table's as in `{ }`.
-                            else if (token.Kind == Tok.LBracket)
-                            {
-                                Tok before = tokenIndex > 0 ? tokens[tokenIndex - 1].Kind : Tok.End;
-                                // `?` too: `new string?[8000]`'s length is one.
-                                bool sized = before is Tok.Ident or Tok.RBracket or Tok.RParen or Tok.Gt or Tok.Question || before.ToString().StartsWith("Kw", StringComparison.Ordinal);
-                                squares.Push(sized);
-                                if (sized) brackets++; else braces++;
-                            }
-                            else if (token.Kind == Tok.RBracket && squares.Count > 0)
-                            {
-                                if (squares.Pop()) brackets--; else braces--;
-                            }
-                            bool length = brackets > 0 && braces == 0;
-                            if (!length && token.Kind is Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str or Tok.InterpStr) shapeText.Append(token.Kind.ToString());
-                            else shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos);
-                            shapeText.Append(' ');
-                        }
-                    }
-                    shaped.Flush();
-                    // Once, wherever they were written.
-                    if (markedStatics) visible.Append("static ;");
-                    // EVERY NAME ANOTHER UNIT CAN ASK, ITS OWN HASH OR THE SHAPE'S.
-                    // A member with no span of its own -- `const int A = 1, B = 2`'s
-                    // B, an event's hoisted remove_ -- was written inside another's,
-                    // and its names are that one's text's (or the shape's, where
-                    // that one is the shape's). One found inside none: the type's
-                    // members are not told apart.
-                    Dictionary<string, HashSet<string>> alsoNamed = new(StringComparer.Ordinal);
-                    if (byMember)
-                    {
-                        HashSet<MemberDecl> spanned = new(members.Select(member => member.Member), ReferenceEqualityComparer.Instance);
-                        Dictionary<(int Line, int Col), int>? at = null;
-                        foreach (MemberDecl unspanned in type.Members)
-                        {
-                            if (spanned.Contains(unspanned) || filtered && Hiding(unspanned) != PrivateMember.Shown) continue;
-                            if (at is null)
-                            {
-                                at = new();
-                                foreach (Token placed in tokens)
-                                    if (placed.Pos >= type.SourceFrom && placed.Pos < type.SourceTo) at.TryAdd((placed.Line, placed.Col), placed.Pos);
-                            }
-                            int inside = at.TryGetValue((unspanned.Line, unspanned.Col), out int pos)
-                                ? Array.FindIndex(members, member => pos >= member.From && pos < member.To) : -1;
-                            if (inside < 0) { byMember = false; break; }
-                            if ((!filtered || Hiding(members[inside].Member) == PrivateMember.Shown) && MemberName(members[inside].Member) is string holder
-                                && memberTexts.ContainsKey(holder))
-                            {
-                                if (!alsoNamed.TryGetValue(holder, out HashSet<string>? names)) alsoNamed[holder] = names = new(StringComparer.Ordinal);
-                                names.UnionWith(Monomorphiser.MemberNames(new List<MemberDecl> { unspanned }));
-                                names.Add(unspanned.Name);
-                            }
-                        }
-                    }
-                    // WHETHER IT HAS STATICS TO MAKE, whoever's they are: every
-                    // unit touching the type reads that (Lowering.TouchType).
-                    // An initialised static's text is the shape's already
-                    // (MemberName; a private one's above); this says so even of
-                    // a static constructor's type.
-                    if (byMember && type.Members.Any(member => (member.Mods & Mods.Static) != 0
-                            && member is FieldDecl { Init: not null } or PropertyDecl { Init: not null } or MethodDecl { IsCtor: true }))
-                        shapeText.Append("static ;");
-                    // EACH MEMBER WITH THE CONSTANTS OF THE TYPE IT NAMES, and
-                    // theirs: `C = P + 1`, `B(int k = P)` change with P, and a
-                    // unit asking for C or B is not one asking for P -- the
-                    // binder works its constants out quietly (Binder.Run). The
-                    // shape too: `new byte[P]` is a table or code by P's value,
-                    // `fixed byte b[P]` its layout, read quietly as well.
-                    Dictionary<string, string> constantHolders = new(StringComparer.Ordinal);
-                    foreach (var held in memberTexts)
-                        if (held.Value.Member is FieldDecl { Mods: var constMods } && (constMods & Mods.Const) != 0)
-                            foreach (string name in (alsoNamed.GetValueOrDefault(held.Key) ?? new HashSet<string>(StringComparer.Ordinal)).Append(held.Key))
-                                constantHolders.TryAdd(name, held.Key);
-                    string WithConstants(string text, string? own)
-                    {
-                        if (constantHolders.Count == 0) return text;
-                        SortedSet<string> named = new(StringComparer.Ordinal);
-                        Queue<string> reading = new();
-                        reading.Enqueue(text);
-                        while (reading.Count > 0)
-                            foreach (Token word in Lexer.Tokenize(reading.Dequeue(), path))
-                                // An interpolated string's holes are expressions in its
-                                // text: every word of it a name it may hold.
-                                foreach (string name in word.Kind == Tok.Ident ? new[] { word.Text }
-                                    : word.Kind == Tok.InterpStr ? Words(word.Text) : Array.Empty<string>())
-                                    if (constantHolders.TryGetValue(name, out string? holder) && holder != own && named.Add(holder))
-                                        reading.Enqueue(memberTexts[holder].Text.ToString());
-                        StringBuilder said = new(text);
-                        foreach (string holder in named) said.Append("\n").Append(holder).Append(" : ").Append(memberTexts[holder].Text);
-                        return said.ToString();
-                    }
-                    string syntax = declaration.ToString();
-                    FileScope scope = type.Scope ?? new FileScope();
-                    using MemoryStream canonical = new();
-                    using (BinaryWriter writer = new(canonical, Encoding.UTF8, leaveOpen: true))
-                    {
-                        // Token spelling/kind, not line offsets or body text,
-                        // determines declaration invalidation.
-                        foreach (Token token in Lexer.Tokenize(visible.ToString(), path))
-                        { writer.Write((byte)token.Kind); writer.Write(token.Text); }
-                        WriteScope(writer, scope);
-                    }
-                    string key = "T:" + identity + "\n" + TypeName(type);
-                    if (under is not null && under.Find(key).ToList() is { Count: > 0 } kernels)
-                        KernelPart(path, TypeName(type), type, kernels, onPath!);
-                    yield return new SourceDeclaration
-                    {
-                        Key = key, Path = path, Text = syntax,
-                        Namespace = type.Namespace, Outer = type.Outer ?? "", Scope = scope,
-                        From = type.SourceFrom, To = type.SourceTo, Line = type.Line, Column = type.Col,
-                        SourceHash = hash, DeclarationHash = SHA256.HashData(canonical.ToArray()),
-                        TemplateHash = SHA256.HashData(shape.ToArray()),
-                        HeaderHash = HeaderHash(tokens, type, scope),
-                        MemberNames = Monomorphiser.MemberNames(type.Members).Order(StringComparer.Ordinal).ToArray(),
-                        ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
-                        // The shape, with what its template bodies name (a type with generic methods).
-                        ShapeHash = byMember ? SHA256.HashData(Hashed(WithConstants(shapeText.ToString(), null), path, scope, 32).Concat(SHA256.HashData(shape.ToArray())).ToArray()) : Array.Empty<byte>(),
-                        MemberHashes = byMember
-                            ? memberTexts.SelectMany(member =>
+                                if (parser.FieldNames.Contains(token.Pos))
                                 {
-                                    byte[] said = Hashed(WithConstants(member.Value.Text.ToString(), member.Key), path, null, 16);
-                                    return LookedUpBy(member.Value.Member, member.Key)
-                                        .Concat(alsoNamed.GetValueOrDefault(member.Key) ?? Enumerable.Empty<string>())
-                                        .Select(name => (Name: name, Hash: said));
-                                })
-                                // A name under two texts takes both: none is left out.
-                                .GroupBy(member => member.Name, StringComparer.Ordinal)
-                                .Select(group => group.Count() == 1 ? group.First() : (Name: group.Key, Hash: SHA256.HashData(group
-                                    .Select(member => member.Hash).OrderBy(Convert.ToHexString, StringComparer.Ordinal).SelectMany(bytes => bytes).ToArray())[..16]))
-                                .OrderBy(member => member.Name, StringComparer.Ordinal).ToArray()
-                            : Array.Empty<(string, byte[])>(),
-                    }.Encode();
-                    yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
-                    // AND BY ITS SIMPLE NAME, when its key is qualified -- by a
-                    // namespace or an outer type -- for the bare mention that
-                    // only the binder's Sole answers (IndexedDeclarations.Sole).
-                    if (type.Outer is not null)
-                        yield return new DeclarationRecord("S:" + identity + "\n" + type.Name, Encoding.UTF8.GetBytes(key));
-                    foreach (string method in type.Members.OfType<MethodDecl>()
-                        .Where(method => method.Mods.HasFlag(Mods.Static) && method.Params.FirstOrDefault()?.IsThis == true)
-                        .Select(method => method.Name).Distinct(StringComparer.Ordinal))
-                        yield return new DeclarationRecord("E:" + identity + "\n" + type.Namespace + "\n" + method,
-                            Encoding.UTF8.GetBytes(key));
-                    // AND EVERY GENERIC INSTANCE METHOD BY NAME AND ARITY, so a
-                    // call to a generic virtual method can find every class
-                    // that overrides or implements it wherever it is declared
-                    // (IndexedDeclarations.RequireOverrides). Instance methods
-                    // of any kind, not only those written `override`: a class
-                    // implements an interface's generic method without saying
-                    // so.
-                    foreach (string method in type.Members.OfType<MethodDecl>()
-                        .Where(method => method.TypeParams.Count > 0 && !method.Mods.HasFlag(Mods.Static))
-                        .Select(method => (method.ExplicitInterface is null ? method.Name : method.Name[(method.Name.LastIndexOf('.') + 1)..])
-                                        + "`" + method.TypeParams.Count)
-                        .Distinct(StringComparer.Ordinal))
-                        yield return new DeclarationRecord("G:" + identity + "\n" + method, Encoding.UTF8.GetBytes(key));
-                    if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type, librarySource?.Invoke(path) ?? true);
-                    // A RECORD CLASS BY NAME, which a record of another unit
-                    // may derive from without arguments to say it is one
-                    // (Frontend.RecordNames).
-                    if (type.IsRecord && type.Kind == TypeKind.Class)
-                        yield return new DeclarationRecord(RecordKey(identity), Encoding.UTF8.GetBytes(type.Name));
+                                    visible.Append("_ ");
+                                    if (byMember) shapeText.Append("_ ");
+                                }
+                                else
+                                {
+                                    visible.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                                    if (byMember) shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                                }
+                            }
+                            else if (hiding == PrivateMember.Initialised && byMember) InitialiserToShape(token, tokenIndex);
+                        }
+                        // A PRIVATE STATIC'S INITIALISER, to the shape: what every
+                        // unit touching the type reads of it (Binder.StaticInitialisers,
+                        // Lowering.TouchType) and no more -- whether the type has
+                        // startup work, the type's own mark (`static ;`), and where
+                        // the run of statics the link may make ends, which decides
+                        // whether a public one after it is one: the first
+                        // declarator of the class "code" (Binder.InitialiserClasses),
+                        // marked where it is among the public ones, and nothing
+                        // else. A private static more or less, or in another order
+                        // -- Ide's shutdown list removed -- changes nothing another
+                        // unit compiles. An array made, which may be a table laid
+                        // down as data, by its tokens: a literal without its value
+                        // -- a table's bytes are its own unit's -- but a length's
+                        // with it, in `[ ]` outside any `{ }`: `new byte[60000]`
+                        // is a zeroed table and `new byte[70000]` code
+                        // (Binder.ZeroedArrayOf).
+                        void InitialiserToShape(Token token, int tokenIndex)
+                        {
+                            if (markedMember == memberIndex) return;
+                            if (Binder.InitialiserClasses(declarators[memberIndex]) is { } marks)
+                            {
+                                markedMember = memberIndex;
+                                if (!runEnded && marks.Contains("code"))
+                                {
+                                    runEnded = true;
+                                    shapeText.Append("static static code ; ");
+                                }
+                                return;
+                            }
+                            {
+                                if (token.Kind == Tok.LBrace) braces++;
+                                else if (token.Kind == Tok.RBrace && braces > 0) braces--;
+                                // A `[` after a type, a name, `)` or `]` holds a length
+                                // or an index; any other begins a collection
+                                // expression, whose elements are a table's as in `{ }`.
+                                else if (token.Kind == Tok.LBracket)
+                                {
+                                    Tok before = tokenIndex > 0 ? tokens[tokenIndex - 1].Kind : Tok.End;
+                                    // `?` too: `new string?[8000]`'s length is one.
+                                    bool sized = before is Tok.Ident or Tok.RBracket or Tok.RParen or Tok.Gt or Tok.Question || before.ToString().StartsWith("Kw", StringComparison.Ordinal);
+                                    squares.Push(sized);
+                                    if (sized) brackets++; else braces++;
+                                }
+                                else if (token.Kind == Tok.RBracket && squares.Count > 0)
+                                {
+                                    if (squares.Pop()) brackets--; else braces--;
+                                }
+                                bool length = brackets > 0 && braces == 0;
+                                if (!length && token.Kind is Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str or Tok.InterpStr) shapeText.Append(token.Kind.ToString());
+                                else shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos);
+                                shapeText.Append(' ');
+                            }
+                        }
+                        shaped.Flush();
+                        // Once, wherever they were written.
+                        if (markedStatics) visible.Append("static ;");
+                        // EVERY NAME ANOTHER UNIT CAN ASK, ITS OWN HASH OR THE SHAPE'S.
+                        // A member with no span of its own -- `const int A = 1, B = 2`'s
+                        // B, an event's hoisted remove_ -- was written inside another's,
+                        // and its names are that one's text's (or the shape's, where
+                        // that one is the shape's). One found inside none: the type's
+                        // members are not told apart.
+                        Dictionary<string, HashSet<string>> alsoNamed = new(StringComparer.Ordinal);
+                        if (byMember)
+                        {
+                            HashSet<MemberDecl> spanned = new(members.Select(member => member.Member), ReferenceEqualityComparer.Instance);
+                            Dictionary<(int Line, int Col), int>? at = null;
+                            foreach (MemberDecl unspanned in type.Members)
+                            {
+                                if (spanned.Contains(unspanned) || filtered && Hiding(unspanned) != PrivateMember.Shown) continue;
+                                if (at is null)
+                                {
+                                    at = new();
+                                    foreach (Token placed in tokens)
+                                        if (placed.Pos >= type.SourceFrom && placed.Pos < type.SourceTo) at.TryAdd((placed.Line, placed.Col), placed.Pos);
+                                }
+                                int inside = at.TryGetValue((unspanned.Line, unspanned.Col), out int pos)
+                                    ? Array.FindIndex(members, member => pos >= member.From && pos < member.To) : -1;
+                                if (inside < 0) { byMember = false; break; }
+                                if ((!filtered || Hiding(members[inside].Member) == PrivateMember.Shown) && MemberName(members[inside].Member) is string holder
+                                    && memberTexts.ContainsKey(holder))
+                                {
+                                    if (!alsoNamed.TryGetValue(holder, out HashSet<string>? names)) alsoNamed[holder] = names = new(StringComparer.Ordinal);
+                                    names.UnionWith(Monomorphiser.MemberNames(new List<MemberDecl> { unspanned }));
+                                    names.Add(unspanned.Name);
+                                }
+                            }
+                        }
+                        // WHETHER IT HAS STATICS TO MAKE, whoever's they are: every
+                        // unit touching the type reads that (Lowering.TouchType).
+                        // An initialised static's text is the shape's already
+                        // (MemberName; a private one's above); this says so even of
+                        // a static constructor's type.
+                        if (byMember && type.Members.Any(member => (member.Mods & Mods.Static) != 0
+                                && member is FieldDecl { Init: not null } or PropertyDecl { Init: not null } or MethodDecl { IsCtor: true }))
+                            shapeText.Append("static ;");
+                        // EACH MEMBER WITH THE CONSTANTS OF THE TYPE IT NAMES, and
+                        // theirs: `C = P + 1`, `B(int k = P)` change with P, and a
+                        // unit asking for C or B is not one asking for P -- the
+                        // binder works its constants out quietly (Binder.Run). The
+                        // shape too: `new byte[P]` is a table or code by P's value,
+                        // `fixed byte b[P]` its layout, read quietly as well.
+                        Dictionary<string, string> constantHolders = new(StringComparer.Ordinal);
+                        foreach (var held in memberTexts)
+                            if (held.Value.Member is FieldDecl { Mods: var constMods } && (constMods & Mods.Const) != 0)
+                                foreach (string name in (alsoNamed.GetValueOrDefault(held.Key) ?? new HashSet<string>(StringComparer.Ordinal)).Append(held.Key))
+                                    constantHolders.TryAdd(name, held.Key);
+                        string WithConstants(string text, string? own)
+                        {
+                            if (constantHolders.Count == 0) return text;
+                            SortedSet<string> named = new(StringComparer.Ordinal);
+                            Queue<string> reading = new();
+                            reading.Enqueue(text);
+                            while (reading.Count > 0)
+                                foreach (Token word in Lexer.Tokenize(reading.Dequeue(), path))
+                                    // An interpolated string's holes are expressions in its
+                                    // text: every word of it a name it may hold.
+                                    foreach (string name in word.Kind == Tok.Ident ? new[] { word.Text }
+                                        : word.Kind == Tok.InterpStr ? Words(word.Text) : Array.Empty<string>())
+                                        if (constantHolders.TryGetValue(name, out string? holder) && holder != own && named.Add(holder))
+                                            reading.Enqueue(memberTexts[holder].Text.ToString());
+                            StringBuilder said = new(text);
+                            foreach (string holder in named) said.Append("\n").Append(holder).Append(" : ").Append(memberTexts[holder].Text);
+                            return said.ToString();
+                        }
+                        string syntax = declaration.ToString();
+                        FileScope scope = type.Scope ?? new FileScope();
+                        using MemoryStream canonical = new();
+                        using (BinaryWriter writer = new(canonical, Encoding.UTF8, leaveOpen: true))
+                        {
+                            // Token spelling/kind, not line offsets or body text,
+                            // determines declaration invalidation.
+                            foreach (Token token in Lexer.Tokenize(visible.ToString(), path))
+                            { writer.Write((byte)token.Kind); writer.Write(token.Text); }
+                            WriteScope(writer, scope);
+                        }
+                        string key = "T:" + identity + "\n" + TypeName(type);
+                        if (under is not null && under.Find(key).ToList() is { Count: > 0 } kernels)
+                            KernelPart(path, TypeName(type), type, kernels, onPath!);
+                        yield return new SourceDeclaration
+                        {
+                            Key = key, Path = path, Text = syntax,
+                            Namespace = type.Namespace, Outer = type.Outer ?? "", Scope = scope,
+                            From = type.SourceFrom, To = type.SourceTo, Line = type.Line, Column = type.Col,
+                            SourceHash = hash, DeclarationHash = SHA256.HashData(canonical.ToArray()),
+                            TemplateHash = SHA256.HashData(shape.ToArray()),
+                            HeaderHash = HeaderHash(tokens, type, scope),
+                            MemberNames = Monomorphiser.MemberNames(type.Members).Order(StringComparer.Ordinal).ToArray(),
+                            ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
+                            // The shape, with what its template bodies name (a type with generic methods).
+                            ShapeHash = byMember ? SHA256.HashData(Hashed(WithConstants(shapeText.ToString(), null), path, scope, 32).Concat(SHA256.HashData(shape.ToArray())).ToArray()) : Array.Empty<byte>(),
+                            MemberHashes = byMember
+                                ? memberTexts.SelectMany(member =>
+                                    {
+                                        byte[] said = Hashed(WithConstants(member.Value.Text.ToString(), member.Key), path, null, 16);
+                                        return LookedUpBy(member.Value.Member, member.Key)
+                                            .Concat(alsoNamed.GetValueOrDefault(member.Key) ?? Enumerable.Empty<string>())
+                                            .Select(name => (Name: name, Hash: said));
+                                    })
+                                    // A name under two texts takes both: none is left out.
+                                    .GroupBy(member => member.Name, StringComparer.Ordinal)
+                                    .Select(group => group.Count() == 1 ? group.First() : (Name: group.Key, Hash: SHA256.HashData(group
+                                        .Select(member => member.Hash).OrderBy(Convert.ToHexString, StringComparer.Ordinal).SelectMany(bytes => bytes).ToArray())[..16]))
+                                    .OrderBy(member => member.Name, StringComparer.Ordinal).ToArray()
+                                : Array.Empty<(string, byte[])>(),
+                        }.Encode();
+                        yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
+                        // AND BY ITS SIMPLE NAME, when its key is qualified -- by a
+                        // namespace or an outer type -- for the bare mention that
+                        // only the binder's Sole answers (IndexedDeclarations.Sole).
+                        if (type.Outer is not null)
+                            yield return new DeclarationRecord("S:" + identity + "\n" + type.Name, Encoding.UTF8.GetBytes(key));
+                        foreach (string method in type.Members.OfType<MethodDecl>()
+                            .Where(method => method.Mods.HasFlag(Mods.Static) && method.Params.FirstOrDefault()?.IsThis == true)
+                            .Select(method => method.Name).Distinct(StringComparer.Ordinal))
+                            yield return new DeclarationRecord("E:" + identity + "\n" + type.Namespace + "\n" + method,
+                                Encoding.UTF8.GetBytes(key));
+                        // AND EVERY GENERIC INSTANCE METHOD BY NAME AND ARITY, so a
+                        // call to a generic virtual method can find every class
+                        // that overrides or implements it wherever it is declared
+                        // (IndexedDeclarations.RequireOverrides). Instance methods
+                        // of any kind, not only those written `override`: a class
+                        // implements an interface's generic method without saying
+                        // so.
+                        foreach (string method in type.Members.OfType<MethodDecl>()
+                            .Where(method => method.TypeParams.Count > 0 && !method.Mods.HasFlag(Mods.Static))
+                            .Select(method => (method.ExplicitInterface is null ? method.Name : method.Name[(method.Name.LastIndexOf('.') + 1)..])
+                                            + "`" + method.TypeParams.Count)
+                            .Distinct(StringComparer.Ordinal))
+                            yield return new DeclarationRecord("G:" + identity + "\n" + method, Encoding.UTF8.GetBytes(key));
+                        if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type, librarySource?.Invoke(path) ?? true);
+                        // A RECORD CLASS BY NAME, which a record of another unit
+                        // may derive from without arguments to say it is one
+                        // (Frontend.RecordNames).
+                        if (type.IsRecord && type.Kind == TypeKind.Class)
+                            yield return new DeclarationRecord(RecordKey(identity), Encoding.UTF8.GetBytes(type.Name));
+                    }
                 }
-            }
             }
             // THE FORMS EVERY UNIT NUMBERS A BLOCK FOR (InterfaceForms), over
             // the declarations of the whole project at once.
@@ -880,6 +883,38 @@ public static class SourceIndexBuilder
 
     /// <summary>How many files are read, lexed and parsed at once while an index is made: enough to keep every processor busy, few enough that their tokens stay small beside the build.</summary>
     private const int ReadWindow = 64;
+
+    /// <summary>And how much source they may come to together, past the first: a few of the largest files at a time.</summary>
+    private const long ReadWindowBytes = 4L * 1024 * 1024;
+
+    /// <summary>
+    /// Files [from, from + count) read on as many threads as there are
+    /// processors, each taking the next file not yet taken, so one large
+    /// file holds up only its own thread. A failure is thrown as the serial
+    /// read would have thrown it: the first file's in order, unwrapped.
+    /// </summary>
+    private static Read?[] ReadAll(string[] files, int from, int count, Func<string, IReadOnlyCollection<string>?> symbolsOf)
+    {
+        Read?[] read = new Read?[count];
+        Exception?[] failed = new Exception?[count];
+        int next = -1;
+        void Work()
+        {
+            for (int slot; (slot = Interlocked.Increment(ref next)) < count;)
+            {
+                try { read[slot] = ReadFile(files[from + slot], symbolsOf(files[from + slot])); }
+                catch (Exception error) { failed[slot] = error; }
+            }
+        }
+        int threads = Math.Min(count, Math.Max(1, Environment.ProcessorCount));
+        Task[] tasks = new Task[threads - 1];
+        for (int t = 0; t < tasks.Length; t++) tasks[t] = Task.Run(Work);
+        Work();
+        Task.WaitAll(tasks);
+        for (int slot = 0; slot < count; slot++)
+            if (failed[slot] is Exception error) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+        return read;
+    }
 
     /// <summary>One file as the index reads it: its text and hash, its tokens with where each ends, its parser (whose spans the records read) and declarations, and the symbols it was lexed with.</summary>
     private sealed record Read(string Path, string Text, byte[] Hash, List<Token> Tokens, List<int> Ends, Parser Parser, CompilationUnit Unit, IReadOnlyCollection<string>? Symbols);
