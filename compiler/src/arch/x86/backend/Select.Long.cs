@@ -305,9 +305,6 @@ internal sealed partial class Selector
             case Opcode.Ret:
                 SelectRetL(i);
                 break;
-            case Opcode.Switch:
-                SelectSwitchL(i);
-                break;
             case Opcode.Unwind:
                 SelectUnwindL(i);
                 break;
@@ -931,22 +928,6 @@ internal sealed partial class Selector
     }
 
     // ---- control ---------------------------------------------------------------------
-
-    private void SelectSwitchL(Instr i)
-    {
-        MReg idx = Temp();
-        MovL(idx, RML(i.Operands[0], 4), 4);
-        EmitW(MOp.Cmp, 4, idx, Imm(i.Targets.Count));
-        Jcc(Cond.Ae, _heads[i.Default!]);
-        List<MBlock> table = i.Targets.Select(b => _heads[b]).ToList();
-        // The table's address in a register of its own, loaded by an
-        // instruction before the jump: the jump reads both it and the index,
-        // so the allocator keeps them apart.
-        string symbol = $"{_f.Name}$table{_tablesL++}";
-        MReg at = Temp();
-        Emit(MOp.Lea, at, MMem.Rip(symbol, 0));
-        Emit(new MInstr(MOp.JmpTable, idx, at) { Table = table, TableSymbol = symbol });
-    }
 
     /// <summary>
     /// Everything into fixed registers before RSP and RBP move: once they

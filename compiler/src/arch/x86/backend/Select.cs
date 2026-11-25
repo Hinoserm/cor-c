@@ -1691,7 +1691,7 @@ internal sealed partial class Selector
             or Opcode.Add or Opcode.Sub or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Mul or Opcode.Copy
             or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas) or Opcode.FAdd or Opcode.FSub or Opcode.FMul or Opcode.FDiv or Opcode.FNeg
             or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store or Opcode.DivS or Opcode.DivU or Opcode.RemS or Opcode.RemU or Opcode.MemCopy or Opcode.MemSet
-            or Opcode.IToF or Opcode.UToF;
+            or Opcode.IToF or Opcode.UToF or Opcode.Switch;
 
     private void SelectInstr(Instr i)
     {
@@ -4417,11 +4417,31 @@ internal sealed partial class Selector
 
     private void SelectSwitch(Instr i)
     {
-        MReg idx = R(i.Operands[0]);
-        Emit(MOp.Cmp, idx, Imm(i.Targets.Count));
+        // The index is thirty-two bits. Long mode's in a register of its own
+        // with its upper half clear, since the jump indexes by all sixty-four.
+        MReg idx;
+        if (X86Mode.Long)
+        {
+            idx = Temp();
+            MovW(idx, RM(i.Operands[0], 4), 4);
+        }
+        else idx = R(i.Operands[0]);
+        EmitW(MOp.Cmp, 4, idx, Imm(i.Targets.Count));
         Jcc(Cond.Ae, _heads[i.Default!]);
         List<MBlock> table = i.Targets.Select(b => _heads[b]).ToList();
-        Emit(new MInstr(MOp.JmpTable, idx) { Table = table });
+        if (!X86Mode.Long)
+        {
+            // The table's address is the instruction's own displacement.
+            Emit(new MInstr(MOp.JmpTable, idx) { Table = table });
+            return;
+        }
+        // LONG MODE'S TABLE IS REACHED RIP-RELATIVE: its address in a register
+        // of its own, loaded by an instruction before the jump -- the jump
+        // reads both it and the index, so the allocator keeps them apart.
+        string symbol = $"{_f.Name}$table{_tablesL++}";
+        MReg at = Temp();
+        Emit(MOp.Lea, at, MMem.Rip(symbol, 0));
+        Emit(new MInstr(MOp.JmpTable, idx, at) { Table = table, TableSymbol = symbol });
     }
 
     private void SelectUnwind(Instr i)
