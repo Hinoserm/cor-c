@@ -856,8 +856,23 @@ public static class RegionSolver
         /// </summary>
         private bool NarrowByReceiverTypes(int[]?[][] targets, string?[][] keys, bool[] rooted, bool[] typedThis, bool[]? reached)
         {
+            // CALLS ANSWERED ALIKE (RunsOn reads the callee's name, the caller's
+            // unit and the call's targets, and nothing else of the call): one
+            // class for each such three, numbered as the calls first ask.
+            Dictionary<(string Callee, int Unit, int[] Those), int> classes = new(new SameDispatch());
+            int[]?[] classOf = new int[]?[_functions.Count];
+            int ClassOf(int f, int k)
+            {
+                int[]? of = classOf[f];
+                if (of is null) { classOf[f] = of = new int[_functions[f].Calls.Count]; Array.Fill(of, -1); }
+                if (of[k] >= 0) return of[k];
+                var key = (_functions[f].Calls[k].Callee!, _unitOf[f], targets[f][k]!);
+                if (!classes.TryGetValue(key, out int made)) classes[key] = made = classes.Count;
+                return of[k] = made;
+            }
             RegionTypes types = new(_functions, targets, keys, rooted, (f, k, table, at) => RunsOn(f, k, targets[f][k]!, table, at))
             {
+                DispatchClass = ClassOf,
                 TypedThis = typedThis,
                 Receives = Receivers is { } held ? (f, table, at) => held.MayBeThis(_functions[f].Name, table) != false : null,
                 ThisMadeOutside = Receivers is { } stamped ? f => stamped.MadeOutside(_functions[f].Name) != false : null,
@@ -881,10 +896,30 @@ public static class RegionSolver
             if (_report?.FirstOrDefault(w => w.StartsWith("+typespath=", StringComparison.Ordinal)) is { } pathAsk && pathAsk.IndexOf('|') is int pipe and > 11
                 && pathAsk.LastIndexOf(':') is int at && at > pipe && int.TryParse(pathAsk[(at + 1)..], out int pathNode))
                 Log("receiver types path: " + types.PathTo(pathAsk[(pipe + 1)..at], pathNode));
+            Log("receiver types held: " + types.Sizes() + ", " + classes.Count + " classes of call");
             Log(pruned
                 ? $"receiver types: {types.Objects} objects, {types.Instances} instances, {types.Steps} carried; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
                 : $"receiver types: gave up past its budget ({types.Steps} carried, {types.Instances} instances), {_clock.ElapsedMilliseconds} ms");
             return pruned;
+        }
+
+        /// <summary>Two calls RunsOn answers alike: the same callee, from the same unit, with the same targets.</summary>
+        private sealed class SameDispatch : IEqualityComparer<(string Callee, int Unit, int[] Those)>
+        {
+            public bool Equals((string Callee, int Unit, int[] Those) a, (string Callee, int Unit, int[] Those) b)
+                => a.Unit == b.Unit && string.Equals(a.Callee, b.Callee, StringComparison.Ordinal)
+                    && (ReferenceEquals(a.Those, b.Those) || a.Those.AsSpan().SequenceEqual(b.Those));
+
+            public int GetHashCode((string Callee, int Unit, int[] Those) key)
+            {
+                // The same on every host and run: nothing of the answer
+                // hangs on it, but a table's order is never a string's
+                // randomised hash where it need not be.
+                int hash = key.Unit * 31 + key.Those.Length;
+                foreach (char c in key.Callee) hash = hash * 31 + c;
+                foreach (int target in key.Those) hash = hash * 31 + target;
+                return hash;
+            }
         }
 
         private int[]? RunsOn(int f, int k, int[] those, string table, long at)

@@ -82,7 +82,12 @@ public sealed class RegionTypes
     private readonly int[] _instances;
     private const int MostInstances = 256;
     private readonly List<ValueSet?> _pts = new();
+    // WHAT A NODE HAS YET TO HAND ON. Until a node is first taken off the
+    // queue that is all it holds, and no second set says so (_settled): the
+    // compiler's own link is past its budget before its first node is
+    // taken, and held each of its twenty million values twice.
     private readonly List<ValueSet?> _delta = new();
+    private readonly List<bool> _settled = new();
     // What else a node is, made only for the nodes that are anything more
     // than held: copied into others as it is, or as addresses into what it
     // holds (moved), an address loaded or stored through, a receiver.
@@ -111,18 +116,38 @@ public sealed class RegionTypes
     // (routed by what `this` is): instance, call, the one target of a direct
     // call (-1 for a virtual one), whether every target is bound, the
     // functions bound and the instances bound.
+    //
+    // A CALL BOUND TO EVERY TARGET (_full) KEEPS NO SET OF THEM: its bound
+    // functions are its targets, all of them, and of the instances only
+    // the copies made for a descriptor are listed -- every function's own
+    // instance is bound. A call on the unknown object has hundreds of
+    // targets, and the compiler's own link listed four and a half million
+    // of them, twice each.
     private readonly List<(int F, int K)> _calls = new();
     private readonly List<int> _routed = new();
-    private readonly List<HashSet<int>> _boundInst = new();
+    private readonly List<HashSet<int>?> _boundInst = new();
     private readonly List<bool> _full = new();
-    private readonly List<HashSet<int>> _bound = new();
+    private readonly List<HashSet<int>?> _bound = new();
     // WHAT A CALL RUNS ON A DESCRIPTOR, by the descriptor and its table's
     // place (_kinds numbers each pair once): the answer is the descriptor's,
     // and kept per object -- each instance of a type its own -- the
     // compiler's own link held one for every call and every object its
     // receiver met, and a native linker ran out of memory growing it.
+    //
+    // AND BY THE CALL'S CLASS, not the call (DispatchClass): the calls of one
+    // class are answered alike, so one answer is theirs all -- a thousand
+    // calls of ToString from one unit asked, and kept, a thousand answers
+    // for each kind of object; the table was a million entries of the
+    // compiler's own link, and a 32-bit linker ran out of memory growing it.
+    // A class is keyed (class, -1, kind); with no classes said, a call (f, k, kind).
     private readonly Dictionary<(int, int, int), int[]?> _dispatched = new();
     private readonly Dictionary<(string, long), int> _kinds = new();
+    /// <summary>
+    /// The class of call k of function f, for what it runs on an object
+    /// (the constructor's dispatch): two calls of one class are given the
+    /// same answer for every descriptor and place. Null: each call its own.
+    /// </summary>
+    public Func<int, int, int>? DispatchClass { get; init; }
 
     private long _steps;
     /// <summary>Past this many values carried, the pass gives up and prunes nothing.</summary>
@@ -217,7 +242,7 @@ public sealed class RegionTypes
 
     private int NewNode()
     {
-        _pts.Add(null); _delta.Add(null); _uses.Add(null);
+        _pts.Add(null); _delta.Add(null); _settled.Add(false); _uses.Add(null);
         return _pts.Count - 1;
     }
 
@@ -361,6 +386,13 @@ public sealed class RegionTypes
         else if (Follow is not null && ObjectOf(value) > 1 && Followed(ObjectOf(value))) _followFrom.TryAdd((node, ObjectOf(value)), (_source, _sourceWhy));
         if (++_steps > _budget) throw new OverBudget();
         if (Progress is not null && _steps % 50_000_000 == 0) ReportProgress();
+        // Never taken off the queue: queued at its first value, and all it
+        // holds is what it has to hand on.
+        if (!_settled[node])
+        {
+            if (_pts[node]!.Count == 1) _work.Enqueue(node);
+            return;
+        }
         ValueSet delta = _delta[node] ??= new();
         if (delta.Count == 0) _work.Enqueue(node);
         delta.Add(value);
@@ -590,12 +622,23 @@ public sealed class RegionTypes
         var (i, k) = _calls[c];
         int f = _instF[i];
         int[] targets = _routed[c] >= 0 ? new[] { _routed[c] } : _targets[f][k]!;
+        HashSet<int>? instances = _boundInst[c];
+        // In the targets' order, those not bound before.
         foreach (int g in targets)
+            if (instances is null || !instances.Contains(g)) BindRest(i, _functions[f].Calls[k], g);
+        // From here the call's being full says so (Bound).
+        _bound[c] = null;
+        if (instances is not null)
         {
-            _bound[c].Add(g);
-            if (_boundInst[c].Add(g)) BindRest(i, _functions[f].Calls[k], g);
+            instances.RemoveWhere(bound => bound < _functions.Count);
+            if (instances.Count == 0) _boundInst[c] = null; else instances.TrimExcess();
         }
     }
+
+    // Whether call c is yet to be bound to instance gi, which it then is.
+    // Instance g below the functions' count is function g's own.
+    private bool Unbound(int c, int gi)
+        => !(_full[c] && gi < _functions.Count) && (_boundInst[c] ??= new()).Add(gi);
 
     // A VALUE THE RECEIVER MAY BE goes to the `this` of the targets it runs,
     // and to no other: handed the whole receiver, a method that answers its
@@ -623,7 +666,8 @@ public sealed class RegionTypes
             {
                 long at = _objects[o].At;
                 if (!_kinds.TryGetValue((table, at), out int kind)) _kinds[(table, at)] = kind = _kinds.Count;
-                if (!_dispatched.TryGetValue((f, k, kind), out runs)) _dispatched[(f, k, kind)] = runs = _dispatch(f, k, table, at);
+                (int, int, int) asked = DispatchClass is { } classOf ? (classOf(f, k), -1, kind) : (f, k, kind);
+                if (!_dispatched.TryGetValue(asked, out runs)) _dispatched[asked] = runs = _dispatch(f, k, table, at);
                 if (runs is null) every = "an object of " + table + " that runs any";
             }
             if (every is not null)
@@ -634,9 +678,9 @@ public sealed class RegionTypes
         }
         foreach (int g in runs!)
         {
-            _bound[c].Add(g);
+            if (!_full[c]) (_bound[c] ??= new()).Add(g);
             int gi = InstanceFor(g, o);
-            if (_boundInst[c].Add(gi)) BindRest(i, call, gi);
+            if (Unbound(c, gi)) BindRest(i, call, gi);
             if (_functions[g].Parameters > 0 && Has(g, 0)) Add(Node(gi, 0), value);
         }
     }
@@ -646,8 +690,9 @@ public sealed class RegionTypes
         while (_work.TryDequeue(out int n))
         {
             _source = n; _sourceWhy = null;
-            int[] delta = _delta[n]!.ToArray();
-            _delta[n] = null;
+            int[] delta;
+            if (_settled[n]) { delta = _delta[n]!.ToArray(); _delta[n] = null; }
+            else { _settled[n] = true; delta = _pts[n]!.ToArray(); }
             foreach (int v in delta)
             {
                 if (_uses[n] is { } uses)
@@ -674,6 +719,32 @@ public sealed class RegionTypes
         }
     }
 
+    /// <summary>For a report: what the solve holds, table by table.</summary>
+    public string Sizes()
+    {
+        long held = 0, small = 0, large = 0, blocks = 0, pending = 0, succ = 0, moved = 0, loads = 0, stores = 0, receives = 0, uses = 0, readers = 0, bound = 0;
+        for (int n = 0; n < _pts.Count; n++)
+        {
+            if (_pts[n] is not { } set) continue;
+            held += set.Count;
+            if (set.IsSmall) small++; else { large++; blocks += set.Blocks; }
+            pending += _settled[n] ? _delta[n]?.Count ?? 0 : set.Count;
+        }
+        foreach (Uses? u in _uses)
+            if (u is not null)
+            {
+                uses++; succ += u.Succ?.Count ?? 0; moved += u.Moved?.Count ?? 0; loads += u.Loads?.Count ?? 0; stores += u.Stores?.Count ?? 0;
+                receives += u.Receives?.Count ?? 0;
+            }
+        foreach (HashSet<int>? r in _allReaders) readers += r?.Count ?? 0;
+        foreach (HashSet<int>? b in _bound) bound += b?.Count ?? 0;
+        foreach (HashSet<int>? b in _boundInst) bound += b?.Count ?? 0;
+        return $"{_pts.Count} nodes ({small} small sets, {large} large of {blocks} blocks, {held} values held, {pending} yet to hand on), {uses} with uses "
+            + $"({succ} copies, {moved} moved, {loads} loads, {stores} stores, {receives} receivers), {_objects.Count} objects, {_cells.Count} cells, "
+            + $"{readers} readers of whole objects, {_calls.Count} calls watched ({bound} bound by name), {_dispatched.Count} dispatch answers over {_kinds.Count} kinds, "
+            + $"{_instBase.Count - _functions.Count} instances";
+    }
+
     private sealed class OverBudget : Exception { }
 
     /// <summary>
@@ -697,7 +768,7 @@ public sealed class RegionTypes
             var (i, k) = _calls[c];
             int f = _instF[i];
             if (!merged.TryGetValue((f, k), out var m)) m = (false, new HashSet<int>(), c);
-            m.Bound.UnionWith(_bound[c]);
+            if (_bound[c] is { } functions) m.Bound.UnionWith(functions);
             merged[(f, k)] = (m.Full || _full[c], m.Bound, m.First);
         }
         foreach (((int f, int k), (bool full, HashSet<int> bound, int first)) in merged)
@@ -820,7 +891,7 @@ public sealed class RegionTypes
     private void Watch(int i, int k, int routed, RegionCall call)
     {
         int c = _calls.Count;
-        _calls.Add((i, k)); _routed.Add(routed); _full.Add(false); _bound.Add(new()); _boundInst.Add(new());
+        _calls.Add((i, k)); _routed.Add(routed); _full.Add(false); _bound.Add(null); _boundInst.Add(null);
         if (call.Arguments.Length == 0 || !Has(_instF[i], call.Arguments[0])) { BindAll(c); return; }
         int receiver = Node(i, call.Arguments[0]);
         (UsesOf(receiver).Receives ??= new()).Add(c);
@@ -912,6 +983,10 @@ internal sealed class ValueSet : IEnumerable<int>
     private ulong[] _bits = Array.Empty<ulong>();
     private int _blocks;
     public int Count { get; private set; }
+    /// <summary>For a report: held as a short list, not as blocks.</summary>
+    public bool IsSmall => _small is not null;
+    /// <summary>For a report: the blocks held.</summary>
+    public int Blocks => _blocks;
 
     public bool Add(int value)
     {
