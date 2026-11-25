@@ -293,10 +293,6 @@ internal sealed partial class Selector
     {
         switch (i.Op)
         {
-            case Opcode.FToI:
-            case Opcode.FToU:
-                SelectFloatToInteger(i);
-                break;
             case Opcode.Call:
             case Opcode.CallIndirect:
                 SelectCallL(i);

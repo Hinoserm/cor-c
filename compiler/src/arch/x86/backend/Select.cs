@@ -1697,7 +1697,7 @@ internal sealed partial class Selector
             or Opcode.Add or Opcode.Sub or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Mul or Opcode.Copy
             or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas) or Opcode.FAdd or Opcode.FSub or Opcode.FMul or Opcode.FDiv or Opcode.FNeg
             or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store or Opcode.DivS or Opcode.DivU or Opcode.RemS or Opcode.RemU or Opcode.MemCopy or Opcode.MemSet
-            or Opcode.IToF or Opcode.UToF or Opcode.Switch;
+            or Opcode.IToF or Opcode.UToF or Opcode.Switch or Opcode.FToI or Opcode.FToU;
 
     private void SelectInstr(Instr i)
     {
@@ -1867,11 +1867,16 @@ internal sealed partial class Selector
                 break;
             case Opcode.FToI:
             case Opcode.FToU:
+                // To thirty-two bits from the XMM class: the truncating
+                // instruction, and the classification only where it answered
+                // "indefinite". To sixty-four bits: long mode's own, from the
+                // float's bits; i386's the x87's.
                 if (i.Dest!.Type == IrType.I32 && InXmm(i.Operands[0].Type))
                 {
                     if (i.Op == Opcode.FToI) SseToInt(i);
                     else SseToUInt(i);
                 }
+                else if (X86Mode.Long) SelectFloatToInteger(i);
                 else SelectFloatToInt(i);
                 break;
             case Opcode.Bits:

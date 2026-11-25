@@ -272,10 +272,11 @@ internal sealed partial class Selector
         bool single = FWidth(i.Operands[0].Type) == 4;
         MReg d = Lo(i.Dest!);
         EmitW(single ? MOp.Cvttss2si : MOp.Cvttsd2si, 4, d, X(i.Operands[0]));
-        Emit(MOp.Cmp, d, Imm(int.MinValue));
+        EmitW(MOp.Cmp, 4, d, Imm(int.MinValue));
         MBlock exit = _m.NewBlock($"{_cur.Name}.{_splits++}", _cur);
         Jcc(Cond.Ne, exit);
-        SelectFloatToInt(i);
+        // The classification: the x87's on i386, long mode's from the bits.
+        if (X86Mode.Long) SelectFloatToInteger(i); else SelectFloatToInt(i);
         Jmp(exit);
         _cur = exit;
     }
@@ -299,23 +300,23 @@ internal sealed partial class Selector
         MBlock maximum = _m.NewBlock($"{_cur.Name}.{_splits++}", high);
         MBlock exit = _m.NewBlock($"{_cur.Name}.{_splits++}", maximum);
         EmitW(truncate, 4, d, x);
-        Emit(MOp.Test, d, d);
+        EmitW(MOp.Test, 4, d, d);
         Jcc(Cond.Ns, exit);
         MReg t = XTemp();
         MovF(t, x, w);
         EmitW(MOp.SubF, w, t, FloatConstantOperand(w == 4 ? 0x4F000000L : 0x41E0000000000000L, w));
-        Emit(truncate, d, t);
-        Emit(MOp.Test, d, d);
+        EmitW(truncate, 4, d, t);
+        EmitW(MOp.Test, 4, d, d);
         Jcc(Cond.Ns, high);
         EmitW(MOp.UcomiF, w, x, FloatConstantOperand(w == 4 ? 0x4F800000L : 0x41F0000000000000L, w));
         Jcc(Cond.Ae, maximum);
-        Mov(d, Imm(0));
+        MovW(d, Imm(0), 4);
         Jmp(exit);
         _cur = high;
-        Emit(MOp.Xor, d, Imm(int.MinValue));
+        EmitW(MOp.Xor, 4, d, Imm(int.MinValue));
         Jmp(exit);
         _cur = maximum;
-        Mov(d, Imm(-1));
+        MovW(d, Imm(-1), 4);
         Jmp(exit);
         _cur = exit;
     }
