@@ -1156,6 +1156,31 @@ internal sealed partial class Selector
 
     private void Mov(MOperand dst, MOperand src) => Emit(MOp.Mov, dst, src);
 
+    // ---- one word or two: what the two modes differ in -----------------------
+    //
+    // A METHOD THAT SERVES BOTH MODES asks these and names every width it
+    // emits (EmitW, MovW): an instruction's width left unsaid is the mode's
+    // word (MInstr.Width), which is right for an address and for i386's every
+    // integer, and wrong for an I32 in long mode -- a 64-bit operation on a
+    // value whose upper half is nobody's.
+
+    /// <summary>Whether a value of this type is a pair of registers: an I64 on i386, and nothing in long mode.</summary>
+    private static bool Pairs(IrType t) => t == IrType.I64 && !X86Mode.Long;
+
+    /// <summary>The bytes of the one register an integer of this type is in: four, and eight for an I64 in long mode.</summary>
+    private static int WordOf(IrType t) => t == IrType.I64 && X86Mode.Long ? 8 : 4;
+
+    /// <summary>A move of `width` bytes between registers, or from an immediate or to or from memory.</summary>
+    private void MovW(MOperand dst, MOperand src, int width) => EmitW(MOp.Mov, width, dst, src);
+
+    /// <summary>
+    /// An integer operand of `width` bytes as the source of an instruction: a
+    /// register or an immediate. Long mode's immediate is thirty-two bits
+    /// sign-extended, a wider constant a register (RML), and a symbol's
+    /// address a register too, RIP-relative; i386's is the operand as it is.
+    /// </summary>
+    private MOperand RM(Operand o, int width) => X86Mode.Long ? RML(o, width) : RM(o);
+
     // ---- symbol references ------------------------------------------------
     //
     // Every reference to a named thing passes through here, so a
@@ -1627,8 +1652,24 @@ internal sealed partial class Selector
         return true;
     }
 
+    /// <summary>
+    /// THE OPCODES WHOSE CASE BELOW SERVES LONG MODE TOO. Long mode comes here
+    /// for what its own dispatch (SelectInstrL) has no case of; an opcode
+    /// whose case is still i386's alone is refused there, never selected as
+    /// i386 would select it. The list grows as cases are made the family's,
+    /// and is gone when they all are.
+    /// </summary>
+    private static bool BothModes(Opcode op)
+        => op is Opcode.Neg or Opcode.Not or Opcode.ByteSwap or Opcode.Fence or Opcode.CompilerFence or Opcode.Jump or Opcode.Unreachable
+            or Opcode.Trap or Opcode.Pause;
+
     private void SelectInstr(Instr i)
     {
+        if (X86Mode.Long && !BothModes(i.Op))
+        {
+            Error($"unsupported opcode {i.Op}");
+            return;
+        }
         switch (i.Op)
         {
             case Opcode.Copy:
@@ -1662,9 +1703,13 @@ internal sealed partial class Selector
             case Opcode.ByteSwap:
             {
                 VReg d = i.Dest!;
-                if (d.Type == IrType.I32)
+                if (!Pairs(d.Type))
                 {
-                    Mov(Lo(d), RM(i.Operands[0])); ByteSwapWord(Lo(d));
+                    // One register: long mode's processor has BSWAP, of
+                    // either width; i386's may be a 386 (ByteSwapWord).
+                    int w = WordOf(d.Type);
+                    MovW(Lo(d), RM(i.Operands[0], w), w);
+                    if (X86Mode.Long) EmitW(MOp.Bswap, w, Lo(d)); else ByteSwapWord(Lo(d));
                 }
                 else
                 {
@@ -1803,7 +1848,8 @@ internal sealed partial class Selector
                 SelectAtomic(i);
                 break;
             case Opcode.Fence:
-                Emit(MOp.LockOrEsp);
+                // MFENCE where every processor has it; a locked OR of the stack's top word where one may not.
+                Emit(X86Mode.Long ? MOp.Mfence : MOp.LockOrEsp);
                 break;
             case Opcode.CompilerFence:
                 // TSO: loads are not passed by later loads or stores, nor
@@ -1829,7 +1875,7 @@ internal sealed partial class Selector
                 break;
             case Opcode.Unreachable:
                 // No ud2 on a 486; a breakpoint trap is the loudest thing it has.
-                Emit(MOp.Int3);
+                Emit(X86Mode.Long ? MOp.Ud2 : MOp.Int3);
                 break;
             case Opcode.Unwind:
                 SelectUnwind(i);
@@ -3130,10 +3176,11 @@ internal sealed partial class Selector
     {
         MOp op = i.Op == Opcode.Neg ? MOp.Neg : MOp.Not;
         VReg d = i.Dest!;
-        if (d.Type == IrType.I32)
+        if (!Pairs(d.Type))
         {
-            Mov(Lo(d), RM(i.Operands[0]));
-            Emit(op, Lo(d));
+            int w = WordOf(d.Type);
+            MovW(Lo(d), RM(i.Operands[0], w), w);
+            EmitW(op, w, Lo(d));
             return;
         }
         (MOperand lo, MOperand hi) = PairRM(i.Operands[0]);

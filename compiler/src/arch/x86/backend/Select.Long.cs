@@ -313,23 +313,6 @@ internal sealed partial class Selector
             case Opcode.ShrU:
                 SelectShiftL(i);
                 break;
-            case Opcode.Neg:
-            case Opcode.Not:
-            {
-                int w = Width(i.Dest!.Type);
-                MReg d = V(i.Dest);
-                MovL(d, RML(i.Operands[0], w), w);
-                EmitW(i.Op == Opcode.Neg ? MOp.Neg : MOp.Not, w, d);
-                break;
-            }
-            case Opcode.ByteSwap:
-            {
-                int w = Width(i.Dest!.Type);
-                MReg d = V(i.Dest);
-                MovL(d, RML(i.Operands[0], w), w);
-                EmitW(MOp.Bswap, w, d);
-                break;
-            }
             case Opcode.Eq:
             case Opcode.Ne:
             case Opcode.LtS:
@@ -433,13 +416,6 @@ internal sealed partial class Selector
             case Opcode.AtomicCas:
                 SelectAtomicL(i);
                 break;
-            case Opcode.Fence:
-                Emit(MOp.Mfence);
-                break;
-            case Opcode.CompilerFence:
-                // Nothing encoded (TSO); a mark the passes after this one keep.
-                Emit(MOp.CompilerFence);
-                break;
             case Opcode.Call:
             case Opcode.CallIndirect:
                 SelectCallL(i);
@@ -447,17 +423,11 @@ internal sealed partial class Selector
             case Opcode.Ret:
                 SelectRetL(i);
                 break;
-            case Opcode.Jump:
-                Jmp(_heads[i.Targets[0]]);
-                break;
             case Opcode.Branch:
                 SelectBranchL(i);
                 break;
             case Opcode.Switch:
                 SelectSwitchL(i);
-                break;
-            case Opcode.Unreachable:
-                Emit(MOp.Ud2);
                 break;
             case Opcode.Unwind:
                 SelectUnwindL(i);
@@ -474,17 +444,10 @@ internal sealed partial class Selector
             case Opcode.Syscall:
                 SelectSyscallL(i);
                 break;
-            case Opcode.Trap:
-                // A breakpoint the program may run on from: marked as i386's
-                // is, the operand telling it from the trap that ends a path
-                // (MInstr.EndsFlow).
-                Emit(MOp.Int3, new MImm(1));
-                break;
-            case Opcode.Pause:
-                Emit(MOp.Pause);
-                break;
+            // EVERY OTHER OPCODE IS THE FAMILY'S (SelectInstr, Select.cs): its
+            // case there serves both modes, or says it is unsupported.
             default:
-                Error($"unsupported opcode {i.Op}");
+                SelectInstr(i);
                 break;
         }
     }

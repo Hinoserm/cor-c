@@ -2,9 +2,9 @@ namespace Corsac.Lang.Lto;
 
 /// <summary>
 /// WORK THAT IS EACH ITEM'S ALONE, on as many threads as there are
-/// processors (Width; one in a 32-bit process, below): every thread takes the next item not yet taken, so one large
-/// item holds up only its own thread, and each answer goes to its item's
-/// place. What the caller reads afterwards is in the items' order, and a
+/// processors (Width; one in a 32-bit process, below): every thread takes
+/// the next item not yet taken, so one large item holds up only its own
+/// thread, and each answer goes to its item's place. What the caller reads afterwards is in the items' order, and a
 /// failure is thrown as a loop over them in order would have thrown it --
 /// the first item's, as it was thrown. The link's answers never depend on
 /// how many threads there were.
