@@ -80,6 +80,12 @@ internal static class Peephole
         // copied twice copied once, in every block (ForwardCopies), with the
         // registers' liveness read again for both.
         MergeSoleJumps(m);
+        // A store at the end of one block and its reload at the start of the
+        // one merged into it are now side by side: the reload goes
+        // (ForwardStoreLoad), and the store with it when nothing else reads
+        // the slot (DeadSpillStores).
+        foreach (MBlock block in m.Blocks) ForwardStoreLoad(block.Instrs);
+        DeadSpillStores(m);
         {
             int[] outs = LiveOut(m, out int[] ins);
             Dictionary<MBlock, int> where = new(ReferenceEqualityComparer.Instance);
@@ -1229,8 +1235,13 @@ internal static class Peephole
                     if (!PrivateSpill(memory)) break;
                     if (SameMem(memory, slot))
                     {
+                        // The register already holds it: no move at all
+                        // (it was left `mov eax, eax`).
                         if ((clobbered & (int)Bit(value!.Id)) == 0)
-                            instrs[k] = new MInstr(MOp.Mov, MReg.Of(dest.Id), MReg.Of(value.Id)) { Line = load.Line };
+                        {
+                            if (value.Id == dest.Id) { instrs.RemoveAt(k); k--; }
+                            else instrs[k] = new MInstr(MOp.Mov, MReg.Of(dest.Id), MReg.Of(value.Id)) { Line = load.Line };
+                        }
                         break;
                     }
                     // Be conservative about partial overlaps, including unusual frames.
@@ -1668,6 +1679,14 @@ internal static class Peephole
                 instrs.RemoveAt(copyAt);
                 k--;
                 i = instrs[k];
+                // `mov A, B ; mov B, A` was the value carried there and back:
+                // the use is now `mov B, B`, which does nothing, and goes too
+                // (262 of them were left in the 32-bit compiler).
+                if (IsMov(i) && i.Operands[0] is MReg { IsPhys: true } to && i.Operands[1] is MReg { IsPhys: true } from && to.Id == from.Id)
+                {
+                    instrs.RemoveAt(k);
+                    continue;
+                }
             }
             // An instruction that is not understood makes every register live again.
             if (!Understood(i))
