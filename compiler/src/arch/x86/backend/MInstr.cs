@@ -169,4 +169,18 @@ public sealed class MInstr : MOperandList
         for (int k = 0; k < operands.Count; k++) made.Operands.Add(operands[k]);
         return made;
     }
+
+    /// <summary>
+    /// The same instruction with no operands yet and this jump table (its
+    /// own, or the blocks an allocator laid it out to): what an allocator's
+    /// target rebuilds an instruction from, so that a rebuild drops nothing
+    /// either -- each target's list of fields had left out some of the
+    /// other mode's.
+    /// </summary>
+    public MInstr Rebuilt(List<MBlock>? table) => new(Op)
+    {
+        Width = Width, SourceWidth = SourceWidth, TableSymbol = TableSymbol, FloatArgs = FloatArgs, IntArgs = IntArgs, NativeAl = NativeAl,
+        Line = Line, Cond = Cond, ZeroFirst = ZeroFirst, Native = Native, Lock = Lock, Probed = Probed, OwnsState = OwnsState, Asm = Asm,
+        Table = table, CallReloc = CallReloc,
+    };
 }

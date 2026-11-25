@@ -506,11 +506,7 @@ internal sealed class X64Target : ITarget
         List<MBlock>? table = i.Table;
         if (i.Op == MOp.JmpTable && ai.Targets is { } targets && targets.Where((t, k) => !ReferenceEquals(blocks[t], i.Table![k])).Any())
             table = targets.Select(t => blocks[t]).ToList();
-        MInstr n = new(i.Op)
-        {
-            Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = table, TableSymbol = i.TableSymbol,
-            Line = i.Line, IntArgs = i.IntArgs, FloatArgs = i.FloatArgs, NativeAl = i.NativeAl, Asm = i.Asm,
-        };
+        MInstr n = i.Rebuilt(table);
         // The registers named, walked in the order Allocator.RegsOf named them.
         int k = 0;
         for (int o = 0; o < i.Operands.Count; o++)
