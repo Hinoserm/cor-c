@@ -12,7 +12,7 @@ namespace Corsac.Lang.X64;
 /// RBP would point, K the frame the prologue makes (Encoder.FrameBytes) --
 /// and the value is in RBP. The prologue still sets RBP before anything is
 /// written to it, and marks the function so a fault finds its frame
-/// (Encoder.Prologue).
+/// (Encoder.PrologueL).
 /// </summary>
 internal static class FramePointerFree
 {

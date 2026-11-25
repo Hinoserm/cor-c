@@ -53,14 +53,14 @@ public sealed class X64Backend : IBackend
     /// </summary>
     public bool PositionIndependent { get; set; }
 
+    /// <summary>--opt-size: no loop head padded to its line (Encoder.OptimizeSize), as i386's.</summary>
+    public bool OptimizeSize { get; set; }
+
     /// <summary>
     /// A safepoint poll on the back edges of every loop that may not end by
     /// itself (BackEdgePolls), as the x86 backend's: an image with a
     /// collector and an operating system to run its threads.
     /// </summary>
-    /// <summary>--opt-size: no loop head padded to its line (Encoder.OptimizeSize), as i386's.</summary>
-    public bool OptimizeSize { get; set; }
-
     public bool SafepointPolls { get; set; }
 
     /// <summary>

@@ -58,7 +58,7 @@ internal sealed class X64Target : ITarget
     /// names RBP but as the frame's base and nothing that moves RSP after the
     /// prologue, off which the frame is addressed instead (FramePointerFree).
     /// A fault in such a function finds its frame by the prologue's mark
-    /// (Encoder.Prologue).
+    /// (Encoder.PrologueL).
     /// </summary>
     private static readonly RegisterFile LeafFile = new()
     {

@@ -6,10 +6,15 @@ namespace Corsac.Lang.X86;
 /// <summary>
 /// Turns allocated machine instructions into bytes in the code section.
 ///
+/// ONE ENCODER FOR BOTH MODES of the family: i386's forms, with long mode's
+/// prefixes put in when an instruction is whole (EndInstr) and its own
+/// forms where they differ in kind (Encoder.Long.cs).
+///
 /// Jumps inside a function are resolved here by relaxation: every one
-/// starts out as the two-byte short form, and any whose target turns out
-/// to be further than a signed byte away is widened, until a pass changes
-/// nothing. Widening only ever grows the code, so this converges. Calls,
+/// starts out as the two-byte short form, and any whose target a whole
+/// layout pass shows to be further than a signed byte away is widened,
+/// until a pass widens nothing and one more has been made after it.
+/// Widening only ever grows the code, so this converges. Calls,
 /// symbol addresses and jump-table entries become relocations for the
 /// linker; a block's address is a relocation against the function's own
 /// symbol with the block's offset as the addend.
@@ -75,6 +80,7 @@ internal sealed partial class Encoder
     {
         _m = null!;
         _long.Clear(); Tables.Clear(); CallSites.Clear(); Lines.Clear(); _pending.Clear();
+        _short.Clear(); _loopHeads.Clear();
     }
 
     /// <summary>Encode a function at the current end of the section; returns its size.</summary>
@@ -120,11 +126,11 @@ internal sealed partial class Encoder
             }
         }
 
-        // Layout passes until no jump needs widening. A forward jump reads
-        // its target's offset from the previous pass, so the first pass
-        // only establishes offsets and at least one more is always needed;
-        // a pass that widens nothing has the same sizes as the pass before
-        // it, so the offsets it used were exact and its bytes stand.
+        // Layout passes until no jump needs widening, and one more: every
+        // jump starts short, a pass lays the function out and says which
+        // short jumps that layout cannot reach by, and the pass after the
+        // last that found one has every displacement measured against its
+        // own offsets.
         foreach (MBlock b in m.Blocks)
         {
             b.Offset = 0;
@@ -236,7 +242,7 @@ internal sealed partial class Encoder
 
                 if (i.Op is MOp.Jmp or MOp.Jcc)
                 {
-                    grew |= EncodeJump(i, next);
+                    EncodeJump(i, next);
                 }
                 else
                 {
@@ -250,7 +256,9 @@ internal sealed partial class Encoder
         }
         // Every short jump the layout just made cannot reach its target by
         // is a long one from the next pass on: widening only ever grows the
-        // code, so this ends, at the fewest long jumps there can be.
+        // code, so this ends -- at the fewest long jumps there can be, but
+        // for one a loop head's padding then shrinks back into reach (a
+        // widening is never taken back).
         foreach ((MInstr jump, int end, MBlock target) in _short)
             if (target.Offset - end is < -128 or > 127)
             {
@@ -383,7 +391,8 @@ internal sealed partial class Encoder
         MOp.Movsx => true,
         MOp.Movzx => false,
         MOp.CvtIntToF => i.SourceWidth == 8,
-        MOp.CvtFToInt => i.SourceWidth == 8,
+        // (The integer side's: the destination here, Width.)
+        MOp.CvtFToInt => i.Width == 8,
         MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas
             or MOp.Jmp or MOp.Jcc or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Setcc
             or MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.XorF or MOp.XorPs => false,
@@ -641,7 +650,9 @@ internal sealed partial class Encoder
             D32(m.Disp);
             return;
         }
-        int low = RegB(m.Base);
+        // (A base is no byte operand: its fourth bit alone, never the empty REX a byte register asks.)
+        if (m.Base.Id >= 8) _rex |= RexB;
+        int low = m.Base.Id & 7;
         int mod = m.Disp == 0 && low != 5 ? 0 : m.Disp is >= -128 and <= 127 ? 1 : 2;
         if (m.Index is not null || low == 4)
         {
@@ -1827,13 +1838,13 @@ internal sealed partial class Encoder
         B(0xC3);  // ret
     }
 
-    /// <summary>Encode a local jump; returns true if it had to be widened this pass.</summary>
-    private bool EncodeJump(MInstr i, MBlock? next)
+    /// <summary>Encode a local jump, short or long as the passes so far have found it (Pass judges the short ones when the layout is whole).</summary>
+    private void EncodeJump(MInstr i, MBlock? next)
     {
         MBlock target = ((MLabel)i.Operands[0]).Target;
         if (i.Op == MOp.Jmp && ReferenceEquals(target, next))
         {
-            return false;
+            return;
         }
         bool isLong = _long.Contains(i);
         int size = i.Op == MOp.Jmp ? (isLong ? 5 : 2) : (isLong ? 6 : 2);
@@ -1868,7 +1879,6 @@ internal sealed partial class Encoder
         {
             B((byte)(0x70 + (int)i.Cond), (byte)disp);
         }
-        return false;
     }
 
     /// <summary>
@@ -1964,13 +1974,20 @@ internal sealed partial class Encoder
     }
 
     /// <summary>
-    /// Padding that executes as nothing on a 486: mov esi,esi and
+    /// i386's padding, which executes as nothing on a 486: mov esi,esi and
     /// lea esi,[esi+0] in its various widths, as GAS emits for i486
     /// targets. The 0F 1F multi-byte nop is Pentium Pro and later and is
     /// not used.
     /// </summary>
     public static void Nops(ChunkedBytes into, int count)
     {
+        // Long mode's are plain NOPs: `mov esi, esi` clears RSI's upper half
+        // there, no nothing at all. (Between functions; nothing runs them.)
+        if (X86Mode.Long)
+        {
+            for (int k = 0; k < count; k++) into.Add(0x90);
+            return;
+        }
         while (count > 0)
         {
             byte[] fill = count switch

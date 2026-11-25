@@ -11,8 +11,12 @@ namespace Corsac.Lang.X86;
 /// REX.W), calls and what a poll keeps, the frame (callee-saved registers
 /// stored in slots below it, not pushed), jump tables read from the
 /// instruction, and the opcodes only long mode has.
-/// EncodeLong answers false for an opcode it has no form of its own for,
-/// and the family's case writes it.
+/// EncodeLong answers false for an opcode whose family case is right in
+/// long mode as it stands (FamilyForm: the ones read against the mode, one
+/// by one), and the family's case writes it. Any other opcode is refused:
+/// i386's forms of the segment registers, the x87 and MMX sets, CMPXCHG8B,
+/// its stubs' conventions and the rest put raw register numbers and
+/// absolute addresses in their bytes, and would be other instructions here.
 /// </summary>
 internal sealed partial class Encoder
 {
@@ -22,23 +26,37 @@ internal sealed partial class Encoder
     /// <summary>The bytes a long-mode function's prologue takes below its saved base: the frame and the callee-saved registers' slots, to a multiple of sixteen.</summary>
     public static int FrameBytes(MFunction m) => (m.Frame.Size + m.SavedRegs.Count * 8 + 15) & ~15;
 
-    /// <summary>A register operand's whole hardware number (0 to 15), general or XMM; 0 for anything else.</summary>
-    private static int Hw(MOperand o) => o is MReg r ? r.Hw : 0;
+    /// <summary>A register operand's whole hardware number (0 to 15), general or XMM; 0 for anything else. Never a register left unallocated.</summary>
+    private static int Hw(MOperand o) => o is not MReg r ? 0 : r.IsMachine ? r.Hw
+        : throw new InvalidOperationException($"register {r} left unallocated (the base register's value is made the register by FramePointerFree)");
 
     /// <summary>
-    /// An integer instruction with a ModRM, of the width given: the operand-
-    /// size prefix for sixteen bits, REX.W for sixty-four, REX.R for a
-    /// register field of eight or above (`reg` is a whole number, or an
-    /// opcode's digit), and the REX a byte register SPL to DIL needs.
+    /// An integer instruction with a ModRM whose reg field is a REGISTER, of
+    /// the width given: the operand-size prefix for sixteen bits, REX.W for
+    /// sixty-four, REX.R for a register of eight or above (`reg` is its
+    /// whole number), and the REX a byte register SPL to DIL needs.
     /// </summary>
     private void OpL(int width, int reg, MOperand rm, params byte[] opcode)
     {
+        if ((reg & 8) != 0) _rex |= RexR;
+        if (width == 1 && reg is >= 4 and <= 7) _rexEmpty = true;
+        OpD(width, reg & 7, rm, opcode);
+    }
+
+    /// <summary>
+    /// The same with an opcode's DIGIT in the reg field (`/0` to `/7`): no
+    /// register there to ask a REX for. (Taken for one, a byte operation
+    /// under digit 4 to 7 -- AND, SUB, XOR and CMP with an immediate, the
+    /// shifts, the wide multiplies and divides -- had a REX it did not
+    /// need: a byte on every `cmp byte [m], n`.)
+    /// </summary>
+    private void OpD(int width, int digit, MOperand rm, params byte[] opcode)
+    {
         if (width == 2) B(0x66);
         if (width == 8) _rex |= RexW8;
-        if ((reg & 8) != 0) _rex |= RexR;
-        if (width == 1 && (reg is >= 4 and <= 7 || rm is MReg { IsFloat: false, Hw: >= 4 and <= 7 })) _rexEmpty = true;
+        if (width == 1 && rm is MReg { IsFloat: false, Hw: >= 4 and <= 7 }) _rexEmpty = true;
         B(opcode);
-        XmmRM(reg & 7, rm);
+        XmmRM(digit, rm);
     }
 
     /// <summary>An SSE instruction: its mandatory prefix, REX (W where asked), 0F and the opcode.</summary>
@@ -106,7 +124,7 @@ internal sealed partial class Encoder
             case MOp.Push: PushL(i.Operands[0]); return true;
             case MOp.Pop:
                 if (i.Operands[0] is MReg pr) OpReg(0x58, pr);
-                else OpL(4, 0, i.Operands[0], 0x8F);
+                else OpD(4, 0, i.Operands[0], 0x8F);
                 return true;
             case MOp.Add: Lock(i); AluL(0, i.Operands[0], i.Operands[1], w); return true;
             case MOp.Or: Lock(i); AluL(1, i.Operands[0], i.Operands[1], w); return true;
@@ -119,7 +137,7 @@ internal sealed partial class Encoder
             case MOp.Test:
                 if (i.Operands[1] is MImm ti)
                 {
-                    OpL(w, 0, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7);
+                    OpD(w, 0, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7);
                     if (w == 1) _out.Add((byte)ti.Value); else if (w == 2) D16(ti.Value); else D32(ti.Value);
                 }
                 else OpL(w, Hw(i.Operands[1]), i.Operands[0], w == 1 ? (byte)0x84 : (byte)0x85);
@@ -131,18 +149,23 @@ internal sealed partial class Encoder
             {
                 MImm k = (MImm)i.Operands[2];
                 if (k.FitsSbyte) { OpL(w, Hw(i.Operands[0]), i.Operands[1], 0x6B); _out.Add((byte)k.Value); }
-                else { OpL(w, Hw(i.Operands[0]), i.Operands[1], 0x69); D32(k.Value); }
+                else
+                {
+                    OpL(w, Hw(i.Operands[0]), i.Operands[1], 0x69);
+                    // (Under the operand-size prefix the immediate is sixteen bits.)
+                    if (w == 2) D16(k.Value); else D32(k.Value);
+                }
                 return true;
             }
-            case MOp.MulWide: Lock(i); OpL(w, 4, i.Operands[0], 0xF7); return true;
-            case MOp.ImulWide: Lock(i); OpL(w, 5, i.Operands[0], 0xF7); return true;
-            case MOp.Div: OpL(w, 6, i.Operands[0], 0xF7); return true;
-            case MOp.Idiv: OpL(w, 7, i.Operands[0], 0xF7); return true;
-            case MOp.Neg: Lock(i); OpL(w, 3, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7); return true;
+            case MOp.MulWide: Lock(i); OpD(w, 4, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7); return true;
+            case MOp.ImulWide: Lock(i); OpD(w, 5, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7); return true;
+            case MOp.Div: OpD(w, 6, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7); return true;
+            case MOp.Idiv: OpD(w, 7, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7); return true;
+            case MOp.Neg: Lock(i); OpD(w, 3, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7); return true;
             // (FE/FF /0 and /1: long mode has no one-byte forms, their bytes its REX prefixes.)
-            case MOp.Inc: Lock(i); OpL(w, 0, i.Operands[0], w == 1 ? (byte)0xFE : (byte)0xFF); return true;
-            case MOp.Dec: Lock(i); OpL(w, 1, i.Operands[0], w == 1 ? (byte)0xFE : (byte)0xFF); return true;
-            case MOp.Not: Lock(i); OpL(w, 2, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7); return true;
+            case MOp.Inc: Lock(i); OpD(w, 0, i.Operands[0], w == 1 ? (byte)0xFE : (byte)0xFF); return true;
+            case MOp.Dec: Lock(i); OpD(w, 1, i.Operands[0], w == 1 ? (byte)0xFE : (byte)0xFF); return true;
+            case MOp.Not: Lock(i); OpD(w, 2, i.Operands[0], w == 1 ? (byte)0xF6 : (byte)0xF7); return true;
             case MOp.Cwd:
                 if (w == 8) _rex |= RexW8;
                 _out.Add(0x99);
@@ -157,16 +180,16 @@ internal sealed partial class Encoder
             case MOp.Shl: ShiftL(4, i, w); return true;
             case MOp.Shr: ShiftL(5, i, w); return true;
             case MOp.Sar: ShiftL(7, i, w); return true;
-            case MOp.Setcc: OpL(1, 0, i.Operands[0], 0x0F, (byte)(0x90 + (int)i.Cond)); return true;
+            case MOp.Setcc: OpD(1, 0, i.Operands[0], 0x0F, (byte)(0x90 + (int)i.Cond)); return true;
             case MOp.Cmov: OpL(w, Hw(i.Operands[0]), i.Operands[1], 0x0F, (byte)(0x40 + (int)i.Cond)); return true;
             case MOp.JmpTable:
                 // jmp [table + index*8]: the table's address is in a register (the selector's LEA).
-                OpL(4, 4, new MMem(i.Reg(1), 0) { Index = i.Reg(0), Scale = 8 }, 0xFF);
+                OpD(4, 4, new MMem(i.Reg(1), 0) { Index = i.Reg(0), Scale = 8 }, 0xFF);
                 Tables.Add((i.TableSymbol!, i.Table!));
                 return true;
-            case MOp.JmpInd: OpL(4, 4, i.Operands[0], 0xFF); return true;
+            case MOp.JmpInd: OpD(4, 4, i.Operands[0], 0xFF); return true;
             case MOp.Call: CallL((MImm)i.Operands[0]); return true;
-            case MOp.CallInd: OpL(4, 2, i.Operands[0], 0xFF); return true;
+            case MOp.CallInd: OpD(4, 2, i.Operands[0], 0xFF); return true;
             case MOp.CallSafe:
             {
                 // The nine caller-saved general registers, and eight bytes more
@@ -202,6 +225,11 @@ internal sealed partial class Encoder
             case MOp.RepStosb: B(0xF3, 0xAA); return true;
             case MOp.RepStosq: B(0xF3, 0x48, 0xAB); return true;
             // ---- SSE2 ----
+            // A move between two registers, or of a whole sixteen bytes, is
+            // the family's (MOVAPS: no wait on what the destination held;
+            // MOVUPS or MOVAPS of all of it): MOVSS/MOVSD here kept the
+            // destination's upper lanes, and of sixteen bytes moved eight.
+            case MOp.MovF when w == 16 || i.Operands[0] is MReg && i.Operands[1] is MReg: return Family(i);
             case MOp.MovF:
                 if (i.Operands[0] is MMem) SseL(ScalarL(w), false, Hw(i.Operands[1]), i.Operands[0], 0x11);
                 else SseL(ScalarL(w), false, Hw(i.Operands[0]), i.Operands[1], 0x10);
@@ -248,10 +276,10 @@ internal sealed partial class Encoder
             case MOp.Hlt: _out.Add(0xF4); return true;
             case MOp.RepInsw: B(0x66, 0xF3, 0x6D); return true;
             case MOp.RepOutsw: B(0x66, 0xF3, 0x6F); return true;
-            case MOp.Lgdt: OpL(4, 2, new MMem((MReg)i.Operands[0], 0), 0x0F, 0x01); return true;
-            case MOp.Lidt: OpL(4, 3, new MMem((MReg)i.Operands[0], 0), 0x0F, 0x01); return true;
-            case MOp.Invlpg: OpL(4, 7, new MMem((MReg)i.Operands[0], 0), 0x0F, 0x01); return true;
-            case MOp.Ltr: OpL(4, 3, i.Operands[0], 0x0F, 0x00); return true;
+            case MOp.Lgdt: OpD(4, 2, new MMem((MReg)i.Operands[0], 0), 0x0F, 0x01); return true;
+            case MOp.Lidt: OpD(4, 3, new MMem((MReg)i.Operands[0], 0), 0x0F, 0x01); return true;
+            case MOp.Invlpg: OpD(4, 7, new MMem((MReg)i.Operands[0], 0), 0x0F, 0x01); return true;
+            case MOp.Ltr: OpD(4, 3, i.Operands[0], 0x0F, 0x00); return true;
             // 0F 20 /r and 0F 22 /r: the control register in the reg field
             // (REX.R for CR8), the general register in r/m; always 64 bits here.
             case MOp.MovFromCr: OpL(4, (int)((MImm)i.Operands[1]).Value, i.Operands[0], 0x0F, 0x20); return true;
@@ -264,7 +292,7 @@ internal sealed partial class Encoder
             case MOp.LoadCs:
                 // push sel; lea rax, [rip + 3]; push rax; retfq -- a far
                 // return to the instruction after it, under the new CS.
-                OpL(4, 6, i.Operands[0], 0xFF);                               // push r/m64
+                OpD(4, 6, i.Operands[0], 0xFF);                               // push r/m64
                 NextInstr();
                 B(0x48, 0x8D, 0x05); D32(3);                                  // lea rax, [rip+3]
                 B(0x50);                                                      // push rax
@@ -295,12 +323,30 @@ internal sealed partial class Encoder
             case MOp.Prologue: PrologueL(); return true;
             case MOp.Epilogue: EpilogueL(); return true;
             default:
-                // The family's case: by the instruction's own width again.
-                _rex = RexW(i) ? RexW8 : 0;
-                _byteOp = i.Width == 1 || i.Op == MOp.Setcc;
-                return false;
+                if (!FamilyForm(i.Op))
+                    throw new InvalidOperationException($"{_m.Source.Name}: {i.Op} has no form in long mode");
+                return Family(i);
         }
     }
+
+    /// <summary>The family's case writes the instruction: by its own width again, as the family's cases expect.</summary>
+    private bool Family(MInstr i)
+    {
+        _rex = RexW(i) ? RexW8 : 0;
+        _byteOp = i.Width == 1 || i.Op == MOp.Setcc;
+        return false;
+    }
+
+    /// <summary>
+    /// The opcodes long mode has no form of its own for and whose family
+    /// case is right there as it stands: their registers go through the
+    /// fields that note a REX (RegR, RegB, Xmm, XmmRM, ModRM), they name no
+    /// absolute address, and they mean in long mode what they mean on i386.
+    /// Each was read against the mode before it was put here; an opcode is
+    /// added the same way, with what selects it.
+    /// </summary>
+    private static bool FamilyForm(MOp op) => op is MOp.MovF or MOp.Shld or MOp.Shrd or MOp.XorPs or MOp.Cvttss2si or MOp.Cvttsd2si
+        or MOp.LockOrEsp or MOp.Int or MOp.PrefetchNta or MOp.Sfence;
 
     private void Lock(MInstr i)
     {
@@ -340,7 +386,7 @@ internal sealed partial class Encoder
                     default:
                         if (v is >= int.MinValue and <= int.MaxValue)
                         {
-                            OpL(8, 0, r, 0xC7);
+                            OpD(8, 0, r, 0xC7);
                             D32(v);
                         }
                         else
@@ -355,16 +401,16 @@ internal sealed partial class Encoder
             switch (w)
             {
                 case 1:
-                    OpL(1, 0, dst, 0xC6);
+                    OpD(1, 0, dst, 0xC6);
                     _out.Add((byte)imm.Value);
                     return;
                 case 2:
-                    OpL(2, 0, dst, 0xC7);
+                    OpD(2, 0, dst, 0xC7);
                     D16(imm.Value);
                     return;
                 default:
                     if (w == 8 && !imm.FitsInt32) throw new InvalidOperationException($"{_m.Source.Name}: a 64-bit immediate into memory");
-                    OpL(w, 0, dst, 0xC7);
+                    OpD(w, 0, dst, 0xC7);
                     D32(imm.Value);
                     return;
             }
@@ -381,7 +427,7 @@ internal sealed partial class Encoder
             case MReg r: OpReg(0x50, r); break;
             case MImm imm when imm.FitsSbyte: B(0x6A, (byte)imm.Value); break;
             case MImm imm: _out.Add(0x68); D32(imm.Value); break;
-            default: OpL(4, 6, o, 0xFF); break;
+            default: OpD(4, 6, o, 0xFF); break;
         }
     }
 
@@ -389,11 +435,11 @@ internal sealed partial class Encoder
     {
         if (src is MImm imm)
         {
-            if (w == 1) { OpL(1, digit, dst, 0x80); _out.Add((byte)imm.Value); }
-            else if (imm.FitsSbyte) { OpL(w, digit, dst, 0x83); _out.Add((byte)imm.Value); }
+            if (w == 1) { OpD(1, digit, dst, 0x80); _out.Add((byte)imm.Value); }
+            else if (imm.FitsSbyte) { OpD(w, digit, dst, 0x83); _out.Add((byte)imm.Value); }
             else
             {
-                OpL(w, digit, dst, 0x81);
+                OpD(w, digit, dst, 0x81);
                 if (w == 2) D16(imm.Value); else D32(imm.Value);
             }
             return;
@@ -407,10 +453,10 @@ internal sealed partial class Encoder
     {
         if (i.Operands[1] is MImm imm)
         {
-            OpL(w, digit, i.Operands[0], w == 1 ? (byte)0xC0 : (byte)0xC1);
+            OpD(w, digit, i.Operands[0], w == 1 ? (byte)0xC0 : (byte)0xC1);
             _out.Add((byte)imm.Value);
         }
-        else OpL(w, digit, i.Operands[0], w == 1 ? (byte)0xD2 : (byte)0xD3);
+        else OpD(w, digit, i.Operands[0], w == 1 ? (byte)0xD2 : (byte)0xD3);
     }
 
     // ---- the frame ---------------------------------------------------------------------
