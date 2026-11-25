@@ -546,6 +546,7 @@ public sealed class UnitBackend : IUnitBackend
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
                 // As its compile said, unless the image has no collector.
                 SafepointPolls = module.SafepointPolls && module.LinkHeap != false,
+                StackMaps = unit.StackMaps,
             };
             result = backend.Generate(module, errors);
             (peakFunctions, peakBytes) = (backend.PeakBatchFunctions, backend.PeakBatchBytes);

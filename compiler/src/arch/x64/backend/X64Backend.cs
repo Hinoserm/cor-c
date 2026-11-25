@@ -14,9 +14,11 @@ namespace Corsac.Lang.X64;
 /// folded into the addressing modes (AddressFold.cs), register allocation
 /// (RegAlloc.cs), encoding (Encoder.cs). Data items go in .rodata, .data or
 /// .bss by their flags, holding 64-bit absolute relocations where they hold
-/// addresses; the frame table is the x86 format. There are no stack maps:
-/// the long-mode collector reads every stack whole, word by word, so a table
-/// of where the references are at each call would have no reader.
+/// addresses; the frame table is the x86 format. The stack maps are the
+/// same table i386 writes (StackMapTable), in this target's layout: at each
+/// call the spill slots, the IR frame slot words and the callee-saved
+/// registers that hold live references, which the collector reads a stack
+/// by (Gc.ScanOwnStack) instead of every word of it.
 ///
 /// Static code in the small model: every symbol is within two gigabytes of
 /// every instruction, and every one is reached RIP-relative. That is also
@@ -52,6 +54,15 @@ public sealed class X64Backend : IBackend
     /// collector and an operating system to run its threads.
     /// </summary>
     public bool SafepointPolls { get; set; }
+
+    /// <summary>
+    /// Whether the object carries its stack maps (`.corsac.stackmaps`): at
+    /// each call, the spill slots, the IR frame slot words and the
+    /// callee-saved registers holding live references -- the table i386
+    /// writes (StackMapTable), in x86-64's layout (StackMapLayout.X64).
+    /// Off for a program that needs no collector, as i386's.
+    /// </summary>
+    public bool StackMaps { get; set; } = true;
 
     /// <summary>
     /// Names a shared library supplies at load time, which a dynamically
@@ -128,6 +139,8 @@ public sealed class X64Backend : IBackend
         foreach (Function f in module.Functions) definedNames.Add(f.Name);
         foreach (DataItem d in module.Data) definedNames.Add(d.Name);
         definedNames.Add(Corsac.Lang.X86.FrameTable.Symbol);
+        definedNames.Add(Corsac.Lang.X86.X86Backend.StackMapStart);
+        definedNames.Add(Corsac.Lang.X86.X86Backend.StackMapEnd);
         Func<string, bool>? isExternal = PositionIndependent ? name => !definedNames.Contains(name)
             : Imported.Count > 0 ? name => Imported.Contains(name) && !definedNames.Contains(name)
             : null;
@@ -136,6 +149,10 @@ public sealed class X64Backend : IBackend
         HashSet<string> defined = new(StringComparer.Ordinal);
         Encoder encoder = new(text);
         List<Corsac.Lang.X86.FrameTable.Entry> frames = new();
+        // The stack maps' records as each function is encoded, starts from the first function with a call (the table's base).
+        List<StackMapTable.Function> mapFunctions = new();
+        string? mapBase = null;
+        int mapBaseAt = 0;
         FunctionSizes.Clear();
 
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
@@ -252,6 +269,33 @@ public sealed class X64Backend : IBackend
                 f.Name, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
                 new List<(int, int)>(encoder.Lines)));
 
+            if (StackMaps)
+            {
+                // A record only for a function with a call, from the first
+                // such function's start (the table's base), its sites in
+                // the order of the code -- as i386's (StackMapRecords).
+                StackMapTable.Function? record = null;
+                List<int>? slotWords = null;
+                foreach ((MInstr call, int ret) in encoder.CallSites)
+                {
+                    if (record is null)
+                    {
+                        if (m.Frame.Size > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
+                        if (mapBase is null) { mapBase = f.Name; mapBaseAt = start; }
+                        slotWords = ObjectWords(m);
+                        record = Corsac.Lang.Frames.StackMapRecords.Function(StackMapLayout.X64, start - mapBaseAt, m.Frame.Size,
+                            m.FramePointerFree ? 0 : SavedMask(m), slotWords, m.SlotLiveness);
+                        mapFunctions.Add(record);
+                    }
+                    if (ret > 0x7FFFFF) throw new InvalidOperationException("a function over 8 MB has no stack map");
+                    // A function that gives RBP a value has no frame a map
+                    // could count from: its calls (none but a fault's way
+                    // out) have no map, and its frame is read whole.
+                    record.Sites.Add(Corsac.Lang.Frames.StackMapRecords.Site(StackMapLayout.X64, call, ret,
+                        m.FramePointerFree ? null : m.Safepoints.GetValueOrDefault(call), slotWords!, m.SlotLiveness));
+                }
+            }
+
             // Jump tables: eight-byte absolute addresses of the blocks, which
             // the loader relocates in a shared object.
             Section tables = PositionIndependent ? relocatedConstants : rodata;
@@ -270,6 +314,8 @@ public sealed class X64Backend : IBackend
         }
 
         EmitStoreSequences(module, text, obj, defined);
+
+        if (StackMaps) EmitStackMaps(obj, mapFunctions, mapBase, defined);
 
         // The frame table: the x86 format, whose one address is 32 bits. In
         // long mode it is the distance from the word to the first function
@@ -426,6 +472,10 @@ public sealed class X64Backend : IBackend
             LoopRotate.Run(m);
             Peephole.Run(m);
             FramePointerFree.Run(m);
+            // Last, over the code as it will be encoded: which IR frame slot
+            // words each call's map names (FrameSlotLiveness), and the
+            // zeroing of those a call may find unwritten.
+            if (StackMaps) m.SlotLiveness = FrameSlotLiveness.Measured(m);
         }
         catch (InvalidOperationException e)
         {
@@ -433,6 +483,46 @@ public sealed class X64Backend : IBackend
             return null;
         }
         return m;
+    }
+
+    /// <summary>The callee-saved registers a function's prologue saves, as a mask by hardware number (StackMapLayout.X64 names them).</summary>
+    private static uint SavedMask(MFunction m)
+    {
+        uint mask = 0;
+        foreach (Gpr g in m.SavedRegs) mask |= 1u << (int)g;
+        return mask;
+    }
+
+    /// <summary>Every word of a function's IR frame slots, as RBP offsets: what a call's map names whole where their liveness is not known.</summary>
+    private static List<int> ObjectWords(MFunction m)
+    {
+        SortedSet<int> words = new();
+        foreach ((int offset, int bytes) in m.Frame.SlotRanges())
+            for (int at = offset & ~7; at < offset + bytes; at += 8)
+                if (at < 0) words.Add(at);
+        return words.ToList();
+    }
+
+    /// <summary>
+    /// The stack-map table (StackMapTable, version 1 in x86-64's layout),
+    /// one an object, as i386's EmitStackMaps makes it. Its base is the
+    /// distance from the header's word to the first function with a call
+    /// (PC32): an image loaded anywhere describes itself without the
+    /// loader, as this target's frame table does, so the section is
+    /// read-only in a shared object too.
+    /// </summary>
+    private static void EmitStackMaps(ObjectFile obj, List<StackMapTable.Function> functions, string? baseFunction, HashSet<string> defined)
+    {
+        Section s = new(Corsac.Lang.X86.X86Backend.StackMapSection, SectionKind.ReadOnlyData) { Align = 8 };
+        obj.Sections.Add(s);
+        StackMapTable.Encode(functions, s.Bytes, StackMapLayout.X64);
+        if (baseFunction is not null) s.Relocs.Add(new Relocation(StackMapTable.BaseOffset, baseFunction, 0, RelocKind.Rel32));
+        // Each independently compiled object owns a complete table, named
+        // for the image's directory of them (ManagedDirectory).
+        obj.Symbols.Add(new Symbol { Name = Corsac.Lang.X86.X86Backend.StackMapStart, Section = s, Offset = 0, Size = s.Bytes.Count, Global = false });
+        obj.Symbols.Add(new Symbol { Name = Corsac.Lang.X86.X86Backend.StackMapEnd, Section = s, Offset = s.Bytes.Count, Size = 0, Global = false });
+        defined.Add(Corsac.Lang.X86.X86Backend.StackMapStart);
+        defined.Add(Corsac.Lang.X86.X86Backend.StackMapEnd);
     }
 
     /// <summary>The store sequences' stubs, named as i386's (RuntimeAbi; CardMarks.FuseStores).</summary>

@@ -412,6 +412,16 @@ public sealed class MFunction
     public List<Gpr> SavedRegs { get; } = new();
 
     /// <summary>
+    /// At each call, the spill slots and callee-saved registers holding
+    /// values live across it (X64Target.Rebuild, from the allocator): what
+    /// the call's stack map names, as i386's (Frames.Safepoint).
+    /// </summary>
+    public Dictionary<MInstr, Corsac.Lang.Frames.Safepoint> Safepoints { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Which IR frame slot words each call's map names (FrameSlotLiveness), or null: all of them at every call.</summary>
+    internal Corsac.Lang.Frames.FrameSlotLiveness.Result? SlotLiveness { get; set; }
+
+    /// <summary>
     /// RBP HOLDS A VALUE IN THIS FUNCTION (X64Target, for a leaf): its frame
     /// is addressed off RSP, which nothing moves between its prologue and its
     /// epilogue (FramePointerFree), and the prologue's `mov rbp, rsp` is
@@ -530,4 +540,15 @@ public sealed class Frame
 
     /// <summary>A spill slot for one register of either class: eight bytes.</summary>
     public int Spill() => Allocate(8, 8);
+
+    /// <summary>
+    /// The IR frame slots -- objects the lifetime passes put in the frame,
+    /// the lowering's temporaries -- as (offset, bytes): the words of the
+    /// frame the allocator does not own, which a call's stack map names
+    /// where they are live or exposed (FrameSlotLiveness), or all of them.
+    /// </summary>
+    public IEnumerable<(int Offset, int Bytes)> SlotRanges()
+    {
+        foreach ((FrameSlot slot, int offset) in _slots) yield return (offset, Math.Max(slot.Bytes, 8));
+    }
 }

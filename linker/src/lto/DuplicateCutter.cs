@@ -267,6 +267,8 @@ internal static class DuplicateCutter
         public bool Unknown;
         long _base;
         List<StackMapTable.Function> _functions = new();
+        // The target's layout the table was written in: written again in the same (StackMapLayout).
+        StackMapLayout _layout = StackMapLayout.I386;
 
         public static StackMaps? Read(ObjectFile obj, Section code)
         {
@@ -274,8 +276,9 @@ internal static class DuplicateCutter
             if (s is null || s.Bytes.Count == 0) return null;
             StackMaps m = new() { Section = s };
             // Functions with their sites, as varints.
-            List<StackMapTable.Function>? functions = StackMapTable.Decode(s.Bytes);
+            List<StackMapTable.Function>? functions = StackMapTable.Decode(s.Bytes, out StackMapLayout layout);
             if (functions is null) { m.Unknown = true; return m; }
+            m._layout = layout;
             if (functions.Count == 0) return null;
             m._functions = functions;
             m._base = BaseOffset(obj, s, StackMapTable.BaseOffset, code, out bool known);
@@ -298,7 +301,7 @@ internal static class DuplicateCutter
             }
             ChunkedBytes b = Section.Bytes;
             b.Clear();
-            b.AddRange(StackMapTable.Encode(kept));
+            b.AddRange(StackMapTable.Encode(kept, _layout));
         }
     }
 

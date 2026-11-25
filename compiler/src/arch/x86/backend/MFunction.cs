@@ -1,4 +1,5 @@
 #nullable enable
+using Corsac.Lang.Frames;
 using Corsac.Lang.Ir;
 
 namespace Corsac.Lang.X86;
@@ -21,6 +22,9 @@ public sealed class MFunction
     /// the ALLOCATOR produced, since it rebuilds every one it rewrites.
     /// </summary>
     public Dictionary<MInstr, Safepoint> Safepoints { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Which IR frame slot words each call's map names (FrameSlotLiveness), or null: all of them at every call.</summary>
+    internal Corsac.Lang.Frames.FrameSlotLiveness.Result? SlotLiveness { get; set; }
 
     public Function Source { get; }
     public List<MBlock> Blocks { get; } = new();

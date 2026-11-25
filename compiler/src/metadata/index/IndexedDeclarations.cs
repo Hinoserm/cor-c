@@ -551,6 +551,14 @@ public sealed class IndexedDeclarations : IDisposable
         // What `+=`, `-=` and `==` on delegates become, under a name no
         // program writes (Binder.DelegatesHelper).
         CompilerAbi.Delegates,
+        // WHAT EVERY UNIT STILL ASKED FOR, two passes thrown away for them in
+        // each (--trace-demand over the compiler's own units, every one of
+        // them): Decimal in the first pass, and in the second the bases of
+        // every enum and struct, what a boxed number converts by and what an
+        // array's members are found in. A trivial unit's discarded passes
+        // were 150 MiB of the 358 its front end allocated, a larger one's
+        // 480 of 1100.
+        "Decimal", "ValueType", "Enum", "BoxedConvertible", "__ArrayExtensions",
     };
 
     public void AddHeaders(CompilationUnit unit)

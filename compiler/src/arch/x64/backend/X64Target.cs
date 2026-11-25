@@ -356,10 +356,9 @@ internal sealed class X64Target : ITarget
     /// spilled value's loads before and stores after by its class's move,
     /// eight bytes; a remade constant moved whole; the copies and jumps the
     /// allocator made, made; the callee-saved registers touched saved, or
-    /// all of them where the function enters the collector. No stack maps
-    /// (IPlacement.LiveAcross): the runtime has none on x86-64 (gc.cor's
-    /// BuildMaps is i386's), and its conservative collector reads a stack as
-    /// a range of memory.
+    /// all of them where the function enters the collector; and at each
+    /// call what is live across it (IPlacement.LiveAcross), for its stack
+    /// map, as i386's Rebuild records it.
     /// </summary>
     public void Rebuild(AFunction f, IPlacement p)
     {
@@ -375,6 +374,16 @@ internal sealed class X64Target : ITarget
             {
                 // Asked first: a dropped instruction is not built at all.
                 MInstr? n = p.Dropped(index) ? null : Build(ai, index, p, blocks);
+                // WHAT IS LIVE ACROSS A CALL, for its stack map: the spill
+                // slots and the callee-saved registers holding values the
+                // callee must not lose sight of, as i386 records them.
+                if (n is not null && p.LiveAcross(index) is { } live)
+                {
+                    Corsac.Lang.Frames.Safepoint map = new();
+                    map.SlotOffsets.AddRange(live.Slots);
+                    foreach (int r in live.Registers) map.Registers |= 1u << r;
+                    _m.Safepoints[n] = map;
+                }
                 foreach ((int reg, int slot, bool load) in p.MovesBefore(index))
                     outList.Add(load
                         ? new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, Out(reg), Slot(slot)) { Width = 8, Line = ai.Line }

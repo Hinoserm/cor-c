@@ -69,13 +69,47 @@ namespace Corsac.Lang.Ir;
 /// A return address that is the next function's first byte (a call that
 /// never returns, last in its function) is found as the call it is: the
 /// sites are one ascending run across functions, not searched per function.
+///
+/// ONE CODEC FOR EVERY TARGET (StackMapLayout). What differs between
+/// machines is how wide a word is, which callee-saved registers a map can
+/// name, and how wide a code address is; everything else -- the stream, the
+/// checkpoints, the bitmaps, the pool, the lookup -- is the same. Version 0
+/// above is i386's, kept byte for byte (a 32-bit image, its runtime and a
+/// kernel built before this read and write exactly what they did). Every
+/// other target writes VERSION 1, which says its own shape in its header:
+///
+///   header, 56 bytes:
+///     +0  'CSM1'            +4  1 (the version)
+///     +8  function count    +12 call-site count
+///     +16 the BASE as the signed 32-bit distance from this word to it
+///         (PC32), +20 zero: an image loaded anywhere describes itself
+///         without the loader, and the table is read-only in a shared object
+///     +24 checkpoint count  +28 the span
+///     +32 the stream's offset             +36 the bitmap pool's offset
+///     +40 the word's bytes (4 or 8)       +41 R, how many registers a map names
+///     +42 the R registers' hardware numbers, a byte each, in the order
+///         their bits are packed (bit k the k-th) -- the order the prologue
+///         saves them in, the k-th present at base - frame size - word(k+1);
+///         unused bytes 0, to +56
+///   the stream as version 0's, with R bits where it has three:
+///     uleb  frame size << R | saved registers
+///     uleb  bitmap reference << (R + 1) | 1 << R when the call has no map
+///           | live registers
+///   A bitmap's word b is the word at BASE REGISTER - word(b + 1): EBP's on
+///   i386, RBP's on x86-64, the frame pointer's on any other.
 /// </summary>
 public static class StackMapTable
 {
     public const uint Magic = 0x314d5343;           // 'CSM1'
     public const uint Version = 0;
+    /// <summary>Version 0's header (i386); a layout says its own (StackMapLayout.HeaderBytes).</summary>
     public const int HeaderBytes = 36;
     public const int BaseOffset = 16;
+    /// <summary>The version every target but i386 writes: its word, its registers and its address width in the header.</summary>
+    public const uint GeneralVersion = 1;
+    public const int GeneralHeaderBytes = 56;
+    /// <summary>The most registers a general table's header names.</summary>
+    public const int MostRegisters = 14;
     public const int CheckpointBytes = 12;
     public const int SitesPerCheckpoint = 32;
 
@@ -105,12 +139,15 @@ public static class StackMapTable
     public readonly record struct Site(int Return, bool NoMap, uint Live, int[] Slots);
 
     /// <summary>The word numbers of a set of EBP-relative byte offsets (all negative).</summary>
-    public static int[] Words(IEnumerable<int> offsets)
+    public static int[] Words(IEnumerable<int> offsets) => Words(offsets, 4);
+
+    /// <summary>The word numbers of a set of byte offsets from the frame's base register (all negative), for words of `wordBytes`.</summary>
+    public static int[] Words(IEnumerable<int> offsets, int wordBytes)
     {
         SortedSet<int> words = new();
         foreach (int off in offsets)
         {
-            words.Add(-off / 4 - 1);
+            words.Add(-off / wordBytes - 1);
         }
         return words.ToArray();
     }
@@ -119,10 +156,13 @@ public static class StackMapTable
     /// The table's bytes. Its base word is zero, for the caller to relocate
     /// at <see cref="BaseOffset"/> when there is any function at all.
     /// </summary>
-    public static byte[] Encode(IReadOnlyList<Function> functions)
+    public static byte[] Encode(IReadOnlyList<Function> functions) => Encode(functions, StackMapLayout.I386);
+
+    /// <summary>The table's bytes in a target's layout.</summary>
+    public static byte[] Encode(IReadOnlyList<Function> functions, StackMapLayout layout)
     {
         ChunkedBytes table = new();
-        Encode(functions, table);
+        Encode(functions, table, layout);
         return table.ToArray();
     }
 
@@ -132,8 +172,12 @@ public static class StackMapTable
     /// where a large unit's were three lists of it at once and an array
     /// copied out of the last, each one contiguous.
     /// </summary>
-    public static void Encode(IReadOnlyList<Function> functions, ChunkedBytes into)
+    public static void Encode(IReadOnlyList<Function> functions, ChunkedBytes into) => Encode(functions, into, StackMapLayout.I386);
+
+    /// <summary>The table's bytes in a target's layout, appended to <paramref name="into"/>.</summary>
+    public static void Encode(IReadOnlyList<Function> functions, ChunkedBytes into, StackMapLayout layout)
     {
+        int registerBits = layout.Registers.Length;
         // THE POOL, MOST USED FIRST: a reference is a varint of its offset, so
         // the bitmaps named most often are the ones placed where it is short.
         //
@@ -230,7 +274,7 @@ public static class StackMapTable
             int record = stream.Count;
             Uleb(stream, (ulong)(f.Start - anchor));
             anchor = f.Start;
-            Uleb(stream, (ulong)f.FrameSize << 3 | Pack(f.Saved));
+            Uleb(stream, (ulong)f.FrameSize << registerBits | layout.Pack(f.Saved));
             Uleb(stream, Reference(f.Objects));
             foreach (Site s in f.Sites)
             {
@@ -239,25 +283,32 @@ public static class StackMapTable
                 if (sites % SitesPerCheckpoint == 0) checkpoints.Add((anchor, stream.Count, record));
                 Uleb(stream, (ulong)(at - anchor));
                 anchor = at;
-                Uleb(stream, Reference(s.Slots) << 4 | (s.NoMap ? 8u : Pack(s.Live)));
+                Uleb(stream, Reference(s.Slots) << (registerBits + 1) | (s.NoMap ? 1ul << registerBits : layout.Pack(s.Live)));
                 sites++;
                 span = at + 1;
             }
             Uleb(stream, 0);
         }
 
-        int streamAt = HeaderBytes + checkpoints.Count * CheckpointBytes;
+        int streamAt = layout.HeaderBytes + checkpoints.Count * CheckpointBytes;
         int poolAt = streamAt + stream.Count;
         ChunkedBytes table = into;
         Put(table, Magic);
-        Put(table, Version);
+        Put(table, layout.Version);
         Put(table, (uint)functions.Count);
         Put(table, (uint)sites);
         Put(table, 0);                      // the base, relocated
+        if (layout.Version != Version) Put(table, 0);   // its upper half, where an address is eight bytes
         Put(table, (uint)checkpoints.Count);
         Put(table, (uint)span);
         Put(table, (uint)streamAt);
         Put(table, (uint)poolAt);
+        if (layout.Version != Version)
+        {
+            table.Add((byte)layout.WordBytes);
+            table.Add((byte)registerBits);
+            for (int k = 0; k < MostRegisters; k++) table.Add(k < registerBits ? (byte)layout.Registers[k] : (byte)0);
+        }
         foreach (var c in checkpoints)
         {
             Put(table, (uint)c.Anchor);
@@ -272,11 +323,31 @@ public static class StackMapTable
     /// The functions of a table, or null when the bytes are not one: another
     /// magic or version, or a table this cannot read to its end.
     /// </summary>
-    public static List<Function>? Decode(IReadOnlyList<byte> b)
+    public static List<Function>? Decode(IReadOnlyList<byte> b) => Decode(b, out _);
+
+    /// <summary>The functions of a table and the layout it is written in (its header's), or null when the bytes are not one.</summary>
+    public static List<Function>? Decode(IReadOnlyList<byte> b, out StackMapLayout layout)
     {
-        if (b.Count < HeaderBytes || U32(b, 0) != Magic || U32(b, 4) != Version) return null;
-        int count = (int)U32(b, 8), streamAt = (int)U32(b, 28), poolAt = (int)U32(b, 32);
-        if (streamAt < HeaderBytes || poolAt < streamAt || poolAt > b.Count) return null;
+        layout = StackMapLayout.I386;
+        if (b.Count < HeaderBytes || U32(b, 0) != Magic) return null;
+        uint version = U32(b, 4);
+        if (version == GeneralVersion)
+        {
+            if (b.Count < GeneralHeaderBytes) return null;
+            int wordBytes = b[40], named = b[41];
+            if (wordBytes is not (4 or 8) || named > MostRegisters) return null;
+            int[] registers = new int[named];
+            for (int k = 0; k < named; k++) registers[k] = b[42 + k];
+            layout = new StackMapLayout(wordBytes, registers);
+            // (A general table in i386's own shape is still a general table: its header says so.)
+            layout = layout.AsGeneral();
+        }
+        else if (version != Version) return null;
+        int registerBits = layout.Registers.Length;
+        ulong registerMask = (1ul << registerBits) - 1;
+        bool general = version == GeneralVersion;
+        int count = (int)U32(b, 8), streamAt = (int)U32(b, general ? 32 : 28), poolAt = (int)U32(b, general ? 36 : 32);
+        if (streamAt < layout.HeaderBytes || poolAt < streamAt || poolAt > b.Count) return null;
         List<Function> functions = new(count);
         try
         {
@@ -340,8 +411,8 @@ public static class StackMapTable
                 anchor += (long)ReadUleb(b, ref p);
                 f.Start = (int)anchor;
                 ulong frame = ReadUleb(b, ref p);
-                f.FrameSize = (int)(frame >> 3);
-                f.Saved = Unpack((uint)frame & 7);
+                f.FrameSize = (int)(frame >> registerBits);
+                f.Saved = layout.Unpack((uint)(frame & registerMask));
                 f.Objects = Bitmap(ReadUleb(b, ref p));
                 while (true)
                 {
@@ -349,8 +420,8 @@ public static class StackMapTable
                     if (delta == 0) break;
                     anchor += (long)delta;
                     ulong payload = ReadUleb(b, ref p);
-                    bool noMap = (payload & 8) != 0;
-                    f.Sites.Add(new Site((int)(anchor - f.Start), noMap, noMap ? 0 : Unpack((uint)payload & 7), Bitmap(payload >> 4)));
+                    bool noMap = (payload >> registerBits & 1) != 0;
+                    f.Sites.Add(new Site((int)(anchor - f.Start), noMap, noMap ? 0 : layout.Unpack((uint)(payload & registerMask)), Bitmap(payload >> (registerBits + 1))));
                 }
                 functions.Add(f);
             }
@@ -464,14 +535,6 @@ public static class StackMapTable
         return sparse.Count < dense.Count ? sparse.ToArray() : dense.ToArray();
     }
 
-    /// <summary>EBX, ESI and EDI (hardware numbers 3, 6 and 7) as bits 0, 1 and 2.</summary>
-    private static uint Pack(uint mask)
-    {
-        if ((mask & ~0xC8u) != 0) throw new InvalidOperationException("stack maps: a register other than EBX, ESI or EDI");
-        return (mask >> 3 & 1) | (mask >> 5 & 2) | (mask >> 5 & 4);
-    }
-
-    private static uint Unpack(uint bits) => (bits & 1) << 3 | (bits & 2) << 5 | (bits & 4) << 5;
 
     private static uint U32(IReadOnlyList<byte> b, int at) => (uint)(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24);
 
@@ -512,5 +575,74 @@ public static class StackMapTable
             if ((x & 0x80) == 0) return v;
             shift += 7;
         }
+    }
+}
+
+/// <summary>
+/// WHAT OF A STACK-MAP TABLE DEPENDS ON THE MACHINE (StackMapTable): how
+/// wide a word of the frame is, and which callee-saved registers a map can
+/// name -- by hardware number, in the order the function's prologue saves
+/// them, which is the order of their bits in every packed mask. The k-th of
+/// them a function saves lies at its frame base less its frame size less
+/// (k + 1) words, counting only those it saves: what the collector walks to
+/// find where a caller's register was kept.
+///
+/// i386 is EBX, ESI, EDI over four-byte words and writes version 0, the
+/// table as it has always been. x86-64 (System V) is RBX, R12, R13, R14,
+/// R15 over eight-byte words. Another machine names its own: Alpha's s0-s5,
+/// ARM's r4-r11, AArch64's x19-x28, MIPS's s0-s7 -- up to fourteen, by a
+/// hardware number below thirty-two each.
+/// </summary>
+public sealed class StackMapLayout
+{
+    public int WordBytes { get; }
+    public int[] Registers { get; }
+    private readonly bool _general;
+
+    public StackMapLayout(int wordBytes, int[] registers)
+    {
+        if (wordBytes is not (4 or 8)) throw new ArgumentOutOfRangeException(nameof(wordBytes), "a stack map's word is four or eight bytes");
+        if (registers.Length > StackMapTable.MostRegisters) throw new ArgumentOutOfRangeException(nameof(registers), "a stack map names at most fourteen registers");
+        foreach (int r in registers)
+            if (r < 0 || r > 31) throw new ArgumentOutOfRangeException(nameof(registers), "a stack map's register is a hardware number below thirty-two");
+        if (registers.Distinct().Count() != registers.Length) throw new ArgumentException("a stack map's registers are each named once", nameof(registers));
+        WordBytes = wordBytes;
+        Registers = registers;
+    }
+
+    private StackMapLayout(StackMapLayout of, bool general) : this(of.WordBytes, of.Registers) => _general = general;
+
+    /// <summary>i386: four-byte words, EBX, ESI and EDI (hardware numbers 3, 6, 7). Version 0.</summary>
+    public static readonly StackMapLayout I386 = new(4, new[] { 3, 6, 7 });
+
+    /// <summary>x86-64, System V: eight-byte words, RBX, R12, R13, R14, R15 (hardware numbers 3, 12-15).</summary>
+    public static readonly StackMapLayout X64 = new(8, new[] { 3, 12, 13, 14, 15 });
+
+    /// <summary>This layout written as a general table even where it is i386's shape (a table decoded as one stays one).</summary>
+    public StackMapLayout AsGeneral() => _general ? this : new StackMapLayout(this, true);
+
+    /// <summary>Version 0 for i386's own layout, the general version for every other.</summary>
+    public uint Version => !_general && WordBytes == 4 && Registers.Length == 3 && Registers[0] == 3 && Registers[1] == 6 && Registers[2] == 7
+        ? StackMapTable.Version : StackMapTable.GeneralVersion;
+
+    public int HeaderBytes => Version == StackMapTable.Version ? StackMapTable.HeaderBytes : StackMapTable.GeneralHeaderBytes;
+
+    /// <summary>A mask by hardware number as the table packs it: bit k the k-th register named.</summary>
+    public uint Pack(uint mask)
+    {
+        uint packed = 0, left = mask;
+        for (int k = 0; k < Registers.Length; k++)
+            if ((mask >> Registers[k] & 1) != 0) { packed |= 1u << k; left &= ~(1u << Registers[k]); }
+        if (left != 0) throw new InvalidOperationException("stack maps: a register the target's layout does not name (mask " + mask.ToString("x") + ")");
+        return packed;
+    }
+
+    /// <summary>A packed mask by hardware number.</summary>
+    public uint Unpack(uint bits)
+    {
+        uint mask = 0;
+        for (int k = 0; k < Registers.Length; k++)
+            if ((bits >> k & 1) != 0) mask |= 1u << Registers[k];
+        return mask;
     }
 }

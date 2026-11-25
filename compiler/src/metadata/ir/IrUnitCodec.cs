@@ -1,5 +1,6 @@
 using Corsac.Lang.Elf;
 using Corsac.Lang.Ir;
+using IrBlock = Corsac.Lang.Ir.Block;
 using Corsac.Lang.Lto;
 using Corsac.Lang.Opt;
 
@@ -63,9 +64,26 @@ public static class IrUnitCodec
             .Concat(module.Data.Where(item => !item.Exported).Select(item => item.Name)).ToHashSet(StringComparer.Ordinal);
         foreach (Function function in module.Functions)
         {
-            Instr[] instructions = function.Blocks.SelectMany(block => block.Instrs).ToArray();
-            string[] calls = instructions.Where(instruction => instruction.Op == Opcode.Call && instruction.Callee is not null)
-                .Select(instruction => instruction.Callee!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+            // ONE WALK A FUNCTION for its instructions, the names it calls and
+            // the symbols it names: each was a query of its own over every
+            // instruction's operands -- four of them a function -- and the
+            // snapshot of the binder's unit allocated five gigabytes to write
+            // sixty-eight megabytes.
+            int instructionCount = 0;
+            foreach (IrBlock block in function.Blocks) instructionCount += block.Instrs.Count;
+            Instr[] instructions = new Instr[instructionCount];
+            HashSet<string> called = new(StringComparer.Ordinal), named = new(StringComparer.Ordinal);
+            bool namesLocal = false;
+            int at = 0;
+            foreach (IrBlock block in function.Blocks)
+                foreach (Instr instruction in block.Instrs)
+                {
+                    instructions[at++] = instruction;
+                    if (instruction.Op == Opcode.Call && instruction.Callee is not null) called.Add(instruction.Callee);
+                    foreach (Operand operand in instruction.Operands)
+                        if (operand is SymOperand address) { named.Add(address.Name); namesLocal |= locals.Contains(address.Name); }
+                }
+            string[] calls = called.Order(StringComparer.Ordinal).ToArray();
             // Import only bodies that do not need object-local dependencies.
             // Their original native owner remains present for calls not inlined.
             bool importable = function.Exported && function.Name != module.Entry && instructions.Length <= 160
@@ -73,9 +91,9 @@ public static class IrUnitCodec
                 // copy is the importer's, and the owner's stays in its vtable.
                 && Inline.Inlineable(function, NoneKept)
                 && !calls.Any(locals.Contains)
-                && !instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>().Any(address => locals.Contains(address.Name));
-            string[] references = calls.Concat(instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>()
-                .Select(address => address.Name)).Distinct(StringComparer.Ordinal)
+                && !namesLocal;
+            named.UnionWith(called);
+            string[] references = named
                 .Select(name => ComparedOnly(instructions, name) ? Lto.IrArchiveEntry.ComparedOnly + name : name)
                 .Order(StringComparer.Ordinal).ToArray();
             byte[] body = IrFunctionCodec.Write(function, module.KeepCalls);

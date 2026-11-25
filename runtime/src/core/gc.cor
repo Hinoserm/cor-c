@@ -386,6 +386,9 @@ public static class Gc
     public static long YoungCardWords;
     public static long HeldWords;
     public static long StackWords;
+    /// The words of stacks read through their stack maps (KeepWord): beside
+    /// StackWords, the words read whole, how much of the stacks the maps describe.
+    public static long MapWords;
     public static nuint TakenCards;
     public static long WalkSteps;
     public static long ProbeSteps;
@@ -1257,14 +1260,49 @@ public static class Gc
     // with no map -- C, a signal frame, a stub -- is read whole and forgets
     // where the registers were. What stops being read is a dead register's
     // saved copy, and nothing else.
-#if !TARGET_64BIT
     const int MapMagic = 0x314D5343;        // 'CSM1'
+    // Version 0 is i386's table as it has always been (a 36-byte header,
+    // three registers, the base an address); version 1 is any target's,
+    // which says its word, its registers and its base in a 56-byte header
+    // (StackMapLayout in the linker's object model). One reader for both.
     const int MapVersion = 0;
+    const int MapGeneralVersion = 1;
     const int MapHeader = 36;
+    const int MapGeneralHeader = 56;
     const int MapCheckpoint = 12;
     const uint UnknownFrame = 0x80000000;
     const int DirectoryMagic = 0x52444D43;  // 'CMDR'
-    const int LiveEbx = 8, LiveEsi = 64, LiveEdi = 128;
+    // A map names at most fourteen callee-saved registers, by the bit the
+    // table packs each at: the live ones at a call in bits 0-13 of a site's
+    // registers, its function's saved ones from bit 16.
+    const int MapMostRegisters = 14;
+    const uint MapEveryRegister = 0x3FFF;
+
+    /// Whether a table is one this reader takes: version 0 where a word is
+    /// four bytes, or version 1 written for this machine's word.
+    static bool MapReadable(nuint table)
+    {
+        if (table == 0 || Sys.Read32(table) != MapMagic || Sys.Read32(table + 12) == 0) return false;
+        uint version = Sys.Read32(table + 4);
+        if (version == MapVersion) return WordSize.Bytes == 4;
+        return version == MapGeneralVersion && Sys.Read8(table + 40) == WordSize.Bytes && Sys.Read8(table + 41) <= MapMostRegisters;
+    }
+
+    /// A table's header by its version: how many registers a map names, the
+    /// header's size (where the checkpoints begin), the checkpoint count,
+    /// the span, the stream's and the pool's offsets, and the base -- the
+    /// address itself in version 0, the distance from its word in version 1.
+    static bool MapGeneral(nuint table) { return Sys.Read32(table + 4) == MapGeneralVersion; }
+    static nuint MapRegisterBits(nuint table) { return MapGeneral(table) ? (nuint)Sys.Read8(table + 41) : (nuint)3; }
+    static nuint MapHeaderOf(nuint table) { return MapGeneral(table) ? (nuint)MapGeneralHeader : (nuint)MapHeader; }
+    static nuint MapCheckpoints(nuint table) { return MapGeneral(table) ? Sys.Read32(table + 24) : Sys.Read32(table + 20); }
+    static nuint MapSpan(nuint table) { return MapGeneral(table) ? Sys.Read32(table + 28) : Sys.Read32(table + 24); }
+    static nuint MapPool(nuint table) { return MapGeneral(table) ? table + Sys.Read32(table + 36) : table + Sys.Read32(table + 32); }
+    static nuint MapBase(nuint table)
+    {
+        if (!MapGeneral(table)) return Sys.Read32(table + 16);
+        return table + 16 + (nuint)(long)(int)Sys.Read32(table + 16);
+    }
     // THE INDEX IS ONE RECORD A TABLE -- (first code address, the end of what
     // it covers, the table), sorted -- not one a call site: the compiler's
     // 234,000 sites were 2.8 MB of index. A return address finds its table
@@ -1283,9 +1321,7 @@ public static class Gc
     /// rebuilds it, with the heap lock held, before it reads a stack.
     public static void MapsChanged()
     {
-#if !TARGET_64BIT
         _mapsBuilt = false;
-#endif
     }
 
     static nuint _mapsBytes;
@@ -1320,17 +1356,18 @@ public static class Gc
                 {
                     nuint record = directory + 16 + r * 16;
                     r = r + 1;
-                    nuint table = Sys.Read32(record + 8);
-                    if (table == 0 || Sys.Read32(table) != MapMagic || Sys.Read32(table + 4) != MapVersion
-                        || Sys.Read32(table + 12) == 0)
+                    // Where the link put the table: the address on i386, the
+                    // distance from the directory's word in long mode.
+                    nuint table = Runtime.TableAddress(record + 8);
+                    if (!MapReadable(table))
                     {
                         continue;
                     }
                     if (pass == 1 && filled < total)
                     {
-                        nuint basis = Sys.Read32(table + 16);
+                        nuint basis = MapBase(table);
                         Sys.WriteAddress(_maps + filled * MapRecord, basis);
-                        Sys.WriteAddress(_maps + filled * MapRecord + WordSize.Bytes, basis + Sys.Read32(table + 24));
+                        Sys.WriteAddress(_maps + filled * MapRecord + WordSize.Bytes, basis + MapSpan(table));
                         Sys.WriteAddress(_maps + filled * MapRecord + 2 * WordSize.Bytes, table);
                         filled = filled + 1;
                     }
@@ -1401,15 +1438,9 @@ public static class Gc
         }
     }
 
-    /// EBX, ESI and EDI as the table packs them (bits 0, 1, 2) by hardware number.
-    static nuint MapRegisters(nuint bits)
-    {
-        return ((bits & 1) << 3) | ((bits & 2) << 5) | ((bits & 4) << 5);
-    }
-
     /// The call site a return address is: true, with its live registers (by
-    /// hardware number, every one and UnknownFrame for a call with no map)
-    /// and its function's saved ones from bit 16, its function's frame size,
+    /// the bit the table packs each at, every one and UnknownFrame for a
+    /// call with no map) and its function's saved ones from bit 16, its function's frame size,
     /// the bitmap references of its live spill slots and of its function's
     /// frame slots, and its table; false if no table has it.
     static bool MapSite(nuint ret, out nuint regs, out nuint frameSize, out nuint slots, out nuint objects, out nuint table)
@@ -1434,18 +1465,23 @@ public static class Gc
         nuint offset = ret - Sys.ReadAddress(record);
         // The last checkpoint whose anchor is below the address.
         low = 0;
-        high = Sys.Read32(t + 20);
+        high = MapCheckpoints(t);
+        nuint header = MapHeaderOf(t);
+        // R, how many registers this table's maps name: a frame's size sits
+        // above R saved bits, a site's bitmap above R live bits and one more.
+        nuint bits = MapRegisterBits(t);
+        nuint mask = ((nuint)1 << (int)bits) - 1;
         while (low < high)
         {
             nuint middle = low + (high - low) / 2;
-            if (Sys.Read32(t + MapHeader + middle * MapCheckpoint) < offset) low = middle + 1;
+            if (Sys.Read32(t + header + middle * MapCheckpoint) < offset) low = middle + 1;
             else high = middle;
         }
         if (low == 0) return false;
-        nuint point = t + MapHeader + (low - 1) * MapCheckpoint;
+        nuint point = t + header + (low - 1) * MapCheckpoint;
         nuint anchor = Sys.Read32(point);
         nuint at = t + Sys.Read32(point + 4);
-        nuint end = t + Sys.Read32(t + 32);
+        nuint end = MapPool(t);
         // The record of the function the checkpoint is in: its start (which
         // the anchor has already passed), its frame, its frame slots.
         nuint info = t + Sys.Read32(point + 8);
@@ -1469,11 +1505,11 @@ public static class Gc
             if (anchor > offset) return false;
             if (anchor == offset)
             {
-                nuint saved = MapRegisters(frame & 7) << 16;
-                if ((payload & 8) != 0) regs = 0xFF | saved | UnknownFrame;
-                else regs = MapRegisters(payload & 7) | saved;
-                frameSize = frame >> 3;
-                slots = payload >> 4;
+                nuint saved = (frame & mask) << 16;
+                if (((payload >> (int)bits) & 1) != 0) regs = MapEveryRegister | saved | UnknownFrame;
+                else regs = (payload & mask) | saved;
+                frameSize = frame >> (int)bits;
+                slots = payload >> (int)(bits + 1);
                 objects = own;
                 table = t;
                 return true;
@@ -1483,13 +1519,13 @@ public static class Gc
     }
 
     /// A frame's words a bitmap reference names: inline (odd, bit b of
-    /// ref >> 1 the word at frame - 4(b+1)) or pooled in the table (even).
+    /// ref >> 1 the word at frame - word(b+1)) or pooled in the table (even).
     /// Those at or above `from` only.
     static nuint KeepMap(nuint frame, nuint table, nuint reference, nuint from, nuint copy, nuint at)
     {
         if ((reference & 1) == 0)
         {
-            nuint pool = table + Sys.Read32(table + 32);
+            nuint pool = MapPool(table);
             return KeepPooled(frame, pool, pool + (reference >> 1), from, copy, at);
         }
         nuint bits = reference >> 1;
@@ -1498,7 +1534,7 @@ public static class Gc
         {
             if ((bits & 1) != 0)
             {
-                nuint slot = frame - 4 * (b + 1);
+                nuint slot = frame - (nuint)WordSize.Bytes * (b + 1);
                 if (slot >= from)
                 {
                     at = KeepWord(Sys.ReadAddress(slot), copy, at);
@@ -1578,6 +1614,7 @@ public static class Gc
     /// `copy` at `at` (a stack copied at STAMP). Answers where the next goes.
     static nuint KeepWord(nuint word, nuint copy, nuint at)
     {
+        MapWords = MapWords + 1;
         if (copy != 0)
         {
             Sys.WriteAddress(copy + at * WordSize.Bytes, word);
@@ -1657,7 +1694,7 @@ public static class Gc
         while (n < adding)
         {
             past = past + MapUleb(p, out p) + 1;
-            nuint slot = frame - 4 * past;
+            nuint slot = frame - (nuint)WordSize.Bytes * past;
             if (slot >= from)
             {
                 at = KeepWord(Sys.ReadAddress(slot), copy, at);
@@ -1701,7 +1738,7 @@ public static class Gc
                         gone = gone + MapUleb(skip, out skip) + 1;
                     }
                 }
-                nuint slot = frame - 4 * (word + 1);
+                nuint slot = frame - (nuint)WordSize.Bytes * (word + 1);
                 if (slot >= from && (skips == 0 || gone != word))
                 {
                     at = KeepWord(Sys.ReadAddress(slot), copy, at);
@@ -1728,7 +1765,7 @@ public static class Gc
                             gone = gone + MapUleb(skip, out skip) + 1;
                         }
                     }
-                    nuint slot = frame - 4 * (word + 1);
+                    nuint slot = frame - (nuint)WordSize.Bytes * (word + 1);
                     if (slot >= from && (skips == 0 || gone != word))
                     {
                         at = KeepWord(Sys.ReadAddress(slot), copy, at);
@@ -1757,9 +1794,28 @@ public static class Gc
     public static nuint ScanOwnStack(nuint from, nuint to, nuint copy)
     {
         const int w = WordSize.Bytes;
-        nuint atEbx = 0;
-        nuint atEsi = 0;
-        nuint atEdi = 0;
+        // WHERE THE FRAMES UNDER THE ONE BEING READ SAVED EACH CALLEE-SAVED
+        // REGISTER, by the bit the tables pack it at (StackMapLayout: EBX,
+        // ESI, EDI on i386; RBX, R12-R15 on x86-64; another machine's own,
+        // fourteen at most): 0 while no frame below has saved it, and then
+        // the register itself still holds its value -- which the collector's
+        // own entry saved (GcRoots.Enter) or no frame between has touched.
+        // One word each, by name: nothing here may allocate, and a thread
+        // reads its own stack while others read theirs.
+        nuint saved0 = 0;
+        nuint saved1 = 0;
+        nuint saved2 = 0;
+        nuint saved3 = 0;
+        nuint saved4 = 0;
+        nuint saved5 = 0;
+        nuint saved6 = 0;
+        nuint saved7 = 0;
+        nuint saved8 = 0;
+        nuint saved9 = 0;
+        nuint saved10 = 0;
+        nuint saved11 = 0;
+        nuint saved12 = 0;
+        nuint saved13 = 0;
         nuint at = 0;
         nuint start = from;
         nuint below = 0;
@@ -1784,25 +1840,52 @@ public static class Gc
             {
                 // Its live registers at the call it is in: where the frames
                 // under it saved them.
-                if ((regs & LiveEbx) != 0 && atEbx != 0) at = KeepWord(Sys.ReadAddress(atEbx), copy, at);
-                if ((regs & LiveEsi) != 0 && atEsi != 0) at = KeepWord(Sys.ReadAddress(atEsi), copy, at);
-                if ((regs & LiveEdi) != 0 && atEdi != 0) at = KeepWord(Sys.ReadAddress(atEdi), copy, at);
-                // Its own saves: the values of the frames outside it.
+                if ((regs & 1) != 0 && saved0 != 0) at = KeepWord(Sys.ReadAddress(saved0), copy, at);
+                if ((regs & 2) != 0 && saved1 != 0) at = KeepWord(Sys.ReadAddress(saved1), copy, at);
+                if ((regs & 4) != 0 && saved2 != 0) at = KeepWord(Sys.ReadAddress(saved2), copy, at);
+                if ((regs & 8) != 0 && saved3 != 0) at = KeepWord(Sys.ReadAddress(saved3), copy, at);
+                if ((regs & 16) != 0 && saved4 != 0) at = KeepWord(Sys.ReadAddress(saved4), copy, at);
+                if ((regs & 32) != 0 && saved5 != 0) at = KeepWord(Sys.ReadAddress(saved5), copy, at);
+                if ((regs & 64) != 0 && saved6 != 0) at = KeepWord(Sys.ReadAddress(saved6), copy, at);
+                if ((regs & 128) != 0 && saved7 != 0) at = KeepWord(Sys.ReadAddress(saved7), copy, at);
+                if ((regs & 256) != 0 && saved8 != 0) at = KeepWord(Sys.ReadAddress(saved8), copy, at);
+                if ((regs & 512) != 0 && saved9 != 0) at = KeepWord(Sys.ReadAddress(saved9), copy, at);
+                if ((regs & 1024) != 0 && saved10 != 0) at = KeepWord(Sys.ReadAddress(saved10), copy, at);
+                if ((regs & 2048) != 0 && saved11 != 0) at = KeepWord(Sys.ReadAddress(saved11), copy, at);
+                if ((regs & 4096) != 0 && saved12 != 0) at = KeepWord(Sys.ReadAddress(saved12), copy, at);
+                if ((regs & 8192) != 0 && saved13 != 0) at = KeepWord(Sys.ReadAddress(saved13), copy, at);
+                // Its own saves: the values of the frames outside it. The
+                // k-th register it saves lies one word under the one before,
+                // from the bottom of its locals down, in the tables' order.
                 nuint slot = frame - frameSize;
-                if ((regs & (LiveEbx << 16)) != 0) { slot = slot - w; atEbx = slot; }
-                if ((regs & (LiveEsi << 16)) != 0) { slot = slot - w; atEsi = slot; }
-                if ((regs & (LiveEdi << 16)) != 0) { slot = slot - w; atEdi = slot; }
+                if ((regs & 65536) != 0) { slot = slot - w; saved0 = slot; }
+                if ((regs & 131072) != 0) { slot = slot - w; saved1 = slot; }
+                if ((regs & 262144) != 0) { slot = slot - w; saved2 = slot; }
+                if ((regs & 524288) != 0) { slot = slot - w; saved3 = slot; }
+                if ((regs & 1048576) != 0) { slot = slot - w; saved4 = slot; }
+                if ((regs & 2097152) != 0) { slot = slot - w; saved5 = slot; }
+                if ((regs & 4194304) != 0) { slot = slot - w; saved6 = slot; }
+                if ((regs & 8388608) != 0) { slot = slot - w; saved7 = slot; }
+                if ((regs & 16777216) != 0) { slot = slot - w; saved8 = slot; }
+                if ((regs & 33554432) != 0) { slot = slot - w; saved9 = slot; }
+                if ((regs & 67108864) != 0) { slot = slot - w; saved10 = slot; }
+                if ((regs & 134217728) != 0) { slot = slot - w; saved11 = slot; }
+                if ((regs & 268435456) != 0) { slot = slot - w; saved12 = slot; }
+                if ((regs & 536870912) != 0) { slot = slot - w; saved13 = slot; }
                 // The arguments it is pushing, under its saved registers --
                 // READ WHOLE, never by an argument count: a safepoint call
                 // that keeps the registers (the compiler's MOp.CallSafe, a
-                // loop's back-edge poll) pushes EAX, ECX and EDX here, and a
-                // reference held only in one of them is found nowhere else.
+                // loop's back-edge poll) pushes the caller-saved ones here,
+                // and a reference held only in one of them is found nowhere
+                // else.
                 nuint lowest = start > from ? start : from;
                 if (slot > lowest)
                 {
                     at = KeepRange(lowest, slot < to ? slot : to, 0, 0, 0, copy, at);
                 }
-                // Its spill slots live at the call, and its IR frame slots.
+                // Its spill slots live at the call, and its IR frame slots
+                // (both in the call's own map where the compiler knew their
+                // liveness; the function's list then names none).
                 at = KeepMap(frame, table, slots, from, copy, at);
                 at = KeepMap(frame, table, objects, from, copy, at);
             }
@@ -1811,10 +1894,20 @@ public static class Gc
                 // Read whole: its saved registers among its words.
                 if (known)
                 {
-                    nuint regsAll = regs;
-                    if ((regsAll & LiveEbx) != 0 && atEbx != 0) at = KeepWord(Sys.ReadAddress(atEbx), copy, at);
-                    if ((regsAll & LiveEsi) != 0 && atEsi != 0) at = KeepWord(Sys.ReadAddress(atEsi), copy, at);
-                    if ((regsAll & LiveEdi) != 0 && atEdi != 0) at = KeepWord(Sys.ReadAddress(atEdi), copy, at);
+                    if ((regs & 1) != 0 && saved0 != 0) at = KeepWord(Sys.ReadAddress(saved0), copy, at);
+                    if ((regs & 2) != 0 && saved1 != 0) at = KeepWord(Sys.ReadAddress(saved1), copy, at);
+                    if ((regs & 4) != 0 && saved2 != 0) at = KeepWord(Sys.ReadAddress(saved2), copy, at);
+                    if ((regs & 8) != 0 && saved3 != 0) at = KeepWord(Sys.ReadAddress(saved3), copy, at);
+                    if ((regs & 16) != 0 && saved4 != 0) at = KeepWord(Sys.ReadAddress(saved4), copy, at);
+                    if ((regs & 32) != 0 && saved5 != 0) at = KeepWord(Sys.ReadAddress(saved5), copy, at);
+                    if ((regs & 64) != 0 && saved6 != 0) at = KeepWord(Sys.ReadAddress(saved6), copy, at);
+                    if ((regs & 128) != 0 && saved7 != 0) at = KeepWord(Sys.ReadAddress(saved7), copy, at);
+                    if ((regs & 256) != 0 && saved8 != 0) at = KeepWord(Sys.ReadAddress(saved8), copy, at);
+                    if ((regs & 512) != 0 && saved9 != 0) at = KeepWord(Sys.ReadAddress(saved9), copy, at);
+                    if ((regs & 1024) != 0 && saved10 != 0) at = KeepWord(Sys.ReadAddress(saved10), copy, at);
+                    if ((regs & 2048) != 0 && saved11 != 0) at = KeepWord(Sys.ReadAddress(saved11), copy, at);
+                    if ((regs & 4096) != 0 && saved12 != 0) at = KeepWord(Sys.ReadAddress(saved12), copy, at);
+                    if ((regs & 8192) != 0 && saved13 != 0) at = KeepWord(Sys.ReadAddress(saved13), copy, at);
                 }
                 else
                 {
@@ -1825,13 +1918,35 @@ public static class Gc
                     // the callback, whose saves are below the words read
                     // whole. Forgotten here, a reference held only in ESI
                     // across qsort was freed while qsort ran.
-                    if (atEbx != 0) at = KeepWord(Sys.ReadAddress(atEbx), copy, at);
-                    if (atEsi != 0) at = KeepWord(Sys.ReadAddress(atEsi), copy, at);
-                    if (atEdi != 0) at = KeepWord(Sys.ReadAddress(atEdi), copy, at);
+                    if (saved0 != 0) at = KeepWord(Sys.ReadAddress(saved0), copy, at);
+                    if (saved1 != 0) at = KeepWord(Sys.ReadAddress(saved1), copy, at);
+                    if (saved2 != 0) at = KeepWord(Sys.ReadAddress(saved2), copy, at);
+                    if (saved3 != 0) at = KeepWord(Sys.ReadAddress(saved3), copy, at);
+                    if (saved4 != 0) at = KeepWord(Sys.ReadAddress(saved4), copy, at);
+                    if (saved5 != 0) at = KeepWord(Sys.ReadAddress(saved5), copy, at);
+                    if (saved6 != 0) at = KeepWord(Sys.ReadAddress(saved6), copy, at);
+                    if (saved7 != 0) at = KeepWord(Sys.ReadAddress(saved7), copy, at);
+                    if (saved8 != 0) at = KeepWord(Sys.ReadAddress(saved8), copy, at);
+                    if (saved9 != 0) at = KeepWord(Sys.ReadAddress(saved9), copy, at);
+                    if (saved10 != 0) at = KeepWord(Sys.ReadAddress(saved10), copy, at);
+                    if (saved11 != 0) at = KeepWord(Sys.ReadAddress(saved11), copy, at);
+                    if (saved12 != 0) at = KeepWord(Sys.ReadAddress(saved12), copy, at);
+                    if (saved13 != 0) at = KeepWord(Sys.ReadAddress(saved13), copy, at);
                 }
-                atEbx = 0;
-                atEsi = 0;
-                atEdi = 0;
+                saved0 = 0;
+                saved1 = 0;
+                saved2 = 0;
+                saved3 = 0;
+                saved4 = 0;
+                saved5 = 0;
+                saved6 = 0;
+                saved7 = 0;
+                saved8 = 0;
+                saved9 = 0;
+                saved10 = 0;
+                saved11 = 0;
+                saved12 = 0;
+                saved13 = 0;
                 if (end > start && end > from)
                 {
                     at = KeepRange(start > from ? start : from, end < to ? end : to, 0, 0, 0, copy, at);
@@ -1855,22 +1970,6 @@ public static class Gc
         }
         return at;
     }
-#else
-    /// No stack maps on x86-64 (BuildMaps is i386's): nothing to rebuild.
-    public static void MapsChanged()
-    {
-    }
-
-    public static bool PreciseRegisters()
-    {
-        return false;
-    }
-
-    public static nuint ScanOwnStack(nuint from, nuint to, nuint copy)
-    {
-        return 0;
-    }
-#endif
 
     // WHICH ROOT HOLDS WHAT (the census, a whole cycle): each root word marked
     // and the queue drained before the next, so the bytes a word newly marks
@@ -8383,6 +8482,8 @@ public static class Gc
         if (!_ready || !(StatsAsked || Platform.GcStats())) return;
         SayNumber("gc: collections ", Collections);
         SayNumber("gc: minor ", MinorCollections);
+        SayNumber("gc: stack words read whole ", StackWords);
+        SayNumber("gc: stack words read by the maps ", MapWords);
         SayNumber("gc: major ", MajorCollections);
         SayNumber("gc: majors grown ", MajorsGrown);
         SayNumber("gc: majors costly ", MajorsCostly);
@@ -11308,6 +11409,50 @@ public static class Gc
     static long _nurseryFixed;      // System.GC.Gen0Size, or 0
     static nuint _censusAt;
 
+    /// THE STACK BELOW WHERE THE CALLER STANDS, CLEARED (AppContext.SetSwitch(
+    /// "Corsac.GC.ScrubStack", true)): what finished calls left there.
+    ///
+    /// A frame's IR slots are read as they are (ScanOwnStack), written yet
+    /// or not, and a call made after a deep one has returned lays its frame
+    /// over what that one left: a slot it has not reached still holds the
+    /// old word, and whatever that pointed at is kept. The compiler's driver
+    /// called its front end, twenty megabytes deep in the binder's
+    /// recursion, and then ran every later phase on top of those frames: an
+    /// array of method symbols in a slot of the driver's own frame kept the
+    /// whole front end of a unit -- 265 MB of it through the NEXT unit, 900
+    /// through its own code generation -- where .NET, which reads no dead
+    /// slot, held a fifth. Called where such a structure has just died (the
+    /// front end let go, a unit ended), before anything is laid over it.
+    ///
+    /// Downward from under this frame until sixteen pages in a row hold
+    /// nothing: pages never reached read as zeros and are not written, so
+    /// nothing is committed by clearing, and a stack's guard is never met
+    /// short of a depth that had all but overflowed it. A signal taken
+    /// meanwhile runs on what is being cleared and is done before the next
+    /// word is.
+    public static void ScrubStack()
+    {
+        const int w = WordSize.Bytes;
+        const int quiet = 16 * 4096;
+        // Under its own frame and whatever its code keeps just below the
+        // stack pointer (long mode's red zone).
+        nuint at = (Sys.Stack() - 512) & ~(nuint)(w - 1);
+        nuint clean = 0;
+        while (clean < quiet)
+        {
+            at = at - w;
+            if (Sys.ReadAddress(at) == 0)
+            {
+                clean = clean + w;
+            }
+            else
+            {
+                Sys.WriteAddress(at, 0);
+                clean = 0;
+            }
+        }
+    }
+
     /// The census asked for after start (AppContext.SetSwitch("Corsac.GC.Census", true):
     /// corc's --gc-census): every whole collection counts what it found live, as the
     /// image's Corsac.GC.Census knob does from the first.
@@ -13694,12 +13839,10 @@ public static class Gc
         {
             WalkAtStart();
         }
-#if !TARGET_64BIT
         if (!_mapsBuilt)
         {
             BuildMaps();
         }
-#endif
 
         // An indirect call answers a word, so the clock is read modulo 2^32
         // microseconds; the difference of two is exact for any collection

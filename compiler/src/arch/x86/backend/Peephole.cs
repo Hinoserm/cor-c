@@ -1,4 +1,6 @@
 #nullable enable
+using Corsac.Lang.Frames;
+
 namespace Corsac.Lang.X86;
 
 /// <summary>

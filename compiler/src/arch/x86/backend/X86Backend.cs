@@ -1,6 +1,7 @@
 #nullable enable
 using System.Text;
 using System.Threading.Tasks;
+using Corsac.Lang.Frames;
 using Corsac.Lang.Ir;
 using Corsac.Lang.Lto;
 
@@ -614,17 +615,14 @@ public sealed class X86Backend : IBackend
                     {
                         if (m.Frame.Size > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
                         if (mapBase is null) { mapBase = bodyName; mapBaseAt = start; }
-                        record = new StackMapTable.Function
-                        {
-                            Start = start - mapBaseAt, FrameSize = m.Frame.Size, Saved = SavedMask(m), Objects = StackMapTable.Words(ObjectWords(m)),
-                        };
+                        // Its IR frame slots are in each call's own map where
+                        // their liveness is known (FrameSlotLiveness), and
+                        // read whole at every call where it is not.
+                        record = StackMapRecords.Function(StackMapLayout.I386, start - mapBaseAt, m.Frame.Size, SavedMask(m), ObjectWords(m), m.SlotLiveness);
                         mapFunctions.Add(record);
                     }
                     if (ret > 0x7FFFFF) throw new InvalidOperationException("a function over 8 MB has no stack map");
-                    Safepoint? map = m.Safepoints.GetValueOrDefault(call);
-                    // No live spill slot is one shared empty list of words.
-                    record.Sites.Add(new StackMapTable.Site(ret, map is null, map?.Registers ?? 0,
-                        map is null || map.SlotOffsets.Count == 0 ? Array.Empty<int>() : StackMapTable.Words(map.SlotOffsets)));
+                    record.Sites.Add(StackMapRecords.Site(StackMapLayout.I386, call, ret, m.Safepoints.GetValueOrDefault(call), ObjectWords(m), m.SlotLiveness));
                 }
             }
 
@@ -1134,6 +1132,10 @@ public sealed class X86Backend : IBackend
             AlignedSlots.Run(m);
             FrameCompact.Run(m);
             FramePointerFree.Run(m);
+            // Last, over the code as it will be encoded: which IR frame slot
+            // words each call's map names (FrameSlotLiveness), and the
+            // zeroing of those a call may find unwritten.
+            if (StackMaps) m.SlotLiveness = FrameSlotLiveness.Measured(m);
         }
         catch (InvalidOperationException e)
         {

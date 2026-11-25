@@ -139,9 +139,21 @@ target's conditional symbol. The driver defines .NET CoreLib's names:
 `Sys.AtomicAdd` work on are `nint`, since those are word operations; an
 `int` takes `Sys.Cas32`, `Sys.AtomicSwap32` and `Sys.AtomicAdd32`, which are
 four bytes on either target (Interlocked's int forms). In long mode the
-collector's region filter is two-level over the 47-bit user space, and it
-reads every stack whole, each word a possible reference, so a long-mode
-object carries no stack maps (`.corsac.stackmaps`) at all.
+collector's region filter is two-level over the 47-bit user space.
+
+A long-mode object carries its stack maps (`.corsac.stackmaps`) as an i386
+one does: the same table (`StackMapTable` in the linker's object model), in
+this target's layout (`StackMapLayout.X64`: eight-byte words; RBX, R12, R13,
+R14 and R15, in the order the prologue saves them; version 1, whose header
+says so and holds the base as a distance from its own word). At each call
+the map names the spill slots and callee-saved registers holding live
+references (the shared allocator's `IPlacement.LiveAcross`) and the IR
+frame slot words live or exposed there (`Frames.FrameSlotLiveness`, shared
+with i386, with the words a call could find unwritten zeroed after the
+prologue). The collector reads a stack by them on both targets
+(`Gc.ScanOwnStack`): one reader, a word `WordSize.Bytes` wide and the
+registers by the bit the table packs each at. A function that gives RBP a
+value (a leaf) has no map; a frame no map describes is read whole.
 The heap's table of the chunk at every 4 KB (`HeapChunks.SlotTable`), which
 on i386 covers all four gigabytes, covers a 64 GiB window in long mode, placed
 by the first chunk the heap maps (`HeapChunks.SlotLow`); a free or a lookup

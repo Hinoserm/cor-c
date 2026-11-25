@@ -246,7 +246,9 @@ public static class ProjectCompile
         {
             ForgetUnit();
             try { return OneUnit(unit); }
-            finally { ForgetUnit(); }
+            // And what the unit made, dead now, collected before the next
+            // unit builds on top of it (Driver.LetGo).
+            finally { ForgetUnit(); Driver.LetGo(); }
         }
 
         int OneUnit(Unit unit)
@@ -642,6 +644,7 @@ public static class ProjectCompile
             }
         }
         int threads = Math.Min(limit, rest.Length);
+        Driver.UnitsAtOnce = Math.Max(1, threads);
         // UNITS IN WORKER PROCESSES WHERE A BUDGET IS GIVEN: each its own heap,
         // so no unit's collection stops the others. Threads in one process
         // share one heap and every collection stops all of them: a module of

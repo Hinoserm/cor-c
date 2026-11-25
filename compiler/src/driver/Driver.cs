@@ -719,6 +719,40 @@ public static class Driver
     /// everything the front end makes is dead when it returns.
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    /// <summary>
+    /// A WHOLE COLLECTION WHERE A UNIT'S LARGEST STRUCTURE HAS JUST DIED: the
+    /// front end's trees once the module is lowered, and everything a unit
+    /// made once it is written. The native collector runs a whole collection
+    /// only when the heap has grown by its live size again; after lowering it
+    /// stops growing, minor collections never look at old objects, and the
+    /// dead trees were carried -- and counted as live, the nursery and the
+    /// page pool sized by them -- through every later phase: the binder's own
+    /// unit ran its code generation with 1034 MiB "live" where .NET, which
+    /// collects its old generation by its own budget, held 193, and three
+    /// gigabytes resident. Between units the same: a 32-bit child was spent
+    /// after a few. Only for a heap large enough that the collection is
+    /// worth its mark of what is left; a small unit's dies soon enough.
+    /// </summary>
+    internal static void LetGo()
+    {
+        // Not beside other units' threads in one heap: it would stop them
+        // all for a mark of what they hold, once a unit.
+        // WHAT THE FINISHED CALLS LEFT ON THE STACK FIRST (Gc.ScrubStack): the
+        // native collector reads a frame's slots written or not, and one laid
+        // over the front end's dead frames kept all of it reachable -- the
+        // collection alone gave nothing back, and cost its mark. A switch .NET
+        // only stores; this thread's stack, whoever else is compiling.
+        AppContext.SetSwitch("Corsac.GC.ScrubStack", true);
+        if (UnitsAtOnce > 1 || GC.GetTotalMemory(false) < LetGoAbove) return;
+        GC.Collect(2, GCCollectionMode.Forced, true);
+    }
+
+    /// <summary>How many units this process compiles at once in its one heap (ProjectCompile says; a plain compile is one).</summary>
+    internal static int UnitsAtOnce = 1;
+
+    /// <summary>The heap below which a unit's dead structures are left to the collector's own pace (LetGo).</summary>
+    private const long LetGoAbove = 96L * 1024 * 1024;
+
     private static UnitFront? FrontToModule(List<string> files, string name, bool library, List<string> libraryMark, List<string> symbols,
         List<string> references, int workers, IndexedDeclarations? declarations, Action<string> phase, List<string> classLibrary)
     {
@@ -1335,6 +1369,8 @@ public static class Driver
         {
             return 1;
         }
+        // AND COLLECTED NOW, where it died (LetGo).
+        LetGo();
         if (checkOnly)
         {
             return 0;
@@ -1754,6 +1790,8 @@ public static class Driver
             Workers = workers,
             EmitLinkSummary = x86Backend.EmitLinkSummary,
             SafepointPolls = x86Backend.SafepointPolls,
+            // As i386's: a program found to need no collector carries no stack maps.
+            StackMaps = x86Backend.StackMaps,
             CountSpills = countSpills,
             SpillMap = Value(args, "--count-spills-map"),
         };
@@ -1806,6 +1844,8 @@ public static class Driver
         ObjectFile obj = backend.Generate(module, backendErrors);
         if (preinitRecords is not null) PreinitMachine.Remember(obj, preinitRecords);
         Phase("codegen");
+        if (Switches.ReportPhases)
+            Console.Error.WriteLine("phase " + (backend == x86Backend ? Corsac.Lang.X86.FrameSlotLiveness.Stats() : Corsac.Lang.X64.FrameSlotLiveness.Stats()));
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(windows ? TargetContract.WindowsTlsSlot : freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode,
             storeSequences: module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore)).Attach(obj);

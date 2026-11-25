@@ -4250,7 +4250,7 @@ public static partial class Runtime
     /// in long mode the distance from the word to it, signed, so a shared
     /// object loaded anywhere in 64-bit space needs no loader relocation to
     /// describe its own code. Zero is none either way.
-    static nuint TableAddress(nuint at) {
+    public static nuint TableAddress(nuint at) {
         uint held = Sys.Read32(at);
 #if TARGET_64BIT
         if (held == 0) { return 0; }
