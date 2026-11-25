@@ -1,0 +1,77 @@
+// test: a_conditional_weak_table_shared_by_threads_at_once
+// expect-exit: 0
+// expect-output:
+// one value a key: True
+// held 1333, wrong 0
+// walked all: True
+// False
+// 0
+//
+// A CONDITIONALWEAKTABLE SHARED BY THREADS AT ONCE, as .NET's may be: four
+// threads asking GetValue for the same keys get one value a key, the first
+// kept; adds, updates and removes from every thread leave exactly what
+// they say; a walk while the table changes finishes, with or without the
+// entry removed during it (either, as .NET's documents). The compiler's
+// function workers shared one so (LoopLoads' budget, a native stage's
+// IndexOutOfRangeException in the dictionary underneath). Checked against
+// .NET 10.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Threading;
+sealed class Key { public readonly int N; public Key(int n) { N = n; } }
+sealed class Box { public int Value; public Box(int v) { Value = v; } }
+static class P
+{
+    const int Threads = 4, Keys = 2000;
+    static void Main()
+    {
+        var table = new ConditionalWeakTable<Key, Box>();
+        var keys = new Key[Keys];
+        for (int i = 0; i < Keys; i++) keys[i] = new Key(i);
+        // Every thread asks for every key at once: one value a key, the
+        // first kept, whichever thread made it.
+        var seen = new Box[Threads][];
+        var workers = new Thread[Threads];
+        for (int t = 0; t < Threads; t++)
+        {
+            int me = t;
+            seen[me] = new Box[Keys];
+            workers[t] = new Thread(() =>
+            {
+                for (int i = 0; i < Keys; i++) seen[me][(i * 7 + me * 13) % Keys] = table.GetValue(keys[(i * 7 + me * 13) % Keys], k => new Box(k.N));
+            });
+        }
+        foreach (var w in workers) w.Start();
+        foreach (var w in workers) w.Join();
+        int differing = 0;
+        for (int i = 0; i < Keys; i++)
+            for (int t = 1; t < Threads; t++)
+                if (!ReferenceEquals(seen[0][i], seen[t][i])) differing++;
+        Console.WriteLine($"one value a key: {differing == 0}");
+        // Adds, updates and removes from every thread, each to its own keys.
+        for (int t = 0; t < Threads; t++)
+        {
+            int me = t;
+            workers[t] = new Thread(() =>
+            {
+                for (int i = me; i < Keys; i += Threads)
+                {
+                    table.AddOrUpdate(keys[i], new Box(-i));
+                    if (i % 3 == 0) table.Remove(keys[i]);
+                }
+            });
+        }
+        foreach (var w in workers) w.Start();
+        foreach (var w in workers) w.Join();
+        int held = 0, wrong = 0;
+        foreach (var pair in table) { held++; if (pair.Value.Value != -pair.Key.N || pair.Key.N % 3 == 0) wrong++; }
+        Console.WriteLine($"held {held}, wrong {wrong}");
+        // A walk while the table changes: no fault, and it finishes.
+        int walked = 0;
+        foreach (var pair in table) { walked++; if (walked == 10) table.Remove(keys[1]); table.AddOrUpdate(keys[0], new Box(0)); }
+        Console.WriteLine($"walked all: {walked == held || walked == held - 1}");
+        Console.WriteLine(table.TryGetValue(keys[1], out _));
+        Console.WriteLine(table.TryGetValue(keys[0], out Box zero) ? zero.Value : -1);
+    }
+}

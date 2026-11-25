@@ -55,17 +55,14 @@ public sealed class LoopLoads : IPass
     private static int Budget => Target.Current.WordSize == 8 ? 8 : 4;
 
     /// <summary>
-    /// THE READS EACH LOOP'S WAY IN HOLDS ALREADY, by the block they were
-    /// moved to, over every round of this pass and every run of it the
-    /// pipeline makes: the budget is a loop's, not a round's (a header of
-    /// twelve reads was moved four at a time, three rounds).
+    /// THE READS A LOOP'S WAY IN HOLDS ALREADY, by the block they were moved
+    /// to (Block.LoopReadsHeld), over every round of this pass and every run
+    /// of it the pipeline makes on the function: the budget is a loop's, not
+    /// a round's (a header of twelve reads was moved four at a time, three
+    /// rounds). On the block, not in a table: the function workers run this
+    /// pass on many functions at once.
     /// </summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Block, System.Runtime.CompilerServices.StrongBox<int>> Held = new();
-
-    private static System.Runtime.CompilerServices.StrongBox<int> HeldBy(Block way) => Held.GetValue(way, _ => new(0));
-
-    /// <summary>The reads a way in holds, with no entry made for one that holds none.</summary>
-    private static int HeldAt(Block way) => Held.TryGetValue(way, out var held) ? held.Value : 0;
+    private static int HeldAt(Block way) => way.LoopReadsHeld;
 
     public void Run(Function function)
     {
@@ -150,7 +147,7 @@ public sealed class LoopLoads : IPass
                 first.Instrs.RemoveAt(k--);
                 into.Instrs.Insert(into.Instrs.Count - 1, i);
                 if (i.Dest!.Id < sites.Length) sites[i.Dest.Id] = into;
-                HeldBy(into).Value = ++held;
+                into.LoopReadsHeld = ++held;
                 moved = true;
                 continue;
             }
@@ -232,7 +229,7 @@ public sealed class LoopLoads : IPass
         if (!any) return false;
         Block way = function.NewBlock(body.Label + ".in");
         // One budget for the loop: what its first way in holds already counts.
-        if (HeldAt(preheader) is > 0 and var already) HeldBy(way).Value = already;
+        if (HeldAt(preheader) is > 0 and var already) way.LoopReadsHeld = already;
         Instr jump = new() { Op = Opcode.Jump, Line = branch.Line };
         jump.SetTargets(new[] { body });
         way.Instrs.Add(jump);

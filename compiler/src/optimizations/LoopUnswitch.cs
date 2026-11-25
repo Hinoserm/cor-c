@@ -64,13 +64,12 @@ public sealed class LoopUnswitch : IPass
             if (!Once(function, ref copies)) break;
     }
 
-    /// <summary>
-    /// THE LOOPS ALREADY COPIED, the copy's header and the loop's own, in
-    /// any run of this pass over the function (the pipeline runs it each
-    /// round): one copy a loop, never a loop's copy copied again -- a loop
-    /// with three invariant tests would otherwise be eight.
-    /// </summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Block, object> Copied = new();
+    // THE LOOPS ALREADY COPIED, the copy's header and the loop's own, in
+    // any run of this pass over the function (the pipeline runs it each
+    // round), are marked on the header (Block.Unswitched), not in a table
+    // the function workers share: one copy a loop, never a loop's copy
+    // copied again -- a loop with three invariant tests would otherwise be
+    // eight.
 
     /// <summary>The copy budget in instructions: a share of the instruction cache, as LoopUnswitch's summary says, in either mode (the long-mode profile has its cache too).</summary>
     private int CopyBudget()
@@ -118,7 +117,7 @@ public sealed class LoopUnswitch : IPass
                 bool trivial = TrivialWay(cfg, loop, header, b, branch);
                 int size = 0;
                 foreach (Block inLoop in loop) size += inLoop.Instrs.Count;
-                if (!trivial && (copies >= 2 || size > CopyBudget() || Copied.TryGetValue(header, out _))) continue;
+                if (!trivial && (copies >= 2 || size > CopyBudget() || header.Unswitched)) continue;
                 Block entry = Entry(function, preheader, header);
                 if (trivial) Trivial(loop, header, entry, b, branch);
                 else { Copy(function, loop, header, entry, b, branch); copies++; }
@@ -272,8 +271,8 @@ public sealed class LoopUnswitch : IPass
         Instr toFalse = new() { Op = Opcode.Jump, Line = branch.Line };
         toFalse.SetTargets(new[] { whenFalse });
         b.Instrs[b.Instrs.Count - 1] = toFalse;
-        Copied.AddOrUpdate(header, header);
-        Copied.AddOrUpdate(copy[header], header);
+        header.Unswitched = true;
+        copy[header].Unswitched = true;
         // The way in decides once.
         Instr test = new() { Op = Opcode.Branch, Line = branch.Line };
         test.Operands.Add(branch.Operands[0]);

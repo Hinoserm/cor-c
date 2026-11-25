@@ -69,6 +69,29 @@ public sealed class Block
         set => _orderAndFlags = (_orderAndFlags & ~OrderMask) | (value & OrderMask);
     }
 
+    /// <summary>
+    /// The reads LoopLoads moved into this block, a loop's way in, over every
+    /// round and run of it on this function: the loop's budget. Kept on the
+    /// block, not in a table the function workers share, and gone with it.
+    /// Never copied with the block: a copy is a way in to no loop yet.
+    /// </summary>
+    public int LoopReadsHeld
+    {
+        get => _rare?.LoopReadsHeld ?? 0;
+        set { if (value != 0) (_rare ??= new()).LoopReadsHeld = value; else if (_rare is not null) _rare.LoopReadsHeld = 0; }
+    }
+
+    /// <summary>
+    /// A loop header LoopUnswitch has copied, or the copy it made: never
+    /// copied again for a test that is not trivial. Kept on the block, as
+    /// LoopReadsHeld, and not copied with it.
+    /// </summary>
+    public bool Unswitched
+    {
+        get => _rare?.Unswitched ?? false;
+        set { if (value) (_rare ??= new()).Unswitched = true; else if (_rare is not null) _rare.Unswitched = false; }
+    }
+
     internal Block(string label) => Label = label;
 
     public Instr? Terminator => Instrs.Count > 0 && Instrs[^1].IsTerminator ? Instrs[^1] : null;
@@ -96,8 +119,10 @@ public sealed class Block
     public override string ToString() => Label;
 }
 
-/// <summary>What few blocks carry (Block): a region loop's bytes a lap.</summary>
+/// <summary>What few blocks carry (Block): a region loop's bytes a lap, the reads a loop's way in holds, a loop header unswitched.</summary>
 internal sealed class BlockRare
 {
     public long RegionLoopBytes;
+    public int LoopReadsHeld;
+    public bool Unswitched;
 }
