@@ -55,6 +55,57 @@ public static class X86FamilyTests
         {
             X86Mode.Long = was;
         }
+        DeviceLoadKept();
+    }
+
+    /// <summary>
+    /// A DEVICE LOAD STAYS ONE THROUGH LONG MODE'S ALLOCATOR AND PEEPHOLE: a
+    /// word stored to an address and read back from it marked as device
+    /// memory -- the read that flushes a posted write -- is still a load of
+    /// that address, still marked, where the allocator once rebuilt the
+    /// operand without its mark and the peephole then took the load for the
+    /// register just stored.
+    /// </summary>
+    private static void DeviceLoadKept()
+    {
+        bool was = X86Mode.Long;
+        X86Mode.Long = true;
+        try
+        {
+            foreach (bool device in new[] { true, false })
+            {
+                MFunction m = new(new Function(device ? "device-read-back" : "memory-read-back", IrType.I64));
+                MBlock b = m.NewBlock("entry");
+                MReg p = m.NewReg(), v = m.NewReg(), r = m.NewReg();
+                MMem read = new(p, 0);
+                b.Instrs.AddRange(new[]
+                {
+                    new MInstr(MOp.Prologue),
+                    new MInstr(MOp.Mov, p, MReg.Of(Gpr.Rdi)) { Width = 8 },
+                    new MInstr(MOp.Mov, v, MReg.Of(Gpr.Rsi)) { Width = 8 },
+                    new MInstr(MOp.Mov, new MMem(p, 0), v) { Width = 8 },
+                    new MInstr(MOp.Mov, r, device ? read.AsDevice() : read) { Width = 8 },
+                    new MInstr(MOp.Mov, MReg.Of(Gpr.Rax), r) { Width = 8 },
+                    new MInstr(MOp.Epilogue),
+                    new MInstr(MOp.Ret),
+                });
+                Corsac.Lang.X64.Allocator.Run(m);
+                Peephole.Run(m);
+                bool loads = false;
+                foreach (MBlock block in m.Blocks)
+                    foreach (MInstr i in block.Instrs)
+                        if (i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MMem { Device: true }) loads = true;
+                // The plain read-back is what the peephole may forward: the
+                // case that shows the device one is kept by its mark, not by chance.
+                Expect(loads == device, device ? "long mode: a device load read back after a store to its address is still a marked load"
+                    : "long mode: a plain load read back carries no device mark");
+            }
+            Console.WriteLine("x86 family: a device load keeps its mark, and stays a load, through long mode's allocator and peephole");
+        }
+        finally
+        {
+            X86Mode.Long = was;
+        }
     }
 
     // ---- the frame slots' liveness, over machine code made by hand -----------------
