@@ -76,16 +76,21 @@ internal static class Peephole
             InvertJumpAroundJump(block.Instrs, next);
         }
         CopyBackAcrossJoin(m);
-        // A WAY THAT IS ANOTHER'S ONLY WAY IN, made one block; then a value
-        // copied twice copied once, in every block (ForwardCopies), with the
-        // registers' liveness read again for both.
+        // A WAY THAT IS ANOTHER'S ONLY WAY IN, made one block.
         MergeSoleJumps(m);
-        // A store at the end of one block and its reload at the start of the
-        // one merged into it are now side by side: the reload goes
-        // (ForwardStoreLoad), and the store with it when nothing else reads
-        // the slot (DeadSpillStores).
-        foreach (MBlock block in m.Blocks) ForwardStoreLoad(block.Instrs);
+        // A store or load at the end of one block and a reload of the slot
+        // near the start of the one merged into it are now in one block: the
+        // reload goes or reads the register (ForwardStoreLoad,
+        // ForwardSpillLoads), and a store goes with it when nothing else
+        // reads the slot (DeadSpillStores).
+        foreach (MBlock block in m.Blocks)
+        {
+            ForwardStoreLoad(block.Instrs);
+            ForwardSpillLoads(block.Instrs);
+        }
         DeadSpillStores(m);
+        // Then a value copied twice copied once, in every block
+        // (ForwardCopies), with the registers' liveness read again for both.
         {
             int[] outs = LiveOut(m, out int[] ins);
             Dictionary<MBlock, int> where = new(ReferenceEqualityComparer.Instance);
@@ -1027,7 +1032,7 @@ internal static class Peephole
             }
             else
             {
-                instrs[k + 1] = new MInstr(MOp.Mov, MReg.Of(lr.Id), MReg.Of(sr.Id));
+                instrs[k + 1] = new MInstr(MOp.Mov, MReg.Of(lr.Id), MReg.Of(sr.Id)) { Line = load.Line };
             }
         }
     }
