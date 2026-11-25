@@ -96,7 +96,11 @@ public static class VirtualTargets
 
     /// <summary>Whether any object may answer `declaring` outside its tables (MayAnswer's interfaces, whatever the descriptor).</summary>
     public static bool AnsweredOutsideTables(string declaring)
-        => IsBoxedFace(declaring) || IsArrayFace(declaring) || IsInterfaceOf(declaring, "IEnumerator", generic: true);
+    {
+        foreach ((_, Func<string, bool> face) in Kinds)
+            if (face(declaring)) return true;
+        return false;
+    }
 
     /// <summary>
     /// WHETHER AN OBJECT STAMPED WITH A DESCRIPTOR MAY ANSWER AN INTERFACE ITS
@@ -119,9 +123,24 @@ public static class VirtualTargets
     /// arrays and statics needed a collector again (762, 764, 767, 768).
     /// </summary>
     public static bool MayAnswer(string descriptor, string declaring)
-        => (descriptor.StartsWith("b_", StringComparison.Ordinal) || descriptor == "q_string") && IsBoxedFace(declaring)
-        || descriptor.StartsWith("q_array_", StringComparison.Ordinal) && IsArrayFace(declaring)
-        || descriptor.StartsWith("t_ArrayEnumerator$0024", StringComparison.Ordinal) && IsInterfaceOf(declaring, "IEnumerator", generic: true);
+    {
+        // A loop, no closure: asked of every descriptor for every call.
+        foreach ((Func<string, bool> isObject, Func<string, bool> face) in Kinds)
+            if (isObject(descriptor) && face(declaring)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// THE KINDS OF OBJECT THAT ANSWER INTERFACES OUTSIDE THEIR TABLES, each
+    /// with the interfaces it answers so: what MayAnswer and
+    /// AnsweredOutsideTables both read, so a kind added here is both.
+    /// </summary>
+    private static readonly (Func<string, bool> Object, Func<string, bool> Face)[] Kinds =
+    {
+        (d => d.StartsWith("b_", StringComparison.Ordinal) || d == "q_string", IsBoxedFace),
+        (d => d.StartsWith("q_array_", StringComparison.Ordinal), IsArrayFace),
+        (d => d.StartsWith("t_ArrayEnumerator$0024", StringComparison.Ordinal), declaring => IsInterfaceOf(declaring, "IEnumerator", generic: true)),
+    };
 
     /// <summary>
     /// AND AN ARRAY ITS SEQUENCE INTERFACES, which its table names none of
@@ -950,9 +969,8 @@ public static class VirtualTargets
                 : _derived.TryGetValue(declaring, out List<int>? derived) ? derived : Enumerable.Empty<int>();
             // And every type that answers the interface outside its table
             // (MayAnswer): a box and the string their system interfaces, an
-            // array its sequence faces, the array's walker IEnumerator<T>.
-            // Only boxes were asked here: an array was no target of a call
-            // through IList or ICollection, or the call reached nothing.
+            // array its sequence faces, the array's walker IEnumerator<T> --
+            // none of which its ancestry (_derived) lists.
             if (!everyType && AnsweredOutsideTables(declaring))
                 reaching = reaching.Union(Enumerable.Range(0, _descriptors.Count).Where(d => MayAnswer(_descriptors[d].Name, declaring)));
             // A SHARED GENERIC'S FACE -- `i_Func$0024__canon`, through which the

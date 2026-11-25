@@ -84,5 +84,7 @@
     <InternalsVisibleTo Include="x86tests" />
     <!-- The optimizer's tests set a function's parameter classes as lowering would (ParamClassTests). -->
     <InternalsVisibleTo Include="OptTests" />
+    <!-- The metadata tests read the parameter classes lowering keeps (ParamClassLoweringTests). -->
+    <InternalsVisibleTo Include="MetadataTests" />
   </ItemGroup>
 </Project>

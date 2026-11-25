@@ -198,7 +198,8 @@ public sealed class Function
     /// the caller is. Its descriptors' names root first, the class's own
     /// last, as its display lists them, by the parameter's register; set by
     /// lowering for a class parameter of a method that is not shared code
-    /// (Lowering.ParamClass), and read by the type tests' folding
+    /// (Lowering.ParamClass) -- never object, nor System.Array, which every
+    /// array is without naming it -- and read by the type tests' folding
     /// (Devirtualize.FoldParamClassTests): `source is T[]` of a List
     /// parameter is false, `source is List<T>` true once it is not null.
     /// </summary>
