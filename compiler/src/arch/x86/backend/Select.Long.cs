@@ -294,12 +294,6 @@ internal sealed partial class Selector
     {
         switch (i.Op)
         {
-            case Opcode.DivS:
-            case Opcode.DivU:
-            case Opcode.RemS:
-            case Opcode.RemU:
-                SelectDivL(i);
-                break;
             case Opcode.IToF:
                 Emit(new MInstr(MOp.CvtIntToF, V(i.Dest!), RL(i.Operands[0])) { Width = Width(i.Dest!.Type), SourceWidth = Width(i.Operands[0].Type) });
                 break;
@@ -376,37 +370,6 @@ internal sealed partial class Selector
                 MovL(V(d), RL(s), w);
                 break;
         }
-    }
-
-    /// <summary>
-    /// IDIV and DIV, at the width of the operation: RDX:RAX over the operand.
-    /// A zero divisor, and the most negative value over minus one, trap as the
-    /// hardware traps -- which is what the runtime turns into the exception
-    /// C# promises, exactly as on x86.
-    /// </summary>
-    private void SelectDivL(Instr i)
-    {
-        VReg d = i.Dest!;
-        int w = Width(d.Type);
-        bool signed = i.Op is Opcode.DivS or Opcode.RemS;
-        bool rem = i.Op is Opcode.RemS or Opcode.RemU;
-        if (i.Operands[1] is ImmOperand constant && SelectDivByConstant(i, constant.Value, w, signed, rem))
-        {
-            return;
-        }
-        MReg divisor = Temp();
-        MovL(divisor, RML(i.Operands[1], w), w);
-        MovL(Rax, RML(i.Operands[0], w), w);
-        if (signed)
-        {
-            EmitW(MOp.Cwd, w);
-        }
-        else
-        {
-            EmitW(MOp.Xor, 4, Rdx, Rdx);
-        }
-        EmitW(signed ? MOp.Idiv : MOp.Div, w, divisor);
-        MovL(V(d), rem ? Rdx : Rax, w);
     }
 
     /// <summary>

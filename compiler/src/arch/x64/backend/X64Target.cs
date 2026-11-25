@@ -302,7 +302,8 @@ internal sealed class X64Target : ITarget
         for (int k = 0; k < i.Operands.Count; k++)
         {
             if (i.Operands[k] is not MMem m || i.Op == MOp.Lea) continue;
-            if (m.Segment != 0) return Effect.Barrier;
+            // Device memory is read and written when and as often as the source says, in its order.
+            if (m.Segment != 0 || m.Device) return Effect.Barrier;
             Roles.Role role = Roles.Of(i.Op, k);
             if ((role & Roles.Role.Use) != 0) e |= Effect.ReadsMemory;
             if ((role & Roles.Role.Def) != 0) e |= Effect.WritesMemory;
@@ -523,10 +524,11 @@ internal sealed class X64Target : ITarget
                     // A leaf's frame base is named nowhere (LowerInstr): as it is.
                     MReg? baseReg = m.Base is null ? null : _leaf && m.Base.Id == (int)Gpr.Rbp ? m.Base : (MReg)PlaceOf(p.Of(index, k++), m.Base);
                     MReg? indexReg = m.Index is null ? null : (MReg)PlaceOf(p.Of(index, k++), m.Index);
-                    n.Operands.Add(new MMem(baseReg, m.Disp)
-                    {
-                        Index = indexReg, Scale = m.Scale, Symbol = m.Symbol, Got = m.Got, Label = m.Label, IsSpill = m.IsSpill, Segment = m.Segment,
-                    });
+                    // Everything else of the operand as it was (WithRegisters):
+                    // rebuilt field by field, a device load lost its mark here
+                    // and the passes after took it for memory -- a write read
+                    // back from the register that wrote it.
+                    n.Operands.Add(m.WithRegisters(baseReg, indexReg));
                     break;
                 case MLabel l when ai.Targets is { Count: > 0 } jump && i.Op is MOp.Jmp or MOp.Jcc:
                     MBlock to = blocks[jump[0]];

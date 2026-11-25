@@ -71,6 +71,13 @@ public sealed class MMem : MOperand
         Aligned = Aligned, Segment = Segment,
     };
 
+    /// <summary>The same reference, marked as device memory (Device): everything else of it kept, whatever the mode gave it.</summary>
+    public MMem AsDevice() => new(Base, Disp)
+    {
+        Index = Index, Scale = Scale, Symbol = Symbol, Reloc = Reloc, Got = Got, Label = Label, IsSpill = IsSpill, Device = true,
+        Aligned = Aligned, Segment = Segment,
+    };
+
     /// <summary>The same reference, its displacement moved.</summary>
     public MMem WithDisp(int delta) => new(Base, Disp + delta)
     {

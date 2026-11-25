@@ -35,11 +35,7 @@ internal static class Allocator
     {
         static bool PoolLoad(MInstr i) => i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false }
             && i.Operands[1] is MMem { Base: null, Index: null, Symbol: { } pool } && pool.StartsWith(X86Backend.FloatPoolPrefix, StringComparison.Ordinal);
-        bool any = false;
-        foreach (MBlock b in m.Blocks)
-            foreach (MInstr i in b.Instrs)
-                if (PoolLoad(i)) { any = true; break; }
-        if (!any) return;
+        if (!m.Blocks.Any(b => b.Instrs.Any(PoolLoad))) return;
         HashSet<int> read = new();
         foreach (MBlock b in m.Blocks)
             foreach (MInstr i in b.Instrs)

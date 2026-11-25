@@ -1690,7 +1690,7 @@ internal sealed partial class Selector
             or Opcode.LabelAddr or Opcode.StackPointer or Opcode.FramePointer or Opcode.Trunc64 or Opcode.SExt32 or Opcode.ZExt32
             or Opcode.Add or Opcode.Sub or Opcode.And or Opcode.Or or Opcode.Xor or Opcode.Mul or Opcode.Copy
             or (>= Opcode.AtomicSwap and <= Opcode.AtomicCas) or Opcode.FAdd or Opcode.FSub or Opcode.FMul or Opcode.FDiv or Opcode.FNeg
-            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store;
+            or Opcode.FSqrt or (>= Opcode.FEq and <= Opcode.FGe) or Opcode.FConv or Opcode.Bits or Opcode.Load or Opcode.Store or Opcode.DivS or Opcode.DivU or Opcode.RemS or Opcode.RemU;
 
     private void SelectInstr(Instr i)
     {
@@ -2343,6 +2343,7 @@ internal sealed partial class Selector
         // with an index three and a half, the rest one.
         if (X86Mode.Long)
         {
+            // (Nocona's three and a half counted as four: whole clocks, and never a recipe that is not quicker.)
             int lea = CpuModel.IntelCore || CpuModel.LevelAboveBaseline ? 1 : CpuModel.NetBurst ? 4 : 2;
             int imul = CpuModel.NetBurst ? 10 : CpuModel.Core2 && width == 8 ? 5 : CpuModel.IntelCore || CpuModel.LevelAboveBaseline ? 3
                 : width == 8 ? 4 : 3;
@@ -2386,8 +2387,9 @@ internal sealed partial class Selector
                 EmitW(MOp.Lea, width, dest, Scaled(src, dest, b));
                 break;
             // (The source copied because it is the destination: the
-            // destination holds it already. Long mode leaves the move out;
-            // i386's code is as it was.)
+            // destination holds it already, and long mode leaves the move
+            // out. i386 still writes it, and counts it: taking it out there
+            // changes i386's code, a change of its own with its own checks.)
             case 4:
                 if (!(copies && X86Mode.Long)) MovW(dest, src, width);
                 EmitW(MOp.Shl, width, dest, Imm(j));
@@ -3044,7 +3046,11 @@ internal sealed partial class Selector
         // integer division by constants with multiplication by the
         // reciprocal"); a 486 divides in 40 to 43. -1 never reaches here
         // (Lowering.Divide), 0 is DivideByZeroCheck's.
-        if (i.Dest!.Type == IrType.I32 && i.Operands[1] is ImmOperand divisorImm
+        // (Long mode's constants, of either width, are SelectDivByConstant's
+        // still: the same method, its own routine.)
+        if (X86Mode.Long && i.Operands[1] is ImmOperand longConstant
+            && SelectDivByConstant(i, longConstant.Value, WordOf(i.Dest!.Type), signed, rem)) return;
+        if (!X86Mode.Long && i.Dest!.Type == IrType.I32 && i.Operands[1] is ImmOperand divisorImm
             && (signed ? unchecked((int)divisorImm.Value) is not (-1 or 0 or 1) && !PowerOfTwo((ulong)Math.Abs((long)(int)divisorImm.Value))
                        : unchecked((uint)divisorImm.Value) >= 2 && !PowerOfTwo(unchecked((uint)divisorImm.Value))))
         {
@@ -3052,7 +3058,7 @@ internal sealed partial class Selector
             return;
         }
         if (i.Operands[1] is ImmOperand constant && constant.Value is 3 or 5 or 10
-            && i.Dest!.Type == IrType.I64 && ZeroHigh(i.Operands[0]))
+            && Pairs(i.Dest!.Type) && ZeroHigh(i.Operands[0]))
         {
             // Exact unsigned quotients over [0, 2^32-1]: high32(n*m) >> s.
             // ceil(2^33/3), ceil(2^34/5), ceil(2^35/10), respectively.
@@ -3074,7 +3080,7 @@ internal sealed partial class Selector
             if (i.Dest.Type == IrType.I64) Mov(Hi(i.Dest), Imm(0));
             return;
         }
-        if (i.Dest!.Type == IrType.I64 && ZeroHigh(i.Operands[0]) && ZeroHigh(i.Operands[1]))
+        if (Pairs(i.Dest!.Type) && ZeroHigh(i.Operands[0]) && ZeroHigh(i.Operands[1]))
         {
             // Both I64 values are nonnegative and fit in 32 unsigned bits.
             // Signed/unsigned division therefore agree. Keep DIV's zero-
@@ -3088,24 +3094,31 @@ internal sealed partial class Selector
             Mov(Hi(i.Dest), Imm(0));
             return;
         }
-        if (i.Dest!.Type == IrType.I32)
+        if (!Pairs(i.Dest!.Type))
         {
+            // ONE REGISTER, of four bytes or (long mode's I64) eight: the
+            // dividend in EDX:EAX at that width, over the operand. A zero
+            // divisor, and the most negative value over minus one, trap as
+            // the hardware traps, which the runtime makes the exception C#
+            // promises.
             // The divisor must not be an immediate and must not be EAX or
             // EDX; a fresh temporary loaded from whatever it is satisfies
             // both, and coalescing removes the move when it was a register.
+            int w = WordOf(i.Dest.Type);
             MReg divisor = Temp();
-            Mov(divisor, RM(i.Operands[1]));
-            Mov(Eax, RM(i.Operands[0]));
+            MovW(divisor, RM(i.Operands[1], w), w);
+            MovW(Eax, RM(i.Operands[0], w), w);
             if (signed)
             {
-                Emit(MOp.Cdq);
+                // The sign into EDX: CDQ, and long mode's form at the width (CQO at eight).
+                if (X86Mode.Long) EmitW(MOp.Cwd, w); else Emit(MOp.Cdq);
             }
             else
             {
-                Emit(MOp.Xor, Edx, Edx);
+                EmitW(MOp.Xor, 4, Edx, Edx);
             }
-            Emit(signed ? MOp.Idiv : MOp.Div, divisor);
-            Mov(Lo(i.Dest), rem ? Edx : Eax);
+            EmitW(signed ? MOp.Idiv : MOp.Div, w, divisor);
+            MovW(Lo(i.Dest), rem ? Edx : Eax, w);
             return;
         }
 
@@ -3714,11 +3727,11 @@ internal sealed partial class Selector
         if (PackedValueLane(i)) return;
         VReg d = i.Dest!;
         MMem m = PackedValueBytes(i.Operands[0], i.Offset) ?? Address(i.Operands[0], i.Offset);
-        if (i.Device) m = new MMem(m.Base, m.Disp) { Index = m.Index, Scale = m.Scale, Symbol = m.Symbol, Reloc = m.Reloc, Label = m.Label, Device = true };
+        if (i.Device) m = m.AsDevice();
         LoadInto(d, m, i.Size, i.Signed);
     }
 
-    /// <summary>`size` bytes at `m` into d, widened as d's type and `signed` say: SelectLoad's, and an asm block's slot read back (TryInlineAsm).</summary>
+    /// <summary>`size` bytes at `m` into d, widened as d's type and `signed` say: SelectLoad's, and an asm block's slot read back (TryInlineAsm, TryInlineAsmL).</summary>
     private void LoadInto(VReg d, MMem m, int size, bool signed)
     {
         if (d.Type.IsFloat())
@@ -3794,7 +3807,7 @@ internal sealed partial class Selector
 
     private void SelectStore(Instr i) => StoreFrom(Address(i.Operands[0], i.Offset), i.StoredValue, i.Size);
 
-    /// <summary>`size` bytes of v at `m`: SelectStore's, and an asm block's slot filled (TryInlineAsm).</summary>
+    /// <summary>`size` bytes of v at `m`: SelectStore's, and an asm block's slot filled (TryInlineAsm, TryInlineAsmL).</summary>
     private void StoreFrom(MMem m, Operand v, int size)
     {
         if (v.Type.IsFloat())

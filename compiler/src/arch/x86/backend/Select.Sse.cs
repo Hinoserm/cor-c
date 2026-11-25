@@ -143,7 +143,8 @@ internal sealed partial class Selector
     /// A FLOAT CONSTANT AS AN INSTRUCTION'S SOURCE: a value made once by Bits
     /// from bits known everywhere -- an immediate, or a register defined once
     /// by one -- read from the pool by the instruction itself (ADDSS xmm, m32),
-    /// its own load left unused (Allocator.PruneUnusedValues). Anything else,
+    /// its own load left unused (i386's Allocator.PruneUnusedValues, long
+    /// mode's PruneUnusedPoolLoads). Anything else,
     /// its register.
     /// </summary>
     private MOperand XSource(Operand o)
