@@ -692,10 +692,10 @@ public sealed partial class Lowering
     public const int TlsState = 28;
     /// <summary>This thread's [ThreadStatic] cells: an object?[] (Tls.ThreadStatics).</summary>
     public const int TlsThreadStatics = 168;
-    /// <summary>The block's size on i386, runtime Tls.Bytes: its 57 slots
+    /// <summary>The block's size on i386, runtime Tls.Bytes: its 59 slots
     /// times four. The floor of ThreadBlockBytes, which takes the runtime's
     /// own constant where the runtime is compiled.</summary>
-    public const int TlsBytes = 228;
+    public const int TlsBytes = 236;
 
     /// <summary>THE SIZE OF ThreadBlock0, the block of a thread no platform
     /// gives one: in the compilation of the runtime (`runtime`, its Runtime
