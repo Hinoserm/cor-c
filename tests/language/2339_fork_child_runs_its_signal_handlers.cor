@@ -37,7 +37,9 @@ sealed class Counting : PosixSignalHandler
     public static int Ran, Caught;
     public static PosixSignal Last;
     public static bool Faults;
-    static int[]? _nothing;
+    // (Written where no run goes, so the compiler cannot know it null: the
+    // read below stays a load, and the fault a fault.)
+    public static int[]? _nothing;
 
     public void Invoke(PosixSignalContext context)
     {
@@ -62,6 +64,7 @@ static class Program
 
     static int Main()
     {
+        if (Environment.GetCommandLineArgs().Length > 7) Counting._nothing = new int[4];
         PosixSignalRegistration parents = PosixSignalRegistration.Create(PosixSignal.SIGTERM, new Counting());
         int pid = UnixProcess.Fork();
         if (pid == 0)

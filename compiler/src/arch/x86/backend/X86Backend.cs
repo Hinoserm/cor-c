@@ -1138,11 +1138,5 @@ public sealed class X86Backend : IBackend
         defined.Add(StackMapEnd);
     }
 
-    private static void Pad(Section s, int align, byte fill)
-    {
-        while (s.Bytes.Count % align != 0)
-        {
-            s.Bytes.Add(fill);
-        }
-    }
+    private static void Pad(Section s, int align, byte fill) => Corsac.Lang.Backends.ObjectData.Pad(s, align, fill);
 }

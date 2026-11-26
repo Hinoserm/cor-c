@@ -295,7 +295,7 @@ public sealed class X64Backend : IBackend
                 }
             }
             encoder.ReleaseFunction();
-            // (A function made again at the link is the loader's own copy, let go the same.)
+            // (Not a unit made again at the link: UnitBackend asks for no release.)
             if (ReleaseBodies) Corsac.Lang.Backends.ObjectData.Release(f);
         }
 
@@ -328,6 +328,11 @@ public sealed class X64Backend : IBackend
         // pool, X86Backend.FloatPoolPrefix, Select.Sse's FloatConstant names
         // them by their bits). A name is another image's where the loader
         // supplies it (isExternal).
+        // What this module defines, as i386's backend asks it: its functions
+        // and its data -- not the tables every object carries.
+        HashSet<string> moduleDefines = new(StringComparer.Ordinal);
+        foreach (Function function in module.Functions) moduleDefines.Add(function.Name);
+        foreach (DataItem item in module.Data) moduleDefines.Add(item.Name);
         Section? importConstants = null, numbers = null;
         Section ImportConstants()
         {
@@ -340,7 +345,7 @@ public sealed class X64Backend : IBackend
             return numbers;
         }
         Corsac.Lang.Backends.ObjectData.Place(module, obj, rodata, data, bss, relocatedConstants, ImportConstants, Numbers, RelocKind.Abs64,
-            PositionIndependent, name => isExternal is not null && isExternal(name), definedNames.Contains, defined, errors, ReleaseBodies);
+            PositionIndependent, name => isExternal is not null && isExternal(name), moduleDefines.Contains, defined, errors, ReleaseBodies);
         Corsac.Lang.Backends.ObjectData.PlaceFloatPool(obj, text, rodata, Corsac.Lang.X86.X86Backend.FloatPoolPrefix, defined);
 
         Corsac.Lang.Backends.ObjectData.DeclareUndefined(obj, module.Imports, defined);
@@ -624,11 +629,5 @@ public sealed class X64Backend : IBackend
             defined.Add(stub);
     }
 
-    private static void Pad(Section s, int align, byte fill)
-    {
-        while (s.Bytes.Count % align != 0)
-        {
-            s.Bytes.Add(fill);
-        }
-    }
+    private static void Pad(Section s, int align, byte fill) => Corsac.Lang.Backends.ObjectData.Pad(s, align, fill);
 }

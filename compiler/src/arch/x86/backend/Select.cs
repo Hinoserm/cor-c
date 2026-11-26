@@ -4350,12 +4350,20 @@ internal sealed partial class Selector
         return Conventions.Current.Arguments(types, registers);
     }
 
+    /// <summary>
+    /// A CALL, both modes: the landing pad's pseudo-call and a machine
+    /// intrinsic are no calls at all; any other is its arguments placed as
+    /// the convention says and the call made -- the mode's own sequence
+    /// (CallSequence, CallSequenceL: what pushes, moves and cleans up is
+    /// each mode's instructions) -- and then the result taken from where
+    /// the convention brings it back (TakeResult).
+    /// </summary>
     private void SelectCall(Instr i)
     {
-        VReg? d = i.Dest;
+        bool longMode = X86Mode.Long;
         if (LandingPadHead(i)) return;
 
-        if (_positionIndependent && i.Op == Opcode.Call && i.Callee is MachineIntrinsics.CardMark or MachineIntrinsics.Barrier)
+        if (!longMode && _positionIndependent && i.Op == Opcode.Call && i.Callee is MachineIntrinsics.CardMark or MachineIntrinsics.Barrier)
         {
             Instr routine = new()
             {
@@ -4369,12 +4377,18 @@ internal sealed partial class Selector
 
         if (i.Op == Opcode.Call && i.Callee is { } callee && callee.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
         {
-            SelectMachineIntrinsic(callee, i);
+            if (longMode) SelectMachineIntrinsicL(callee, i); else SelectMachineIntrinsic(callee, i);
             return;
         }
 
         int first = i.Op == Opcode.CallIndirect ? 1 : 0;
+        if (longMode) CallSequenceL(i, first); else CallSequence(i, first);
+        if (i.Dest is not null) TakeResult(i.Dest);
+    }
 
+    /// <summary>i386's call sequence (SelectCall): the stack arguments pushed last first, the registers' moved, the call, the stack put back.</summary>
+    private void CallSequence(Instr i, int first)
+    {
         // A CALL INTO C. GCC's code for i386 System V may assume the stack
         // sixteen-byte aligned at a call (it keeps SSE spills there), and
         // this backend's own calls keep only four. So ESP is kept, aligned
@@ -4462,7 +4476,6 @@ internal sealed partial class Selector
         {
             Emit(MOp.Add, Esp, Imm(bytes));
         }
-        if (d is not null) TakeResult(d);
     }
 
     /// <summary>

@@ -264,7 +264,7 @@ internal sealed partial class Selector
         {
             case Opcode.Call:
             case Opcode.CallIndirect:
-                SelectCallL(i);
+                SelectCall(i);
                 break;
             case Opcode.Ret:
                 SelectRet(i);
@@ -735,18 +735,9 @@ internal sealed partial class Selector
 
     // ---- calls -------------------------------------------------------------------------
 
-    private void SelectCallL(Instr i)
+    /// <summary>Long mode's call sequence (SelectCall): the stack arguments pushed last first over a pad that keeps the sixteen, the registers' moved, the call, the stack put back.</summary>
+    private void CallSequenceL(Instr i, int first)
     {
-        VReg? d = i.Dest;
-        if (LandingPadHead(i)) return;
-        if (i.Op == Opcode.Call && i.Callee is { } callee
-            && callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.Prefix, StringComparison.Ordinal))
-        {
-            SelectMachineIntrinsicL(callee, i);
-            return;
-        }
-
-        int first = i.Op == Opcode.CallIndirect ? 1 : 0;
         // WHERE EACH ARGUMENT GOES is the convention's word (Conventions.
         // SystemV), as at the callee's entry (LoadParams).
         Convention convention = Conventions.SystemV;
@@ -846,7 +837,6 @@ internal sealed partial class Selector
         {
             EmitW(MOp.Add, 8, Rsp, Imm(pushed + pad));
         }
-        if (d is not null) TakeResult(d);
     }
 
     // ---- control ---------------------------------------------------------------------

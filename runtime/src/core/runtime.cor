@@ -3609,8 +3609,9 @@ public static partial class Runtime
     /// What a fork's child runs after that, for the program's signal
     /// handlers (PosixSignalRegistration.ForkedChild): left here by the
     /// first handler registered, 0 in a program that never registered one.
-    /// After ForkedChild, which makes a thread startable again: this one
-    /// starts the child's own delivering thread.
+    /// After ForkedChild, inside the hold Os.Fork keeps on every signal:
+    /// it sets the child's signal words straight and says whether a
+    /// delivering thread is wanted, which ForkedSignalsThread starts.
     public static nuint ForkedSignals;
 
     /// And what starts the child's delivering thread, once the signals

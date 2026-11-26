@@ -197,10 +197,10 @@ public static class AllocatorFastPaths
     }
 
     /// <summary>
-    /// THE ALLOCATION PUT IN PLACE AS EACH FUNCTION IS SELECTED (the x86
+    /// THE ALLOCATION PUT IN PLACE AS EACH FUNCTION IS SELECTED (either
     /// backend's Prepare), not by the late passes over the whole module: each
     /// function grows by its sites' bodies only while it is selected, and its
-    /// blocks go after it (X86Backend.ReleaseBodies). The bodies -- AllocFastSized
+    /// blocks go after it (the backends' ReleaseBodies). The bodies -- AllocFastSized
     /// and AllocFast as the module left them -- are taken as bytes now and
     /// read afresh for each function, as the link reads its imports: the
     /// backend lets each body go as it places it, and the workers select
