@@ -5,8 +5,9 @@ namespace Corsac.Lang.X86;
 using Block = Corsac.Lang.Ir.Block;
 
 /// <summary>
-/// PACKED128 VALUES IN THE XMM CLASS, where the code owns the SSE state and
-/// --cpu has SSE: a Packed128 the IR keeps in a sixteen-byte frame slot,
+/// PACKED VALUES IN THE XMM CLASS (a Packed128; in long mode a Packed64
+/// too, at its own eight bytes: the last paragraph), where the code owns
+/// the SSE state and --cpu has SSE: a Packed128 the IR keeps in a sixteen-byte frame slot,
 /// named through registers that hold the slot's address, is a value the
 /// allocator keeps in an XMM register -- across instructions, blocks and a
 /// loop's laps -- where the packed registers (PackedIn, PackedOut) hold one
@@ -499,10 +500,8 @@ internal sealed partial class Selector
                 int digit = int.Parse(part[2]);
                 MReg a = PackedValueIn(Address(1), bytes);
                 MReg made = PackedValueResult(Address(0), null);
-                // A Packed64's bytes shifted right take in the upper half's:
-                // cleared first (MOVQ xmm, xmm), whatever was left there.
-                if (bytes == 8 && group == 0x73 && digit == 3) P(MOp.XmmOpVDef, Imm(0xF3), Imm(0x7E), made, a);
-                else MovF(made, a, 16);
+                // (No byte shift of a Packed64 comes here: there is none, Lowering.PackedIntrinsic.)
+                MovF(made, a, 16);
                 P(MOp.XmmShiftV, made, Imm(group), Imm(digit), Imm(int.Parse(part[3])));
                 PackedValueOut(Address(0), made, bytes);
                 return;

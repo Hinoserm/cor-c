@@ -145,15 +145,8 @@ public sealed class X64Backend : IBackend
         // shared object that is everything this object does not define
         // (the link relaxes a slot back to a lea when a sibling object turns
         // out to define it); in a program, what its libraries supply.
-        HashSet<string> definedNames = new(StringComparer.Ordinal);
-        foreach (Function f in module.Functions) definedNames.Add(f.Name);
-        foreach (DataItem d in module.Data) definedNames.Add(d.Name);
-        definedNames.Add(Corsac.Lang.X86.FrameTable.Symbol);
-        definedNames.Add(Corsac.Lang.X86.X86Backend.StackMapStart);
-        definedNames.Add(Corsac.Lang.X86.X86Backend.StackMapEnd);
-        Func<string, bool>? isExternal = PositionIndependent ? name => !definedNames.Contains(name)
-            : Imported.Count > 0 ? name => Imported.Contains(name) && !definedNames.Contains(name)
-            : null;
+        HashSet<string> definedNames = DefinedNames(module);
+        Func<string, bool>? isExternal = External(definedNames);
         bool loaderRelocates = PositionIndependent || Imported.Count > 0;
 
         HashSet<string> defined = new(StringComparer.Ordinal);
@@ -422,6 +415,24 @@ public sealed class X64Backend : IBackend
         return obj;
     }
 
+    /// <summary>The names this module defines: its functions, its data, and the tables every object carries.</summary>
+    private static HashSet<string> DefinedNames(Module module)
+    {
+        HashSet<string> definedNames = new(StringComparer.Ordinal);
+        foreach (Function f in module.Functions) definedNames.Add(f.Name);
+        foreach (DataItem d in module.Data) definedNames.Add(d.Name);
+        definedNames.Add(Corsac.Lang.X86.FrameTable.Symbol);
+        definedNames.Add(Corsac.Lang.X86.X86Backend.StackMapStart);
+        definedNames.Add(Corsac.Lang.X86.X86Backend.StackMapEnd);
+        return definedNames;
+    }
+
+    /// <summary>Whether a name is another object's to supply, reached through the loader's tables: every name not defined here in position-independent code, an imported one in a program; null where there is none.</summary>
+    private Func<string, bool>? External(HashSet<string> definedNames)
+        => PositionIndependent ? name => !definedNames.Contains(name)
+            : Imported.Count > 0 ? name => Imported.Contains(name) && !definedNames.Contains(name)
+            : null;
+
     /// <summary>The module as assembly to read (--asm): long mode's machine code as the family's listing prints it (AsmText), then its data.</summary>
     public string Assembly(Module module)
     {
@@ -432,9 +443,12 @@ public sealed class X64Backend : IBackend
         List<string> errors = new();
         sb.Append("; module ").Append(module.Name).Append('\n');
         sb.Append("bits 64\n\nsection .text\n\n");
+        Func<string, bool>? isExternal = External(DefinedNames(module));
         foreach (Function f in module.Functions)
         {
-            MFunction? m = Compile(f, errors);
+            // As Generate compiles it: the entry realigns its stack, and a
+            // name another object supplies is reached as it will be.
+            MFunction? m = Compile(f, errors, f.Name == module.Entry, isExternal);
             if (m is null)
             {
                 continue;

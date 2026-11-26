@@ -76,6 +76,9 @@ internal static class RegisterArgs
     /// <summary>Whether a function takes any argument in a register at all: one this convention is for (Managed), entered by none of C's ways.</summary>
     private static bool Takes(Function f) => Managed(f.Name) && f.CalleePops == 0 && !f.KeepsCallerRegisters;
 
+    /// <summary>Whether a call is of the register form (Conventions.I386's `registers`): one to a function this convention is for, by name or through an address -- not into C, an intrinsic, or a [StackArguments] method.</summary>
+    public static bool Applies(Instr call) => First(call) >= 0;
+
     /// <summary>How many of its arguments a function takes in registers: its first three words, or as many as it has.</summary>
     public static int Of(Function f)
     {

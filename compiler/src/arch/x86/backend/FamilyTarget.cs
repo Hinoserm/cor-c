@@ -125,7 +125,7 @@ internal abstract class FamilyTarget
     /// Long mode's XMM values are scalars, a word each, but in a function
     /// that keeps packed values in the class: sixteen bytes there, at
     /// sixteen from the frame's base, which a framed function's prologue
-    /// leaves at sixteen (LongAlignedSpills marks them for MOVAPS).
+    /// leaves at sixteen (FamilyPasses.AlignedSpills marks them for MOVAPS).
     /// </summary>
     public int NewSlot(int vreg)
         => !_m.XmmRegs.Contains(vreg) ? _m.Frame.Spill()

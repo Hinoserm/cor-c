@@ -1,6 +1,8 @@
 #nullable enable
 using Corsac.Lang.Ir;
 
+using Corsac.Lang.Calls;
+
 namespace Corsac.Lang.X86;
 
 using Block = Corsac.Lang.Ir.Block;
@@ -252,40 +254,12 @@ internal sealed partial class Selector
     /// register into a virtual one at once so the allocator is free to put
     /// it anywhere, and the rest from their slots above the return address.
     /// </summary>
-    private void LoadParamsL()
+    /// <summary>Long mode: a parameter from its word on the stack (LoadParams).</summary>
+    private void ParamFromStackL(VReg p, int off)
     {
-        int ints = 0, floats = 0, stack = 16;
-        foreach (VReg p in _f.Params)
-        {
-            if (p.Type.IsFloat())
-            {
-                if (floats < FloatArgRegs)
-                {
-                    EmitW(MOp.MovF, Width(p.Type), V(p), MReg.Xmm(floats++));
-                }
-                else
-                {
-                    EmitW(MOp.MovF, Width(p.Type), V(p), MMem.Frame(stack));
-                    stack += 8;
-                }
-            }
-            else if (p.Type.IsInt())
-            {
-                if (ints < IntArgRegs.Length)
-                {
-                    MovL(V(p), MReg.Of(IntArgRegs[ints++]), Width(p.Type));
-                }
-                else
-                {
-                    MovL(V(p), MMem.Frame(stack), Width(p.Type));
-                    stack += 8;
-                }
-            }
-            else
-            {
-                Error($"parameter {p} has type {p.Type}");
-            }
-        }
+        if (p.Type.IsFloat()) EmitW(MOp.MovF, Width(p.Type), V(p), MMem.Frame(off));
+        else if (p.Type.IsInt()) MovL(V(p), MMem.Frame(off), Width(p.Type));
+        else Error($"parameter {p} has type {p.Type}");
     }
 
     private void SelectInstrL(Instr i)
@@ -786,31 +760,30 @@ internal sealed partial class Selector
         }
 
         int first = i.Op == Opcode.CallIndirect ? 1 : 0;
+        // WHERE EACH ARGUMENT GOES is the convention's word (Conventions.
+        // SystemV), as at the callee's entry (LoadParams).
+        Convention convention = Conventions.SystemV;
+        IrType[] types = new IrType[i.Operands.Count - first];
+        for (int k = 0; k < types.Length; k++) types[k] = i.Operands[first + k].Type;
+        CallPlan plan = convention.Arguments(types);
         List<(Operand Value, int Reg)> inRegs = new();
         List<Operand> onStack = new();
-        int ints = 0, floats = 0;
-        for (int k = first; k < i.Operands.Count; k++)
+        for (int k = 0; k < types.Length; k++)
         {
-            Operand o = i.Operands[k];
-            if (o.Type.IsFloat())
-            {
-                if (floats < FloatArgRegs) inRegs.Add((o, MReg.XmmBase + floats++));
-                else onStack.Add(o);
-            }
-            else
-            {
-                if (ints < IntArgRegs.Length) inRegs.Add((o, (int)IntArgRegs[ints++]));
-                else onStack.Add(o);
-            }
+            ArgPlace place = plan.Places[k];
+            if (place.Kind == PlaceKind.Float) inRegs.Add((i.Operands[first + k], MReg.XmmBase + place.Register));
+            else if (place.Kind == PlaceKind.General) inRegs.Add((i.Operands[first + k], place.Register));
+            else onStack.Add(i.Operands[first + k]);
         }
+        int ints = plan.Generals, floats = plan.Floats;
 
         MReg? target = i.Op == Opcode.CallIndirect ? RL(i.Operands[0]) : null;
 
         // THE STACK ARGUMENTS FIRST, last to first, with a pad beneath them
         // when there is an odd number, so RSP is sixteen-byte aligned at the
         // call as it was at the frame's bottom.
-        int pushed = onStack.Count * 8;
-        int pad = onStack.Count % 2 == 1 ? 8 : 0;
+        int pushed = plan.StackBytes;
+        int pad = (convention.StackAlignment - pushed % convention.StackAlignment) % convention.StackAlignment;
         if (pad != 0)
         {
             EmitW(MOp.Sub, 8, Rsp, Imm(8));

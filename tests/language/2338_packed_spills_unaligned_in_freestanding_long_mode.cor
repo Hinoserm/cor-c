@@ -1,0 +1,50 @@
+// test: a packed value spilled across a call, right whatever its slot is moved by (the script beside it reads long mode's moves, hosted and freestanding)
+// cpu: --cpu=athlon64 --disable-3dnow
+// requires-host: sse2
+// expect-exit: 0
+//
+// Long mode's packed spill slots are at sixteen from a framed function's
+// base and moved by MOVAPS (FamilyPasses.AlignedSpills) -- in hosted code,
+// which is entered with the stack at sixteen every way there is. A
+// freestanding image is entered by its own stubs (an interrupt's frame
+// with or without an error code, a context switch) and promised nothing:
+// there the same slots are moved by MOVUPS. No output: the program says
+// by its exit whether the rows came out as the words' sums, and the
+// script compiles it both ways and reads the moves.
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static int s_calls;
+    static uint[] s_in = new uint[8], s_out = new uint[8];
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Called(int lap) { s_calls++; return lap; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe void Rows(nuint f, nuint t)
+    {
+        Packed128 a = Packed.Load128(f), b = Packed.Load128(f + 16);
+        for (int lap = 0; lap < 5; lap++)
+        {
+            a = Packed.Add32(a, b);
+            b = Packed.Xor(b, a);
+            s_calls += Called(lap);
+        }
+        Packed.Store(t, a);
+        Packed.Store(t + 16, b);
+    }
+
+    static unsafe int Main()
+    {
+        for (int k = 0; k < 8; k++) s_in[k] = (uint)(k * 0x9E3779B1 + 7);
+        Rows(Sys.ArrayData(s_in), Sys.ArrayData(s_out));
+        uint[] w = new uint[8];
+        for (int k = 0; k < 8; k++) w[k] = s_in[k];
+        for (int lap = 0; lap < 5; lap++)
+            for (int k = 0; k < 4; k++) { w[k] += w[4 + k]; w[4 + k] ^= w[k]; }
+        for (int k = 0; k < 8; k++)
+            if (s_out[k] != w[k]) return 1 + k;
+        // (`s_calls += Called(lap)` reads s_calls before the call, as C# does: the call's own count is written over.)
+        return s_calls == 10 ? 0 : 20;
+    }
+}

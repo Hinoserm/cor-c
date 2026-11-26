@@ -1,6 +1,8 @@
 #nullable enable
 using Corsac.Lang.Ir;
 
+using Corsac.Lang.Calls;
+
 namespace Corsac.Lang.X86;
 
 using Block = Corsac.Lang.Ir.Block;
@@ -1429,7 +1431,9 @@ internal sealed partial class Selector
         // keeps every XMM register; its spills are of the whole register
         // wherever a function names a packed operation.
         bool longMode = X86Mode.Long;
-        if (longMode && UsesPackedRegisters(_f))
+        // (Where it makes a value in one: a function that only fences,
+        // prefetches or stores a word around the caches keeps its frame as it was.)
+        if (longMode && UsesPackedValues(_f))
         {
             PackedFindValues();
             _m.XmmSpillWidth = 16;
@@ -1447,7 +1451,7 @@ internal sealed partial class Selector
 
         _cur = _heads[_f.Entry];
         Emit(MOp.Prologue);
-        if (longMode) LoadParamsL(); else LoadParams();
+        LoadParams();
 
         Dictionary<Block, int>? packedIn = longMode || _automaticPacked ? null : PackedRegions(_f);
         Dictionary<Block, bool>? dirtyIn = longMode ? null : PackedDirty(_f);
@@ -1543,46 +1547,65 @@ internal sealed partial class Selector
     /// loaded into their virtual registers here and the float ones simply
     /// have their home declared to be the argument slot.
     /// </summary>
+    /// <summary>
+    /// THE PARAMETERS FROM WHERE THE CONVENTION PUT THEM (Conventions.
+    /// Current's plan of the function's signature), both modes: each one a
+    /// register carries from its register, first thing -- the register is
+    /// live from the entry to here, so nothing the allocator places before
+    /// takes it -- and only then what came on the stack, each from its
+    /// place above the frame's base. i386's body that keeps them all on the
+    /// stack (an asm block naming it) is the convention's stack-only form:
+    /// it finds them all there, as its way in pushed them (RegisterArgs.
+    /// StackEntry). What moves a value of a type from a place is the
+    /// mode's (ParamFromStack, ParamFromStackL); where the place is, is not.
+    /// </summary>
     private void LoadParams()
     {
-        // ITS FIRST THREE WORDS IN REGISTERS (RegisterArgs): each from its
-        // own, first thing -- the register is live from the entry to here,
-        // so nothing the allocator places before takes it -- and only then
-        // what came on the stack, below. A body that keeps them all on the
-        // stack (an asm block naming it) finds them all there, as its way
-        // in pushed them (RegisterArgs.StackEntry).
-        bool inRegisters = RegisterArgs.BodyInRegisters(_f);
-        if (inRegisters)
-            for (int k = 0; k < _f.Params.Count; k++)
-                if (RegisterArgs.Register(_f, k) is >= 0 and var register) Mov(Lo(_f.Params[k]), MReg.Of(RegisterArgs.Order[register]));
-        int off = 8;
-        for (int at = 0; at < _f.Params.Count; at++)
+        bool longMode = X86Mode.Long;
+        Convention convention = Conventions.Current;
+        IrType[] types = new IrType[_f.Params.Count];
+        for (int k = 0; k < types.Length; k++) types[k] = _f.Params[k].Type;
+        CallPlan plan = convention.Arguments(types, longMode || RegisterArgs.BodyInRegisters(_f));
+        for (int k = 0; k < types.Length; k++)
         {
-            VReg p = _f.Params[at];
-            if (inRegisters && RegisterArgs.Register(_f, at) >= 0) continue;
-            switch (p.Type)
-            {
-                case IrType.I32:
-                    Mov(Lo(p), MMem.Frame(off));
-                    off += 4;
-                    break;
-                case IrType.I64:
-                    Mov(Lo(p), MMem.Frame(off));
-                    Mov(Hi(p), MMem.Frame(off + 4));
-                    off += 8;
-                    break;
-                case IrType.F32:
-                case IrType.F64:
-                    // Of the XMM class, loaded from its word (a home, FamilyTarget.Homes);
-                    // of the x87's, that word its home.
-                    if (InXmm(p.Type)) MovF(X(p), MMem.Frame(off), FWidth(p.Type));
-                    else _m.Frame.PlaceFloatParam(p, off);
-                    off += FWidth(p.Type);
-                    break;
-                default:
-                    Error($"parameter {p} has type {p.Type}");
-                    break;
-            }
+            ArgPlace place = plan.Places[k];
+            if (!place.InRegister) continue;
+            VReg p = _f.Params[k];
+            if (!longMode) Mov(Lo(p), MReg.Of(place.Register));
+            else if (place.Kind == PlaceKind.Float) EmitW(MOp.MovF, Width(p.Type), V(p), MReg.Xmm(place.Register));
+            else MovL(V(p), MReg.Of(place.Register), Width(p.Type));
+        }
+        for (int k = 0; k < types.Length; k++)
+        {
+            ArgPlace place = plan.Places[k];
+            if (place.InRegister) continue;
+            if (longMode) ParamFromStackL(_f.Params[k], convention.StackArgumentsAt + place.Offset);
+            else ParamFromStack(_f.Params[k], convention.StackArgumentsAt + place.Offset);
+        }
+    }
+
+    /// <summary>i386: a parameter from its words on the stack, by its type -- a 64-bit integer's two halves, a float into the XMM class or left where it is as the x87's home.</summary>
+    private void ParamFromStack(VReg p, int off)
+    {
+        switch (p.Type)
+        {
+            case IrType.I32:
+                Mov(Lo(p), MMem.Frame(off));
+                break;
+            case IrType.I64:
+                Mov(Lo(p), MMem.Frame(off));
+                Mov(Hi(p), MMem.Frame(off + 4));
+                break;
+            case IrType.F32:
+            case IrType.F64:
+                // Of the XMM class, loaded from its word (a home, FamilyTarget.Homes);
+                // of the x87's, that word its home.
+                if (InXmm(p.Type)) MovF(X(p), MMem.Frame(off), FWidth(p.Type));
+                else _m.Frame.PlaceFloatParam(p, off);
+                break;
+            default:
+                Error($"parameter {p} has type {p.Type}");
+                break;
         }
     }
 
@@ -4298,15 +4321,18 @@ internal sealed partial class Selector
         // arguments themselves are all reached through EBP or registers,
         // never through ESP, so moving it under them is safe.
         bool native = NativeCall.Is(i);
+        // WHERE EACH ARGUMENT GOES is the convention's word (Conventions.
+        // I386): its register form for a call to a function that takes its
+        // first three words so (RegisterArgs.Applies), its stack-only one
+        // for a call into C and the rest.
+        IrType[] types = new IrType[i.Operands.Count - first];
+        for (int k = 0; k < types.Length; k++) types[k] = i.Operands[first + k].Type;
+        CallPlan plan = Conventions.I386.Arguments(types, !native && RegisterArgs.Applies(i));
         MReg? savedEsp = null;
         MReg? nativeTarget = null;
         if (native)
         {
-            int argumentBytes = 0;
-            for (int k = first; k < i.Operands.Count; k++)
-            {
-                argumentBytes += i.Operands[k].Type is IrType.I64 or IrType.F64 ? 8 : 4;
-            }
+            int argumentBytes = plan.StackBytes;
             if (i.Op == Opcode.CallIndirect)
             {
                 nativeTarget = R(i.Operands[0]);
@@ -4329,12 +4355,12 @@ internal sealed partial class Selector
         // by name: a virtual or an interface slot, a delegate's target, a
         // word (Sys.Call) -- the address in a register of its own or read
         // from memory by the call itself (AddressFold), never one of these.
-        int inRegisters = native ? 0 : RegisterArgs.Of(i);
+        int inRegisters = plan.Generals;
         if (inRegisters > 0)
         {
             for (int k = i.Operands.Count - 1; k >= first; k--)
             {
-                if (RegisterArgs.Register(i, k) < 0) bytes += PushArg(i.Operands[k]);
+                if (!plan.Places[k - first].InRegister) bytes += PushArg(i.Operands[k]);
             }
             // (Not the ones the call's own name says are set where it goes
             // in: RegisterArgs.Given, a function's way in with its numbers.)
@@ -4342,8 +4368,8 @@ internal sealed partial class Selector
             List<MOperand> call = new(1 + inRegisters) { i.Op == Opcode.Call ? SymbolAddress(i.Callee!, 0) : R(i.Operands[0]) };
             for (int k = first; k < i.Operands.Count; k++)
             {
-                if (RegisterArgs.Register(i, k) is not (>= 0 and var register) || (given >> k & 1) != 0) continue;
-                MReg into = MReg.Of(RegisterArgs.Order[register]);
+                if (!plan.Places[k - first].InRegister || (given >> k & 1) != 0) continue;
+                MReg into = MReg.Of(plan.Places[k - first].Register);
                 Mov(into, RM(i.Operands[k]));
                 call.Add(into);
             }

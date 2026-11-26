@@ -44,6 +44,16 @@ internal sealed partial class Selector
         return false;
     }
 
+    /// <summary>Whether a function names a packed operation on the XMM registers (Selector.XmmValueOp): long mode's, which makes its values in registers the allocator gives.</summary>
+    private static bool UsesPackedValues(Function f)
+    {
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal) && XmmValueOp(c, out _))
+                    return true;
+        return false;
+    }
+
     /// <summary>The XMM-class register of a float value.</summary>
     private MReg X(VReg v)
     {

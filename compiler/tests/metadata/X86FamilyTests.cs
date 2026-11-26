@@ -167,6 +167,56 @@ public static class X86FamilyTests
         Lowered();
         FramelessForms();
         PackedForms();
+        ConventionPlaces();
+    }
+
+    /// <summary>
+    /// WHERE EACH CONVENTION PUTS A SIGNATURE'S ARGUMENTS AND ITS RESULT
+    /// (Conventions.SystemV, Conventions.I386): the registers in order, each
+    /// class counted alone in System V's and the first three words in
+    /// i386's whatever stands between them, the stack places' offsets and
+    /// sizes, the stack-only form, and what a value comes back in.
+    /// </summary>
+    private static void ConventionPlaces()
+    {
+        static void Same(string what, object made, object expected)
+        {
+            if (!Equals(made, expected)) throw new InvalidOperationException($"conventions: {what}: {made}, not {expected}");
+        }
+        static string Text(Corsac.Lang.Calls.CallPlan plan)
+            => string.Join(" ", plan.Places.Select(p => p.Kind switch
+            {
+                Corsac.Lang.Calls.PlaceKind.General => "g" + p.Register,
+                Corsac.Lang.Calls.PlaceKind.Float => "f" + p.Register,
+                _ => "s" + p.Offset,
+            } + ":" + p.Bytes)) + $" | stack {plan.StackBytes} g {plan.Generals} f {plan.Floats}";
+        IrType i = IrType.I32, l = IrType.I64, f = IrType.F32, d = IrType.F64;
+
+        Corsac.Lang.Calls.Convention v = Conventions.SystemV;
+        Same("System V's stack at a call", v.StackAlignment, 16);
+        Same("System V's first stack argument", v.StackArgumentsAt, 16);
+        // RDI 7, RSI 6, RDX 2, RCX 1, R8, R9; then the stack, a word each, floats and integers in one run.
+        Same("System V: seven integers, nine floats, two more",
+            Text(v.Arguments(new[] { l, i, l, i, l, l, i, d, f, d, d, d, d, d, d, f, l, d })),
+            "g7:8 g6:4 g2:8 g1:4 g8:8 g9:8 s0:4 f0:8 f1:4 f2:8 f3:8 f4:8 f5:8 f6:8 f7:8 s8:4 s16:8 s24:8 | stack 32 g 6 f 8");
+        Same("System V has one form", Text(v.Arguments(new[] { i, d }, registers: false)), "g7:4 f0:8 | stack 0 g 1 f 1");
+        Same("System V: nothing", Text(v.Arguments(Array.Empty<IrType>())), " | stack 0 g 0 f 0");
+        Same("System V: a long comes back in RAX", v.Result(l).Single(), Corsac.Lang.Calls.ArgPlace.InGeneral((int)Gpr.Rax, 8));
+        Same("System V: a float comes back in XMM0", v.Result(f).Single(), Corsac.Lang.Calls.ArgPlace.InFloat(0, 4));
+        Same("System V: no value, no place", v.Result(IrType.Void).Length, 0);
+
+        Corsac.Lang.Calls.Convention x = Conventions.I386;
+        Same("i386's own stack at a call", x.StackAlignment, 4);
+        Same("i386's first stack argument", x.StackArgumentsAt, 8);
+        // EAX 0, EDX 2, ECX 1: the first three words, a long and a double between them on the stack.
+        Same("i386: three words among others",
+            Text(x.Arguments(new[] { l, i, d, i, f, i, i, l })),
+            "s0:8 g0:4 s8:8 g2:4 s16:4 g1:4 s20:4 s24:8 | stack 32 g 3 f 0");
+        Same("i386's stack-only form is cdecl's layout",
+            Text(x.Arguments(new[] { i, l, f, d, i }, registers: false)),
+            "s0:4 s4:8 s12:4 s16:8 s24:4 | stack 28 g 0 f 0");
+        Same("i386: a long comes back in EDX:EAX", string.Join(",", x.Result(l).Select(p => p.Register)), "0,2");
+        Same("i386: a double comes back on the x87's stack", x.Result(d).Single().Kind, Corsac.Lang.Calls.PlaceKind.FloatStack);
     }
 
     /// <summary>
