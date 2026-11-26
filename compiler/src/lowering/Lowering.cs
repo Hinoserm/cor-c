@@ -708,11 +708,21 @@ public sealed partial class Lowering
     int ThreadBlockBytes(TypeSymbol? runtime)
     {
         int bytes = TlsBytes / 4 * _t.WordSize;
-        if (runtime is null || !_b.Types.TryGetValue("Tls", out TypeSymbol? tls)) return bytes;
-        if (!_b.Constants.TryGetValue((tls, "Bytes"), out long bound) || bound < bytes || bound >= 1 << 16)
+        if (runtime is null) return bytes;
+        // Named where the runtime declares it, not where lowering stopped.
+        string file = runtime.Decl?.File ?? _in;
+        if (!_b.Types.TryGetValue("Tls", out TypeSymbol? tls))
         {
-            Errors.Add(new CompileError(_in, 0, 0,
-                $"the runtime's Tls.Bytes ({(_b.Constants.ContainsKey((tls, "Bytes")) ? bound.ToString() : "not bound")}) cannot size the main thread's block: at least {bytes} bytes, under 64 KiB"));
+            Errors.Add(new CompileError(file, 0, 0,
+                $"the runtime declares no Tls, whose Bytes sizes the main thread's block: one unit must hold both {RuntimeType} and Tls"));
+            return bytes;
+        }
+        file = tls.Decl?.File ?? file;
+        bool isBound = _b.Constants.TryGetValue((tls, "Bytes"), out long bound);
+        if (!isBound || bound < bytes || bound >= 1 << 16)
+        {
+            Errors.Add(new CompileError(file, 0, 0,
+                $"the runtime's Tls.Bytes ({(isBound ? bound.ToString() : "not bound")}) cannot size the main thread's block: at least {bytes} bytes, under 64 KiB"));
             return bytes;
         }
         return (int)bound;
