@@ -44,7 +44,7 @@ internal sealed partial class Selector
         return false;
     }
 
-    /// <summary>Whether a function names a packed operation on the XMM registers (Selector.XmmValueOp): long mode's, which makes its values in registers the allocator gives.</summary>
+    /// <summary>Whether a function names a packed operation on the XMM registers (Selector.XmmValueOp) or one of the runtime's scans, which compare in them: long mode's question, where each makes its values in registers the allocator gives.</summary>
     private static bool UsesPackedValues(Function f)
     {
         foreach (Block b in f.Blocks)

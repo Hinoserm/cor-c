@@ -935,9 +935,10 @@ public static class Prelude
             // --cpu profile may not have): prefetchnta and 3DNow!'s prefetch;
             // a cache line copied, or filled with the eight bytes at
             // `pattern`, by movntq (in long mode by movnti, with no MMX
-            // register); sfence, and on i386 emms, after them. Those four --
-            // StreamPrefetch, StreamCopy64, StreamFill64, StreamEnd -- are
-            // both modes'; the rest are the MMX registers', i386 only: four
+            // register); sfence, and on i386 emms, after them; and the scans,
+            // the MMX registers' on i386 and SSE2's on XMM registers in long
+            // mode (where the two leaves at the end are nothing). All are
+            // both modes' but StreamPrefetchLine, 3DNow!'s. The scans: four
             // UTF-16 units at `at` against the four at `pattern` (a byte 0xFF
             // each that is equal), eight by pmovmskb (a bit each); eight bytes
             // alike (-1) or not; emms, or 3DNow!'s femms.

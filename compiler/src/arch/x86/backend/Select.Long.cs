@@ -975,6 +975,8 @@ internal sealed partial class Selector
             SelectPackedOpL(name, i);
             return;
         }
+        // The ones that are one instruction in both modes (Select.Intrinsics.cs).
+        if (SelectFamilyIntrinsic(name, i)) return;
         switch (name)
         {
             case Corsac.Lang.X86.MachineIntrinsics.ThreadBlock:
@@ -1028,44 +1030,6 @@ internal sealed partial class Selector
                 MovL(PerCpuWord(i.Operands[0]), value);
                 return;
             }
-            case Corsac.Lang.X86.MachineIntrinsics.LoaderFini:
-                // Unused when no C library is started: nothing to read.
-                if (i.Dest is not null)
-                {
-                    MovL(V(i.Dest), Rdx);
-                }
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
-            {
-                MReg kept = RL(i.Operands[0]);
-                EmitW(MOp.Test, 8, kept, kept);
-                return;
-            }
-            case Corsac.Lang.X86.MachineIntrinsics.SaveRegisters:
-                Emit(MOp.SaveRegs);
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.CallerRegister:
-                // Read by nothing (the note it was for dropped): nothing made.
-                if (i.Dest is null) return;
-                Emit(MOp.CallerReg, V(i.Dest), new MImm(((ImmOperand)i.Operands[0]).Value));
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.In8:
-            case Corsac.Lang.X86.MachineIntrinsics.In16:
-            case Corsac.Lang.X86.MachineIntrinsics.In32:
-            {
-                int w = name == Corsac.Lang.X86.MachineIntrinsics.In8 ? 1 : name == Corsac.Lang.X86.MachineIntrinsics.In16 ? 2 : 4;
-                MovL(Rdx, RL(i.Operands[0]));
-                if (w != 4)
-                {
-                    EmitW(MOp.Xor, 4, Rax, Rax);
-                }
-                EmitW(MOp.In, w);
-                if (i.Dest is not null)
-                {
-                    MovL(V(i.Dest), Rax, 4);
-                }
-                return;
-            }
             case Corsac.Lang.X86.MachineIntrinsics.Out8:
             case Corsac.Lang.X86.MachineIntrinsics.Out16:
             case Corsac.Lang.X86.MachineIntrinsics.Out32:
@@ -1078,15 +1042,6 @@ internal sealed partial class Selector
                 EmitW(MOp.Out, w);
                 return;
             }
-            case Corsac.Lang.X86.MachineIntrinsics.Cli:
-                Emit(MOp.Cli);
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.Sti:
-                Emit(MOp.Sti);
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.Hlt:
-                Emit(MOp.Hlt);
-                return;
             case Corsac.Lang.X86.MachineIntrinsics.InString16:
             case Corsac.Lang.X86.MachineIntrinsics.OutString16:
             {
@@ -1110,31 +1065,17 @@ internal sealed partial class Selector
             case Corsac.Lang.X86.MachineIntrinsics.Invlpg:
                 Emit(MOp.Invlpg, RL(i.Operands[0]));
                 return;
-            case Corsac.Lang.X86.MachineIntrinsics.ReadFlags:
-                if (i.Dest is not null) Emit(MOp.ReadFlags, V(i.Dest));
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.BitScanForward:
-            case Corsac.Lang.X86.MachineIntrinsics.BitScanReverse:
-                // Of the 32-bit value, never zero (its caller asks first).
-                if (i.Dest is not null)
-                    EmitW(name == Corsac.Lang.X86.MachineIntrinsics.BitScanForward ? MOp.Bsf : MOp.Bsr, 4, V(i.Dest), RL(i.Operands[0]));
-                return;
             case Corsac.Lang.X86.MachineIntrinsics.CpuidPresent:
                 // Every processor that runs long mode has CPUID.
                 if (i.Dest is not null) EmitW(MOp.Mov, 4, V(i.Dest), Imm(1));
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.ReadCodeSegment:
-                if (i.Dest is not null) Emit(MOp.ReadCs, V(i.Dest));
                 return;
             // THE STREAMING ROUTINES' INSTRUCTIONS (Runtime.StreamCopy,
             // StreamFill): a cache line stored around the caches by eight
             // MOVNTI of a general register -- as Linux's uncached copy for
             // x86-64 stores it -- where i386 goes through MM0 by MOVNTQ.
             // No packed register, so nothing to leave at the end but the
-            // fence that orders the stores before what follows.
-            case Corsac.Lang.X86.MachineIntrinsics.StreamPrefetch:
-                Emit(new MInstr(MOp.PrefetchNta, new MMem(RL(i.Operands[0]), 0)) { Probed = true });
-                return;
+            // fence that orders the stores before what follows. (The
+            // prefetch ahead is the family's: Select.Intrinsics.cs.)
             case Corsac.Lang.X86.MachineIntrinsics.StreamCopy64:
             case Corsac.Lang.X86.MachineIntrinsics.StreamFill64:
             {
@@ -1182,42 +1123,25 @@ internal sealed partial class Selector
             }
             // EIGHT BYTES ALIKE (-1) OR NOT (0): a word of each, no packed
             // register at all. The words' difference negated carries where
-            // they differ; SBB spreads the carry, NOT turns it round.
+            // they differ; SBB spreads the carry, NOT turns it round. All in
+            // a register of its own, the result moved out last: the
+            // destination may be one of the addresses' registers.
             case Corsac.Lang.X86.MachineIntrinsics.PackedEqual8:
             {
                 if (i.Dest is null) return;
                 MReg a = RL(i.Operands[0]), b = RL(i.Operands[1]), word = Temp();
-                MovL(V(i.Dest), Imm(0), 4);
                 MovL(word, new MMem(a, 0), 8);
                 EmitW(MOp.Xor, 8, word, new MMem(b, 0));
                 EmitW(MOp.Neg, 8, word);
-                EmitW(MOp.Sbb, 4, V(i.Dest), V(i.Dest));
-                EmitW(MOp.Not, 4, V(i.Dest));
+                EmitW(MOp.Sbb, 4, word, word);
+                EmitW(MOp.Not, 4, word);
+                MovL(V(i.Dest), word, 4);
                 return;
             }
             // (The MMX registers' leave, EMMS or FEMMS: nothing to leave here.)
             case Corsac.Lang.X86.MachineIntrinsics.PackedEnd:
             case Corsac.Lang.X86.MachineIntrinsics.PackedEndFast:
                 return;
-            case Corsac.Lang.X86.MachineIntrinsics.GetGs:
-                // Nothing where nothing reads it, as i386's.
-                if (i.Dest is not null) Emit(MOp.GetGs, V(i.Dest));
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.SetGs:
-                Emit(MOp.SetGs, RL(i.Operands[0]));
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.CpuidEax:
-            case Corsac.Lang.X86.MachineIntrinsics.CpuidEdx:
-            {
-                // One register of the leaf, subleaf 0, straight out of the
-                // instruction: nothing stored.
-                MReg leaf = RL(i.Operands[0]);
-                MovL(Rax, leaf, 4);
-                EmitW(MOp.Mov, 4, Rcx, Imm(0));
-                Emit(MOp.Cpuid);
-                if (i.Dest is not null) MovL(V(i.Dest), name == Corsac.Lang.X86.MachineIntrinsics.CpuidEax ? Rax : Rdx, 4);
-                return;
-            }
             case Corsac.Lang.X86.MachineIntrinsics.ReadCr:
             {
                 long number = ControlRegisterL(i.Operands[0]);
@@ -1234,12 +1158,6 @@ internal sealed partial class Selector
             case Corsac.Lang.X86.MachineIntrinsics.LoadSegments:
                 MovL(Rax, RL(i.Operands[0]), 4);
                 Emit(MOp.LoadSegments);
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.LoadCodeSegment:
-                Emit(MOp.LoadCs, RL(i.Operands[0]));
-                return;
-            case Corsac.Lang.X86.MachineIntrinsics.LoadTaskRegister:
-                Emit(MOp.Ltr, RL(i.Operands[0]));
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.ReadMsr:
             case Corsac.Lang.X86.MachineIntrinsics.ReadTsc:

@@ -305,6 +305,18 @@ CR8 are whole), `LoadSegments` -- and what a long-mode kernel needs besides:
 `ReadMsr`/`WriteMsr`, `Cpuid`, `ReadTsc`, `LoadTaskRegister`,
 `LoadCodeSegment` (a far return, `retfq`) and `SwapGs`.
 
+Those that are one instruction in both modes are selected once
+(`Select.Intrinsics.cs`, `SelectFamilyIntrinsic`): the interrupt flag and
+`hlt`, port input, the flags and the segment registers read, `SetGs`,
+`LoadTaskRegister`, `LoadCodeSegment`, the bit scans, CPUID's one-register
+reads, `KeepAlive`, `CallerRegister`, the loader's finaliser, the streaming
+prefetch. Each mode keeps what is not the same instruction there: MSRs and
+the time stamp (64-bit values), the control registers' probes, the
+descriptor tables' operands, port output and the string ports, the thread
+block, the collector's store sequences, and the packed, streaming and
+scanning instructions -- which long mode has in forms of its own (SSE2 on
+XMM registers, `movnti`), with no MMX state.
+
 The linker's addresses are 64 bits, so a kernel may be linked in the top two
 gigabytes (`--base 0xffffffff80100000 --load 0x100000`, or the same `--base`
 for a `--flat` image): the code the compiler writes is RIP-relative, data

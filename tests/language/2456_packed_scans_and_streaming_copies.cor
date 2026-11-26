@@ -9,6 +9,7 @@
 // concat 0 wrong
 // clear 0 wrong fill 0 wrong
 // known 0 wrong
+// last 0 wrong of 2901
 //
 // The runtime's packed routines -- the MMX registers' on i386, SSE2's and
 // MOVNTI's in long mode -- (Runtime.PackedStringFind, PackedStringEqual,
@@ -115,6 +116,25 @@ static class P
         for (int i = 0; i < 1000; i++) if (known[700001 + i] != source[i + 5]) knownWrong++;
         if (known[701001] != 0) knownWrong++;
         Console.WriteLine("known " + knownWrong + " wrong");
+
+        // THE SEARCH FROM THE END, and a unit above a byte: the eight-unit
+        // step's highest equal unit is BSR's of its mask (long mode's mask
+        // is a bit a unit, the low eight of PMOVMSKB's sixteen).
+        int lastWrong = 0, lasts = 0;
+        for (int length = 1; length <= 200; length += 7)
+            for (int place = 0; place < length; place += 3)
+            {
+                char[] units = new char[length];
+                for (int k = 0; k < length; k++) units[k] = (char)('a' + k % 23);
+                units[place] = '\u2603';
+                if (place + 9 < length) units[place + 9] = '\u2604';
+                string text = new string(units);
+                if (text.LastIndexOf('\u2603') != place) lastWrong++;
+                if (text.IndexOf('\u2604') != (place + 9 < length ? place + 9 : -1)) lastWrong++;
+                if (text.LastIndexOf('\u2605') != -1) lastWrong++;
+                lasts += 3;
+            }
+        Console.WriteLine("last " + lastWrong + " wrong of " + lasts);
         return 0;
     }
 }

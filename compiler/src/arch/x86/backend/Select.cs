@@ -4656,30 +4656,10 @@ internal sealed partial class Selector
             else SelectPackedOp(name, i);
             return;
         }
+        // The ones that are one instruction in both modes (Select.Intrinsics.cs).
+        if (SelectFamilyIntrinsic(name, i)) return;
         switch (name)
         {
-            case MachineIntrinsics.In8:
-            case MachineIntrinsics.In16:
-            case MachineIntrinsics.In32:
-            {
-                int w = name == MachineIntrinsics.In8 ? 1 : name == MachineIntrinsics.In16 ? 2 : 4;
-                Mov(Edx, RM(i.Operands[0]));
-                // The narrow forms write only AL or AX, so the rest of EAX is
-                // whatever was there: zero it first and the result is the
-                // canonical unsigned byte or word the language promises.
-                if (w != 4)
-                {
-                    Emit(MOp.Xor, Eax, Eax);
-                }
-                EmitW(MOp.In, w);
-                // A read whose value is dropped -- the 400 ns delay of
-                // reading a status port -- has no destination to move to.
-                if (i.Dest is not null)
-                {
-                    Mov(Lo(i.Dest), Eax);
-                }
-                return;
-            }
             case MachineIntrinsics.Out8:
             case MachineIntrinsics.Out16:
             case MachineIntrinsics.Out32:
@@ -4700,15 +4680,6 @@ internal sealed partial class Selector
                 Emit(read ? MOp.RepInsw : MOp.RepOutsw);
                 return;
             }
-            case MachineIntrinsics.Cli:
-                Emit(MOp.Cli);
-                return;
-            case MachineIntrinsics.Sti:
-                Emit(MOp.Sti);
-                return;
-            case MachineIntrinsics.Hlt:
-                Emit(MOp.Hlt);
-                return;
             case MachineIntrinsics.Lidt:
             case MachineIntrinsics.Lgdt:
             case MachineIntrinsics.Invlpg:
@@ -4877,21 +4848,8 @@ internal sealed partial class Selector
                 Mov(new MMem(keep, 12), d);
                 return;
             }
-            case MachineIntrinsics.LoadTaskRegister:
-                Emit(MOp.Ltr, R(i.Operands[0]));
-                return;
-            case MachineIntrinsics.LoadCodeSegment:
-                Emit(MOp.LoadCs, R(i.Operands[0]));
-                return;
             case MachineIntrinsics.SwapGs:
                 Error("swapgs is a long-mode instruction; i386 has no GS base to swap");
-                return;
-            case MachineIntrinsics.LoaderFini:
-                // Unused when no C library is started: nothing to read.
-                if (i.Dest is not null)
-                {
-                    Mov(Lo(i.Dest), Edx);
-                }
                 return;
             case MachineIntrinsics.DoublePrecision:
             {
@@ -4910,38 +4868,12 @@ internal sealed partial class Selector
                 EmitW(MOp.Fldcw, 2, MMem.Frame(s));
                 return;
             }
-            case MachineIntrinsics.KeepAlive:
-            {
-                MReg kept = R(i.Operands[0]);
-                Emit(MOp.Test, kept, kept);
-                return;
-            }
-            case MachineIntrinsics.SaveRegisters:
-                Emit(MOp.SaveRegs);
-                return;
-            case MachineIntrinsics.CallerRegister:
-                // Read by nothing -- the note it was for dropped, a program
-                // without a collector (Escape.IsThreadNote) -- nothing made.
-                if (i.Dest is null) return;
-                Emit(MOp.CallerReg, Lo(i.Dest), Imm((int)((ImmOperand)i.Operands[0]).Value));
-                return;
-            case MachineIntrinsics.GetGs:
-                // NOTHING WHERE NOTHING READS IT: `Runtime.NativeGs =
-                // Sys.GetGs();` in a program that never reads NativeGs lost
-                // the store and kept the read, with no register to read into.
-                if (i.Dest is not null) Emit(MOp.GetGs, Lo(i.Dest));
-                return;
-            case MachineIntrinsics.ReadFlags:
-                // pushfd; pop r: no call to a stub for the one bit a lock or a
-                // gate asks before it turns interrupts off.
-                if (i.Dest is not null) Emit(MOp.ReadFlags, Lo(i.Dest));
-                return;
             // THE PACKED ROUTINES' INSTRUCTIONS, each Probed: the runtime
             // reaches them only after Processor said the processor has them.
             // MM0 and MM1 only, nothing left in them from one to the next.
-            case MachineIntrinsics.StreamPrefetch:
+            // (PREFETCHNTA is the family's, Select.Intrinsics.cs; 3DNow!'s PREFETCH is i386's alone.)
             case MachineIntrinsics.StreamPrefetchLine:
-                Emit(new MInstr(name == MachineIntrinsics.StreamPrefetch ? MOp.PrefetchNta : MOp.PrefetchLine, new MMem(R(i.Operands[0]), 0)) { Probed = true });
+                Emit(new MInstr(MOp.PrefetchLine, new MMem(R(i.Operands[0]), 0)) { Probed = true });
                 return;
             case MachineIntrinsics.StreamCopy64:
             case MachineIntrinsics.StreamFill64:
@@ -5009,24 +4941,6 @@ internal sealed partial class Selector
                 if (i.Dest is not null)
                     Emit(new MInstr(MOp.MmxEqual8, Lo(i.Dest), new MMem(R(i.Operands[0]), 0), new MMem(R(i.Operands[1]), 0)) { Probed = true });
                 return;
-            case MachineIntrinsics.BitScanForward:
-            case MachineIntrinsics.BitScanReverse:
-                // One instruction from the 386 on; the source is never zero
-                // (its caller asks first), where the result is undefined.
-                if (i.Dest is not null) Emit(name == MachineIntrinsics.BitScanForward ? MOp.Bsf : MOp.Bsr, Lo(i.Dest), R(i.Operands[0]));
-                return;
-            case MachineIntrinsics.CpuidEax:
-            case MachineIntrinsics.CpuidEdx:
-            {
-                // One register of the leaf, straight out of the instruction:
-                // nothing stored, so the asker needs no memory to ask with.
-                MReg leaf = R(i.Operands[0]);
-                Mov(Eax, leaf);
-                Mov(Ecx, Imm(0));
-                Emit(new MInstr(MOp.Cpuid) { Probed = true });
-                if (i.Dest is not null) Mov(Lo(i.Dest), name == MachineIntrinsics.CpuidEax ? Eax : Edx);
-                return;
-            }
             case MachineIntrinsics.CpuidPresent:
             {
                 // WHETHER CPUID IS THERE: EFLAGS.ID (bit 21) can be changed
@@ -5069,12 +4983,6 @@ internal sealed partial class Selector
                 }
                 return;
             }
-            case MachineIntrinsics.ReadCodeSegment:
-                if (i.Dest is not null) Emit(MOp.ReadCs, Lo(i.Dest));
-                return;
-            case MachineIntrinsics.SetGs:
-                Emit(MOp.SetGs, R(i.Operands[0]));
-                return;
             case MachineIntrinsics.PerCpuRead:
                 if (i.Dest is null) return;
                 if (i.Operands[0] is ImmOperand { Value: var readAt }) Emit(MOp.GsLoadAt, Lo(i.Dest), new MImm(readAt));

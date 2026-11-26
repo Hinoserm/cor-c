@@ -85,7 +85,7 @@ public static class RuntimeAbi
     /// <summary>
     /// The hosted runtime's copy and fill around the caches (Runtime.StreamCopy,
     /// StreamFill), which the backend of either mode calls for a block of 256 KB or more
-    /// whose length is known only as it runs: named by no unit's IR, kept as
+    /// (behind a compare where its length is known only as it runs): named by no unit's IR, kept as
     /// the store sequences' barriers are (Module.RuntimeHelpers, the link's roots).
     /// </summary>
     public const string StreamCopy = "m_Runtime_StreamCopy_3_" + Word + "_" + Word + "_" + Word + "_r$V$Void";
