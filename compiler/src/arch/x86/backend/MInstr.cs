@@ -67,7 +67,7 @@ public sealed class MInstr : MOperandList
     /// whoever made it). One
     /// instruction, so the zeroing is the conversion's own register and no
     /// pass parts them or drops it as dead (Peephole.DeadXmmMoves); every
-    /// rebuild of an instruction carries it (X86Target.Build, LoopRotate.Clone,
+    /// rebuild of an instruction carries it (MInstr.Rebuilt, LoopRotate.Clone,
     /// Peephole's spill folding, Select.Owning).
     /// </summary>
     public bool ZeroFirst { get; set; }

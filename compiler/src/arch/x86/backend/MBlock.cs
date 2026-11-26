@@ -18,7 +18,7 @@ public sealed class MBlock
     public Block? Source { get; init; }
 
     /// <summary>
-    /// For a block made of a stored edge (X86Target, IPlacement.StoredEdges),
+    /// For a block made of a stored edge (FamilyTarget.Rebuild, IPlacement.StoredEdges; both modes),
     /// the block that edge leaves: whether its jump is a loop's way back is
     /// that block's (Encoder's loop heads), wherever the edge is laid.
     /// </summary>

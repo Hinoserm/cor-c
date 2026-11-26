@@ -57,8 +57,8 @@ Geode). Re-measure before turning it on for a new `--cpu`.
 ## How it would fit the allocator
 
 The allocator already has the shape it needs: a spilled value's slot is a
-number the target turns into an operand (`ITarget.NewSlot`, `X86Target.Slot`,
-`X64Target.Slot`), and every store and reload is placed by the allocator and
+number the target turns into an operand (`ITarget.NewSlot`,
+`FamilyTarget.Slot`), and every store and reload is placed by the allocator and
 emitted by the target (`IPlacement.Before`, `After`, `MovesBefore`). A
 Spill2Reg pass would run after the scan, as LLVM's does:
 

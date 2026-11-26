@@ -64,8 +64,8 @@ internal abstract class FamilyTarget
 
     /// <summary>
     /// What an instruction does besides its registers, for the scheduler
-    /// (Effect): the flags and memory of the plain integer and scalar SSE
-    /// instructions it may move; anything else -- a call, a branch, a push, a
+    /// (Effect): the flags and memory of the plain integer and SSE instructions
+    /// it may move (scalar, packed, and the moves between the two files); anything else -- a call, a branch, a push, a
     /// divide (it may fault on its own), x87 and MMX state, a fence, a locked,
     /// device or segment-relative access -- a barrier. INC, DEC, a rotate
     /// (SF, ZF and PF kept), a shift by CL or by a constant the processor
@@ -224,8 +224,10 @@ internal abstract class FamilyTarget
         _m.NextVReg = Math.Max(_m.NextVReg, f.NextVReg);
         Saved(f, p);
         // A THUNK C ENTERS GIVES NONE OF THEM A VALUE (Function.KeepsCallerRegisters):
-        // what it calls on its way out reads them for C's. Refused, never a
-        // reference the collector would not find.
+        // what it calls on its way out reads them for C's, and one it saved it
+        // wrote -- an instruction's own register (CPUID's EBX, REP MOVS's ESI
+        // and EDI) the register file does not see. Refused, never a reference
+        // the collector would not find.
         if (_m.Source.KeepsCallerRegisters && _m.SavedRegs.Count > 0)
             throw new InvalidOperationException($"{_m.Source.Name}: the way in from C writes {string.Join(", ", _m.SavedRegs)}, which it must leave as C left them");
     }
@@ -251,7 +253,7 @@ internal abstract class FamilyTarget
         {
             if (ai.Made == Made.Jump) return new MInstr(MOp.Jmp, new MLabel(blocks[ai.Targets![0]])) { Line = ai.Line };
             int destination = ai.Regs[0].Reg;
-            return Copy(destination, PlaceOf(p.Of(index, 0), new MReg(destination)), PlaceOf(p.Of(index, 1), new MReg(ai.Regs[1].Reg)), ai.Line);
+            return Copy(destination, PlaceOf(p.Of(index, 0), MReg.Of(destination)), PlaceOf(p.Of(index, 1), MReg.Of(ai.Regs[1].Reg)), ai.Line);
         }
         // A jump table whose blocks the allocator laid out again: the blocks they are now.
         List<MBlock>? table = i.Table;

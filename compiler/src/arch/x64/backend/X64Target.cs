@@ -13,12 +13,12 @@ namespace Corsac.Lang.X64;
 /// under the System V ABI; RSP and RBP never touched. Each instruction
 /// lowered once into the registers it names (Allocator.RegsOf), which
 /// operands may be memory (Allocator.Foldable) or a constant, its jumps; and
-/// the function rebuilt from what was decided, a spilled value moved by its
-/// class's move (MOV, MOVSD) through an eight-byte slot.
+/// the function rebuilt from what was decided (FamilyTarget.Rebuild), a spilled
+/// value moved by its class's move (MOV, MOVSD) through an eight-byte slot.
 /// </summary>
 internal sealed class X64Target : FamilyTarget, ITarget
 {
-    private const int Gprs = 0, Xmms = 1;
+    private const int Xmms = 1;
 
     private static readonly RegisterFile File = new()
     {
@@ -152,7 +152,6 @@ internal sealed class X64Target : FamilyTarget, ITarget
     }
 
     public override RegisterFile Registers => _m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File;
-
 
     /// <summary>Every general register has a byte form under REX.</summary>
     public bool ByteOnly(int vreg) => false;
@@ -290,7 +289,7 @@ internal sealed class X64Target : FamilyTarget, ITarget
             ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol }) { Width = 8, Line = line }
             : constant is MImm imm
             ? new MInstr(MOp.Mov, Out(reg), imm) { Width = 8, Line = line }
-            : new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, Out(reg), Slot(slot)) { Width = 8, Line = line };
+            : Move(Out(reg), Slot(slot), line);
 
     /// <summary>
     /// The callee-saved registers touched, or all of them where the function
@@ -308,7 +307,7 @@ internal sealed class X64Target : FamilyTarget, ITarget
 
     /// <summary>A spilled value moved by its class's move (MOV, MOVSD) through an eight-byte slot: the class the register operand is of.</summary>
     protected override MInstr Move(MOperand to, MOperand from, int line)
-        => new MInstr(to is MReg { IsFloat: true } || from is MReg { IsFloat: true } ? MOp.MovF : MOp.Mov, to, from) { Width = 8, Line = line };
+        => new MInstr(to is MReg r && ClassOf(r.Id) == Xmms || from is MReg s && ClassOf(s.Id) == Xmms ? MOp.MovF : MOp.Mov, to, from) { Width = 8, Line = line };
 
     /// <summary>The allocator's copy, by the class of the register copied into.</summary>
     protected override MInstr Copy(int destination, MOperand to, MOperand from, int line)

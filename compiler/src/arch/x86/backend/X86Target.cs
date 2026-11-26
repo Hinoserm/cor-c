@@ -12,8 +12,8 @@ namespace Corsac.Lang.X86;
 /// and EBP never touched. Each instruction lowered once into the registers
 /// it names (Allocator.RegsOf), which operands may be memory or an
 /// immediate (Allocator.Foldable, FoldableImm), its jumps; and the function
-/// rebuilt from what was decided, the loads, stores and constants around
-/// each instruction made here.
+/// rebuilt from what was decided (FamilyTarget.Rebuild), the loads, stores
+/// and constants around each instruction made here (Move, Remade).
 /// </summary>
 internal sealed class X86Target : FamilyTarget, ITarget
 {
@@ -86,7 +86,6 @@ internal sealed class X86Target : FamilyTarget, ITarget
             XmmClass,
         },
     };
-
 
     /// <summary>
     /// A THUNK'S REGISTERS (Function.KeepsCallerRegisters): EAX, ECX and EDX
