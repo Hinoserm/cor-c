@@ -47,8 +47,8 @@ internal static class DivisionMagic
 
     private static Unsigned ForUnsigned(ulong d, int bits, int leadingZeros, bool evenStep)
     {
-        if (bits is < 8 or > 64 || leadingZeros < 0 || leadingZeros >= bits)
-            throw new ArgumentOutOfRangeException(nameof(bits));
+        if (bits is < 8 or > 64) throw new ArgumentOutOfRangeException(nameof(bits));
+        if (leadingZeros < 0 || leadingZeros >= bits) throw new ArgumentOutOfRangeException(nameof(leadingZeros));
         if (d < 2 || (d & (d - 1)) == 0 || (UInt128)d >= UInt128.One << (bits - leadingZeros))
             throw new ArgumentOutOfRangeException(nameof(d));
         UInt128 mask = (UInt128.One << bits) - 1;

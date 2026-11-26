@@ -3013,10 +3013,11 @@ internal sealed partial class Selector
     ///   GCC and Clang write it. A magic of 33 bits (the Add form) is
     ///   instead shifted up into one 64-bit constant whose product's high
     ///   word is the quotient: (n * ((2^32 + m) << (64 - p))) >> 64, which is
-    ///   n * (2^32 + m) >> p exactly -- a MUL and nothing after it (LLVM,
-    ///   2026: "Optimize 32-bit udiv with 33-bit magic constants on 64-bit
-    ///   targets", some 40% quicker on the divisors it takes, 7, 19, 21 and
-    ///   about a quarter of all).
+    ///   n * (2^32 + m) >> p exactly -- a MUL and nothing after it (LLVM
+    ///   pull request 181288, February 2026, "Optimize 32-bit udiv with
+    ///   33-bit magic constants on 64-bit targets": its author measured a
+    ///   billion divisions by 7, 19 and 107 at 40% quicker on a Xeon, and
+    ///   counted about 23% of 31-bit divisors as taking that form).
     ///
     /// AN UNSIGNED dividend known to have fewer bits (UnsignedBits) asks a
     /// smaller magic, which needs the Add form less often, and a divisor
@@ -3046,18 +3047,17 @@ internal sealed partial class Selector
             ulong ud = w == 4 ? unchecked((uint)divisor) : unchecked((ulong)divisor);
             if (PowerOfTwo(ud))
             {
+                // (n is this instruction's own copy: changed in place.)
                 int k = System.Numerics.BitOperations.TrailingZeroCount(ud);
-                MReg part = Temp();
-                MovW(part, n, w);
-                if (!rem) EmitW(MOp.Shr, w, part, Imm(k));
-                else if (k < 32) EmitW(MOp.And, w, part, Imm(unchecked((int)(uint)(ud - 1))));
+                if (!rem) EmitW(MOp.Shr, w, n, Imm(k));
+                else if (k < 32) EmitW(MOp.And, w, n, Imm(unchecked((int)(uint)(ud - 1))));
                 else
                 {
                     // A mask wider than an immediate: the bits above it shifted out and back.
-                    EmitW(MOp.Shl, w, part, Imm(bits - k));
-                    EmitW(MOp.Shr, w, part, Imm(bits - k));
+                    EmitW(MOp.Shl, w, n, Imm(bits - k));
+                    EmitW(MOp.Shr, w, n, Imm(bits - k));
                 }
-                MovW(Lo(d), part, w);
+                MovW(Lo(d), n, w);
                 return true;
             }
             if (w == 8 && ud > 1UL << 63)
@@ -3157,30 +3157,28 @@ internal sealed partial class Selector
             {
                 // n + (2^k - 1 where n is negative), then the shift: toward zero.
                 int k = System.Numerics.BitOperations.TrailingZeroCount(magnitude);
-                MReg bias = Temp(), part = Temp();
+                MReg bias = Temp();
                 MovW(bias, n, w);
                 EmitW(MOp.Sar, w, bias, Imm(bits - 1));
                 EmitW(MOp.Shr, w, bias, Imm(bits - k));
-                MovW(part, n, w);
-                EmitW(MOp.Add, w, part, bias);
                 if (rem)
                 {
                     // n less (n + bias) with its low k bits cleared.
-                    if (k < 32) EmitW(MOp.And, w, part, Imm(-(1L << k)));
+                    EmitW(MOp.Add, w, bias, n);
+                    if (k < 32) EmitW(MOp.And, w, bias, Imm(-(1L << k)));
                     else
                     {
-                        EmitW(MOp.Shr, w, part, Imm(k));
-                        EmitW(MOp.Shl, w, part, Imm(k));
+                        EmitW(MOp.Shr, w, bias, Imm(k));
+                        EmitW(MOp.Shl, w, bias, Imm(k));
                     }
-                    MReg left = Temp();
-                    MovW(left, n, w);
-                    EmitW(MOp.Sub, w, left, part);
-                    MovW(Lo(d), left, w);
+                    EmitW(MOp.Sub, w, n, bias);
+                    MovW(Lo(d), n, w);
                     return true;
                 }
-                EmitW(MOp.Sar, w, part, Imm(k));
-                if (divisor < 0) EmitW(MOp.Neg, w, part);
-                MovW(Lo(d), part, w);
+                EmitW(MOp.Add, w, n, bias);
+                EmitW(MOp.Sar, w, n, Imm(k));
+                if (divisor < 0) EmitW(MOp.Neg, w, n);
+                MovW(Lo(d), n, w);
                 return true;
             }
             DivisionMagic.Signed magic = DivisionMagic.ForSigned(divisor, bits);

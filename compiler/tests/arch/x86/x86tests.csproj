@@ -20,6 +20,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="PackedMemoryBenchmarks.cs" />
     <Compile Include="EmittedInstructionAudit.cs" />
+    <Compile Include="DivisionByConstant.cs" />
     <ProjectReference Include="../../../corc.csproj" />
   </ItemGroup>
 

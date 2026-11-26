@@ -18,6 +18,9 @@ internal static class Program
 {
     private static int _failures;
 
+    /// <summary>The division-by-a-constant checkers _start calls (DivisionByConstant.AddI386).</summary>
+    private static List<string> _divisionCheckers = new();
+
     private static void DeferredFunctions()
     {
         Module shells = new("deferred");
@@ -136,6 +139,7 @@ internal static class Program
             return _failures;
         }
         EmittedInstructionAudit.Run(Check);
+        DivisionByConstant.LongMode(Check);
         PruneArithmetic();
         EbpValueNotForwardedAcrossItsWrite();
         RepeatingMemoryRegions();
@@ -185,6 +189,7 @@ internal static class Program
         ByteWord(m);
         Mmap6(m);
         Ports(m);
+        _divisionCheckers = DivisionByConstant.AddI386(m);
         Start(m);
         m.Data.Add(new DataItem("greeting", Encoding.ASCII.GetBytes("hi\n")) { ReadOnly = true, Align = 1 });
         DataItem table = new("table", new byte[8]);
@@ -313,9 +318,11 @@ internal static class Program
         // still lists, is not one.
         Check(!System.Text.RegularExpressions.Regex.IsMatch(FunctionAsm(asm, "sum"), @"j\w+ (\.[\w-]+)\n\s+jmp \.[\w-]+\n\1:"), "conditional jump around a jump is inverted");
 
-        // But not between a compare and the cmov it feeds: an xor would
-        // write the flags the cmov reads (IfConvert).
-        Check(!System.Text.RegularExpressions.Regex.IsMatch(asm, @"\n\s+mov e\w\w, 0\n(?!\s+cmov)"), "zeroing a register uses xor");
+        // But not between a flag's maker and what reads it: a compare and
+        // the cmov it feeds (IfConvert), a subtract and the SBB or ADC that
+        // takes its borrow (a 64-bit pair's compare and negation): an xor
+        // would write the flags they read.
+        Check(!System.Text.RegularExpressions.Regex.IsMatch(asm, @"\n\s+mov e\w\w, 0\n(?!\s+(cmov|sbb|adc))"), "zeroing a register uses xor");
         string remat = FunctionAsm(asm, "remat");
         Check(!System.Text.RegularExpressions.Regex.IsMatch(remat, @"mov (\w+), 77\n\s+mov \[ebp-\d+\], \1"), "a spilled constant is rematerialised, not stored");
         Check(remat.Contains(", 77"), "a rematerialised constant folds into its use");
@@ -1890,6 +1897,7 @@ internal static class Program
         Expect(b.Call("byteword", IrType.I64, I(0x12), I(0xEF), I(0xCD), I(0xAB))!, I(0xABCDEF12L, IrType.I64));
         Expect(b.Call("byteword", IrType.I64, I(0xFF), I(0xFF), I(0xFF), I(0xFF))!, I(0xFFFFFFFFL, IrType.I64));
         Expect(b.Call("mmap6", IrType.I32)!, I(1));
+        foreach (string checker in _divisionCheckers) Expect(b.Call(checker, IrType.I32)!, I(1));
         Expect(b.Call("spilledbool", IrType.I32, I(2), I(5))!, I(256 + 0 + 2 * Enumerable.Range(2, 8).Sum()));
         Expect(b.Call("spilledbool", IrType.I32, I(-3), I(5))!, I(256 + 1 + -3 * Enumerable.Range(2, 8).Sum()));
         Expect(b.Call("spilledbool", IrType.I32, I(9), I(5))!, I(0 + 1 + 9 * Enumerable.Range(2, 8).Sum()));
