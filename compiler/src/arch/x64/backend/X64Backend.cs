@@ -189,73 +189,17 @@ public sealed class X64Backend : IBackend
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
         OptimizationSummary summary = new();
 
-        // A bounded window, as the i386 backend keeps: workers select and
-        // allocate disjoint functions; encoding and layout stay serial, so
-        // the object is the same whatever the worker count.
+        // A bounded window (CompileWindow, both backends'): workers select
+        // and allocate disjoint functions; encoding and layout stay serial,
+        // so the object is the same whatever the worker count.
         Corsac.Lang.RegAlloc.SpillCounter? spills = CountSpills ? new(SpillMap) : null;
-        int workers = Workers;
-        int window = FunctionLoader is null ? workers * 4 : workers;
-        MFunction?[] compiled = new MFunction?[window];
-        List<string>?[] diagnostics = new List<string>?[window];
-        int batchStart = 0, batchEnd = 0;
+        Corsac.Lang.Backends.CompileWindow<MFunction> window = new(module.Functions, Workers, FunctionLoader, FunctionLoadBytes, FunctionMemoryBudget,
+            (body, said) => Compile(body, said, body.Name == module.Entry, isExternal));
         PeakBatchBytes = 0; PeakBatchFunctions = 0;
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
-            MFunction? m;
-            if (workers == 1 && FunctionLoader is null)
-            {
-                Function only = module.Functions[functionIndex];
-                m = Compile(only, errors, only.Name == module.Entry, isExternal);
-            }
-            else
-            {
-                if (functionIndex == batchEnd)
-                {
-                    int first = functionIndex;
-                    int count = Math.Min(window, module.Functions.Count - first);
-                    long bytes = 0;
-                    if (FunctionLoader is not null)
-                    {
-                        count = 0;
-                        while (count < window && first + count < module.Functions.Count)
-                        {
-                            long cost = FunctionLoadBytes?.Invoke(first + count)
-                                ?? throw new InvalidOperationException("Deferred functions require memory costs");
-                            if (cost <= 0)
-                                throw new InvalidDataException("Function has no backend working cost: " + module.Functions[first + count].Name);
-                            if (count > 0 && cost > FunctionMemoryBudget - bytes) break;
-                            bytes += cost; count++;
-                            // Bigger than the whole budget: compiled alone, never refused.
-                            if (cost > FunctionMemoryBudget) break;
-                        }
-                    }
-                    batchStart = first; batchEnd = first + count;
-                    PeakBatchBytes = Math.Max(PeakBatchBytes, bytes);
-                    PeakBatchFunctions = Math.Max(PeakBatchFunctions, count);
-                    int active = Math.Min(workers, count);
-                    Task[] tasks = new Task[active];
-                    for (int worker = 0; worker < active; worker++)
-                    {
-                        int lane = worker;
-                        tasks[worker] = Corsac.UnitScope.Run(() =>
-                        {
-                            for (int item = lane; item < count; item += active)
-                            {
-                                List<string> localErrors = new();
-                                Function body = FunctionLoader?.Invoke(first + item) ?? module.Functions[first + item];
-                                compiled[item] = Compile(body, localErrors, body.Name == module.Entry, isExternal);
-                                diagnostics[item] = localErrors;
-                            }
-                        });
-                    }
-                    Task.WhenAll(tasks).Wait();
-                }
-                int slot = functionIndex - batchStart;
-                errors.AddRange(diagnostics[slot]!);
-                m = compiled[slot];
-                compiled[slot] = null;
-                diagnostics[slot] = null;
-            }
+            MFunction? m = window.Take(functionIndex, errors);
+            (PeakBatchBytes, PeakBatchFunctions) = (window.PeakBatchBytes, window.PeakBatchFunctions);
             if (m is null)
             {
                 continue;

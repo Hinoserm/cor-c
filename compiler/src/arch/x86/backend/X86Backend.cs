@@ -389,15 +389,11 @@ public sealed class X86Backend : IBackend
         // The calls a link summary may name, refilled for each function.
         HashSet<string> eligible = new(StringComparer.Ordinal);
 
-        // A bounded window avoids retaining a whole module of machine IR.
-        // Workers only read the symbol sets and each owns disjoint functions,
-        // results and diagnostics. Encoding and layout below remain serial.
+        // A bounded window avoids retaining a whole module of machine IR
+        // (CompileWindow, both backends'). Workers only read the symbol sets
+        // and each owns disjoint functions, results and diagnostics.
+        // Encoding and layout below remain serial.
         Corsac.Lang.RegAlloc.SpillCounter? spills = CountSpills ? new(SpillMap) : null;
-        int workers = Workers;
-        int window = FunctionLoader is null ? workers * 4 : workers;
-        MFunction?[] compiled = new MFunction?[window];
-        List<string>?[] diagnostics = new List<string>?[window];
-        int batchStart = 0, batchEnd = 0;
         PeakBatchBytes = 0; PeakBatchFunctions = 0;
         // THE FUNCTIONS THAT NEVER TOUCH THE FPU'S STATE (FpuFree): a call to
         // one keeps the MMX registers and needs no x87 save in a packed block.
@@ -415,68 +411,17 @@ public sealed class X86Backend : IBackend
         // where every callee of it was; none makes x87 or MMX code of its own.
         _fpuDeferred = FunctionLoader is null || module.Functions.Any(f => f.Blocks.Count != 0)
             ? null : new DeferredFacts(module, FunctionLoader, SafepointPolls, _fpuDefined);
+        Corsac.Lang.Backends.CompileWindow<MFunction> window = new(module.Functions, Workers, FunctionLoader, FunctionLoadBytes, FunctionMemoryBudget,
+            (body, said) =>
+            {
+                Prepare?.Invoke(body);
+                return Compile(body, said, askPrivate, askDefined, askImported);
+            });
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
             Function f = module.Functions[functionIndex];
-            MFunction? m;
-            if (workers == 1 && FunctionLoader is null)
-            {
-                Prepare?.Invoke(f);
-                m = Compile(f, errors, askPrivate, askDefined, askImported);
-            }
-            else
-            {
-                if (functionIndex == batchEnd)
-                {
-                    int first = functionIndex;
-                    int count = Math.Min(window, module.Functions.Count - first);
-                    long bytes = 0;
-                    if (FunctionLoader is not null)
-                    {
-                        count = 0;
-                        while (count < window && first + count < module.Functions.Count)
-                        {
-                            long cost = FunctionLoadBytes?.Invoke(first + count)
-                                ?? throw new InvalidOperationException("Deferred functions require memory costs");
-                            if (cost <= 0)
-                                throw new InvalidDataException("Function has no backend working cost: " + module.Functions[first + count].Name);
-                            if (count > 0 && cost > FunctionMemoryBudget - bytes) break;
-                            bytes += cost; count++;
-                            // Bigger than the whole budget: compiled alone, as
-                            // slowly as it must be, never refused. The batch
-                            // sizes the work, not the code.
-                            if (cost > FunctionMemoryBudget) break;
-                        }
-                    }
-                    batchStart = first; batchEnd = first + count;
-                    PeakBatchBytes = Math.Max(PeakBatchBytes, bytes);
-                    PeakBatchFunctions = Math.Max(PeakBatchFunctions, count);
-                    int active = Math.Min(workers, count);
-                    Task[] tasks = new Task[active];
-                    for (int worker = 0; worker < active; worker++)
-                    {
-                        int lane = worker;
-                        tasks[worker] = Corsac.UnitScope.Run(() =>
-                        {
-                            for (int item = lane; item < count; item += active)
-                            {
-                                List<string> localErrors = new();
-                                Function selected = FunctionLoader?.Invoke(first + item) ?? module.Functions[first + item];
-                                Prepare?.Invoke(selected);
-                                compiled[item] = Compile(selected, localErrors,
-                                    askPrivate, askDefined, askImported);
-                                diagnostics[item] = localErrors;
-                            }
-                        });
-                    }
-                    Task.WhenAll(tasks).Wait();
-                }
-                int slot = functionIndex - batchStart;
-                errors.AddRange(diagnostics[slot]!);
-                m = compiled[slot];
-                compiled[slot] = null;
-                diagnostics[slot] = null;
-            }
+            MFunction? m = window.Take(functionIndex, errors);
+            (PeakBatchBytes, PeakBatchFunctions) = (window.PeakBatchBytes, window.PeakBatchFunctions);
             if (m is null)
             {
                 continue;

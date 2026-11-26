@@ -738,16 +738,7 @@ internal sealed partial class Selector
     private void SelectCallL(Instr i)
     {
         VReg? d = i.Dest;
-        if (i.Op == Opcode.Call && i.Callee == "__exception")
-        {
-            // The head of a landing pad: the unwinder arrived with the
-            // exception in RAX and nothing else defined.
-            if (d is not null)
-            {
-                MovL(V(d), Rax);
-            }
-            return;
-        }
+        if (LandingPadHead(i)) return;
         if (i.Op == Opcode.Call && i.Callee is { } callee
             && callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.Prefix, StringComparison.Ordinal))
         {
@@ -759,12 +750,10 @@ internal sealed partial class Selector
         // WHERE EACH ARGUMENT GOES is the convention's word (Conventions.
         // SystemV), as at the callee's entry (LoadParams).
         Convention convention = Conventions.SystemV;
-        IrType[] types = new IrType[i.Operands.Count - first];
-        for (int k = 0; k < types.Length; k++) types[k] = i.Operands[first + k].Type;
-        CallPlan plan = convention.Arguments(types);
+        CallPlan plan = PlanOf(i, first);
         List<(Operand Value, int Reg)> inRegs = new();
         List<Operand> onStack = new();
-        for (int k = 0; k < types.Length; k++)
+        for (int k = 0; k < plan.Places.Length; k++)
         {
             ArgPlace place = plan.Places[k];
             if (place.Kind == PlaceKind.Float) inRegs.Add((i.Operands[first + k], MReg.XmmBase + place.Register));

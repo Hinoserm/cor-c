@@ -4330,19 +4330,30 @@ internal sealed partial class Selector
         }
     }
 
+    /// <summary>
+    /// The pseudo-call at the head of a landing pad (`__exception`), both
+    /// modes: the unwinder arrived with the exception in the accumulator
+    /// and nothing else defined. False for any other call.
+    /// </summary>
+    private bool LandingPadHead(Instr i)
+    {
+        if (i.Op != Opcode.Call || i.Callee != "__exception") return false;
+        if (i.Dest is not null) Emit(MOp.Mov, Whole(i.Dest), MReg.Of(Gpr.Eax));
+        return true;
+    }
+
+    /// <summary>Where the convention puts a call's arguments: its operands from `first` on (a call through an address has the address before them), in the register form or the stack-only one.</summary>
+    private static CallPlan PlanOf(Instr i, int first, bool registers = true)
+    {
+        IrType[] types = new IrType[i.Operands.Count - first];
+        for (int k = 0; k < types.Length; k++) types[k] = i.Operands[first + k].Type;
+        return Conventions.Current.Arguments(types, registers);
+    }
+
     private void SelectCall(Instr i)
     {
         VReg? d = i.Dest;
-        if (i.Op == Opcode.Call && i.Callee == "__exception")
-        {
-            // The pseudo-call at the head of a landing pad: the unwinder
-            // arrived with the exception in EAX and nothing else defined.
-            if (d is not null)
-            {
-                Mov(Lo(d), Eax);
-            }
-            return;
-        }
+        if (LandingPadHead(i)) return;
 
         if (_positionIndependent && i.Op == Opcode.Call && i.Callee is MachineIntrinsics.CardMark or MachineIntrinsics.Barrier)
         {
@@ -4375,9 +4386,7 @@ internal sealed partial class Selector
         // I386): its register form for a call to a function that takes its
         // first three words so (RegisterArgs.Applies), its stack-only one
         // for a call into C and the rest.
-        IrType[] types = new IrType[i.Operands.Count - first];
-        for (int k = 0; k < types.Length; k++) types[k] = i.Operands[first + k].Type;
-        CallPlan plan = Conventions.I386.Arguments(types, !native && RegisterArgs.Applies(i));
+        CallPlan plan = PlanOf(i, first, !native && RegisterArgs.Applies(i));
         MReg? savedEsp = null;
         MReg? nativeTarget = null;
         if (native)
