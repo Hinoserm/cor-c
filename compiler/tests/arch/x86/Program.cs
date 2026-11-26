@@ -35,6 +35,15 @@ internal static class Program
         }
         List<string> errors = new();
         ObjectFile expected = new X86Backend { EmitLinkSummary = true }.Generate(eager, errors);
+        // THE SAME OBJECT BUT FOR THE FPU-FREE MARKERS (FpuFree.Marker): a
+        // module whose bodies are all there says which of its functions
+        // never touch the FPU's state with a local symbol each, for the
+        // other units of its image; one whose bodies come as they are
+        // compiled judges a function only when a call to it is asked about
+        // (X86Backend.DeferredFacts) and writes no markers -- nothing reads
+        // them of a unit regenerated at the link. The code is the same.
+        int markers = expected.Symbols.RemoveAll(symbol => symbol.Name.EndsWith(FpuFree.Suffix, StringComparison.Ordinal));
+        Check(markers == 7, "a module with its bodies marks its functions that never touch the FPU's state (" + markers + " of 7)");
         foreach (int workers in new[] { 1, 4 })
         {
             int[] loads = new int[7];
@@ -64,6 +73,56 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// THE FPU-FREE VERDICT WHERE BODIES COME ONE AT A TIME
+    /// (X86Backend.DeferredFacts): a function judged when asked about, by
+    /// its body and every function of the module it reaches, each loaded
+    /// once; the same answers a module with all its bodies gives.
+    /// </summary>
+    private static void DeferredFpuFacts()
+    {
+        // a -> b -> c (plain); e -> d (a float); f <-> g (each other, nothing else); h -> an unknown outside.
+        string[] names = { "a", "b", "c", "d", "e", "f", "g", "h" };
+        Function Body(int index)
+        {
+            Function f = new(names[index], IrType.I32) { Exported = true };
+            Builder at = new(f, f.NewBlock());
+            void Call(string callee) => at.Call(callee, IrType.I32);
+            switch (names[index])
+            {
+                case "a": Call("b"); break;
+                case "b": Call("c"); break;
+                case "e": Call("d"); break;
+                case "f": Call("g"); break;
+                case "g": Call("f"); break;
+                case "h": Call("somebody_elses"); break;
+                case "d":
+                    f.NewReg(IrType.F64);
+                    at.Emit(Opcode.Copy, f.NewReg(IrType.F64), new ImmOperand(0, IrType.F64));
+                    break;
+            }
+            at.Ret(new ImmOperand(index, IrType.I32));
+            return f;
+        }
+        Module shells = new("deferred-facts"), eager = new("deferred-facts");
+        for (int i = 0; i < names.Length; i++)
+        {
+            shells.Functions.Add(new Function(names[i], IrType.I32) { Exported = true });
+            eager.Functions.Add(Body(i));
+        }
+        HashSet<string> whole = FpuFree.Compute(eager, polls: false, out HashSet<string> defined);
+        int[] loads = new int[names.Length];
+        X86Backend.DeferredFacts facts = new(shells, i => { System.Threading.Interlocked.Increment(ref loads[i]); return Body(i); }, false, defined);
+        Check(facts.Free("a") && loads[0] == 1 && loads[1] == 1 && loads[2] == 1 && loads.Skip(3).All(n => n == 0),
+            "a function asked about is judged by its body and those it reaches, and no other is loaded");
+        Check(facts.Free("b") && facts.Free("c") && loads[1] == 1 && loads[2] == 1, "those it reached are answered without loading again");
+        Check(!facts.Free("e") && !facts.Free("d"), "a function that calls one touching the FPU's state is not free");
+        Check(facts.Free("f") && facts.Free("g"), "two functions that call only each other are free");
+        Check(!facts.Free("h"), "a call to a function no fact calls free is not free");
+        Check(names.All(n => facts.Free(n) == whole.Contains(n)), "every answer is the one a module with all its bodies gives");
+        Check(loads.All(n => n == 1), "each body loaded once");
+    }
+
     private static int Main(string[] args)
     {
         if (args.Contains("--benchmark-packed")) return PackedMemoryBenchmarks.Run(args.FirstOrDefault(argument => argument.StartsWith("--benchmark-filter="))?.Substring(19));
@@ -81,6 +140,7 @@ internal static class Program
         EbpValueNotForwardedAcrossItsWrite();
         RepeatingMemoryRegions();
         DeferredFunctions();
+        DeferredFpuFacts();
         PicExceptionEntry();
         string outDir = Path.Combine(Path.GetTempPath(), "corsac-x86tests");
         Directory.CreateDirectory(outDir);

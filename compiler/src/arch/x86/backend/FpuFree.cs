@@ -46,10 +46,25 @@ internal static class FpuFree
     /// verdict alone -- never by a fact another object, or this unit's last
     /// build, said of a name it defines now -- and another's by the facts.
     /// </summary>
-    public static bool Known(string callee) => _known?.Contains(callee) == true || _defined?.Contains(callee) != true && Elsewhere.Contains(callee);
+    public static bool Known(string callee) => _known?.Contains(callee) == true
+        || (_defined?.Contains(callee) == true ? _judged?.Invoke(callee) == true : Elsewhere.Contains(callee));
 
-    /// <summary>The module's free functions and the names it defines, for the selection of its functions on this thread (X86Backend.Compile: workers select on threads of their own).</summary>
-    public static void Use(HashSet<string>? free, HashSet<string>? defined) { _known = free; _defined = defined; }
+    /// <summary>
+    /// The module's free functions and the names it defines, for the
+    /// selection of its functions on this thread (X86Backend.Compile:
+    /// workers select on threads of their own). `judged` answers for a
+    /// function of the module whose body was not there to judge beforehand
+    /// (the link's regeneration, which loads each body as it compiles it:
+    /// X86Backend.DeferredFacts), when a call to it is first asked about.
+    /// </summary>
+    public static void Use(HashSet<string>? free, HashSet<string>? defined, Func<string, bool>? judged = null)
+    {
+        _known = free;
+        _defined = defined;
+        _judged = judged;
+    }
+
+    [ThreadStatic] private static Func<string, bool>? _judged;
 
     /// <summary>
     /// This module's free functions, and the names it defines (`defined`).
@@ -60,21 +75,35 @@ internal static class FpuFree
     public static HashSet<string> Compute(Module module, bool polls, out HashSet<string> defined)
     {
         defined = new(module.Functions.Select(f => f.Name), StringComparer.Ordinal);
-        HashSet<string> here = defined;
         Dictionary<string, List<string>> calls = new(StringComparer.Ordinal);
         foreach (Function f in module.Functions)
-        {
-            if (f.Async is not null || f.Blocks.Count == 0) continue;
-            List<string>? callees = new();
-            foreach (Block b in f.Blocks)
-            {
-                foreach (Instr i in b.Instrs)
-                    if (Touches(i, callees)) { callees = null; break; }
-                if (callees is null) break;
-            }
-            if (callees is not null && polls && HasCycle(f)) callees = null;
-            if (callees is not null) calls[f.Name] = callees;
-        }
+            if (Summarise(f, polls) is { } callees) calls[f.Name] = callees;
+        return Settle(calls, defined);
+    }
+
+    /// <summary>
+    /// What one function says of itself: the functions it calls, or null
+    /// where it touches the FPU's state itself, has no body to read, or has
+    /// a loop the collector's poll will be put on (`polls`).
+    /// </summary>
+    public static List<string>? Summarise(Function f, bool polls)
+    {
+        if (f.Async is not null || f.Blocks.Count == 0) return null;
+        List<string> callees = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (Touches(i, callees)) return null;
+        return polls && HasCycle(f) ? null : callees;
+    }
+
+    /// <summary>
+    /// The greatest fixed point over the functions that say something of
+    /// themselves (`calls`): each free until it calls one that is not --
+    /// one of this module's (`here`) that is not free, or another's no
+    /// fact calls free.
+    /// </summary>
+    public static HashSet<string> Settle(Dictionary<string, List<string>> calls, HashSet<string> here)
+    {
         HashSet<string> free = new(calls.Keys, StringComparer.Ordinal);
         for (bool changed = true; changed;)
         {

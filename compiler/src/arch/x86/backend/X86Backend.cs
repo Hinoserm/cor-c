@@ -403,6 +403,10 @@ public sealed class X86Backend : IBackend
         // THE FUNCTIONS THAT NEVER TOUCH THE FPU'S STATE (FpuFree): a call to
         // one keeps the MMX registers and needs no x87 save in a packed block.
         _fpuFree = FpuFree.Compute(module, SafepointPolls, out _fpuDefined);
+        // BODIES LOADED AS THEY ARE COMPILED (FunctionLoader: the link's
+        // regeneration) are not there to judge: a function of this module is
+        // judged when a call to it is first asked about (DeferredFacts).
+        _fpuDeferred = FunctionLoader is null ? null : new DeferredFacts(module, FunctionLoader, SafepointPolls, _fpuDefined);
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
             Function f = module.Functions[functionIndex];
@@ -1057,11 +1061,92 @@ public sealed class X86Backend : IBackend
 
     /// <summary>This module's functions that never touch the FPU's state, and the names it defines (FpuFree.Compute), for its selection.</summary>
     private HashSet<string>? _fpuFree, _fpuDefined;
+    private DeferredFacts? _fpuDeferred;
+
+    /// <summary>
+    /// THE SAME VERDICT WHERE THE BODIES COME ONE AT A TIME (FunctionLoader):
+    /// FpuFree.Compute finds none of the module's functions free there --
+    /// every one is a header -- and a unit regenerated at the link knew none
+    /// of its own, so every call inside it from a packed block emptied the
+    /// MMX registers and saved the x87's state as if into the unknown. Here
+    /// a function is judged when a call to it is first asked about: its
+    /// body loaded, and every function of the module it reaches, each read
+    /// for what it says of itself (FpuFree.Summarise) and let go; then the
+    /// same fixed point over those (FpuFree.Settle), which is the whole
+    /// module's answer for them -- the set is closed under their calls. The
+    /// answers are kept; a module with no packed state at a call asks
+    /// nothing and loads nothing twice.
+    ///
+    /// The loads run on a thread of their own (the loader keeps its
+    /// analyses' state by thread, and the asker is in the middle of a
+    /// function's selection), one asker at a time.
+    /// </summary>
+    internal sealed class DeferredFacts
+    {
+        private readonly Dictionary<string, int> _index = new(StringComparer.Ordinal);
+        private readonly Module _module;
+        private readonly Func<int, Function> _load;
+        private readonly bool _polls;
+        private readonly HashSet<string> _defined;
+        private readonly Dictionary<string, List<string>?> _said = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, bool> _free = new(StringComparer.Ordinal);
+
+        public DeferredFacts(Module module, Func<int, Function> load, bool polls, HashSet<string> defined)
+        {
+            for (int k = 0; k < module.Functions.Count; k++) _index.TryAdd(module.Functions[k].Name, k);
+            _module = module;
+            _load = load;
+            _polls = polls;
+            _defined = defined;
+        }
+
+        public bool Free(string name)
+        {
+            lock (this)
+            {
+                if (_free.TryGetValue(name, out bool known)) return known;
+                Corsac.UnitScope.Run(() => Judge(name)).Wait();
+                return _free[name];
+            }
+        }
+
+        // (A module that holds its bodies -- a unit whose late passes run at
+        // the link -- was judged whole by them already, FpuFree.Compute:
+        // what is asked here is then a function it found not free, answered
+        // from the same body with nothing loaded.)
+        private Function Body(int at) => _module.Functions[at].Blocks.Count != 0 ? _module.Functions[at] : _load(at);
+
+        private void Judge(string asked)
+        {
+            // Every function of the module the asked one reaches, read once.
+            List<string> reached = new();
+            Stack<string> work = new();
+            work.Push(asked);
+            HashSet<string> seen = new(StringComparer.Ordinal) { asked };
+            while (work.Count > 0)
+            {
+                string name = work.Pop();
+                reached.Add(name);
+                if (!_said.TryGetValue(name, out List<string>? callees))
+                    _said[name] = callees = _index.TryGetValue(name, out int at) ? FpuFree.Summarise(Body(at), _polls) : null;
+                if (callees is null) continue;
+                foreach (string callee in callees)
+                    if (_defined.Contains(callee) && !_free.ContainsKey(callee) && seen.Add(callee)) work.Push(callee);
+            }
+            // Those judged before are settled already: free or not, as they said.
+            Dictionary<string, List<string>> calls = new(StringComparer.Ordinal);
+            foreach (string name in reached)
+                if (_said[name] is { } callees && !callees.Any(c => _free.TryGetValue(c, out bool was) && !was))
+                    calls[name] = callees.Where(c => !(_free.TryGetValue(c, out bool was) && was)).ToList();
+            HashSet<string> free = FpuFree.Settle(calls, _defined);
+            foreach (string name in reached) _free[name] = free.Contains(name);
+        }
+    }
 
     /// <summary>Select and allocate one function; null, with errors reported, if it cannot be compiled.</summary>
     private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
-        FpuFree.Use(_fpuFree, _fpuDefined);
+        FpuFree.Use(_fpuFree, _fpuDefined, _fpuDeferred is { } deferred ? deferred.Free : null);
         int before = errors.Count;
         if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
         // The frees before a trap, one copy for every trap that has them (SharedTrapFrees).
