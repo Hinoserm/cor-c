@@ -7,13 +7,17 @@
 // A HANDLER RUNS ON THE DELIVERING THREAD, or on a thread in Os.Pause that
 // found the signal before that thread took it (Settle). A fork made by the
 // handler copies whichever it was. Where it was the delivering thread, the
-// child's only thread is that one, still delivering: here it just leaves
-// (7). Where it was the pausing thread, the delivering thread stayed
+// child's only thread is that one, still delivering. Where it was the
+// pausing thread, the delivering thread stayed
 // behind with the parent: the child must be given one of its own, or no
 // handler ever runs in it again -- the child sends itself SIGTERM after
 // the fork and leaves 0 if that handler ran, 3 if five seconds passed.
-// Which thread wins is the run's to say, so the program asks two dozen
-// times and counts the children that left any other way.
+// The delivering thread's copy is asked the same: it sends itself
+// SIGTERM from the handler and goes on delivering, and the second
+// handler leaves 0 for it; a thread it starts first leaves 3 after five
+// seconds if nothing did. Which thread wins is the run's to say, so the
+// program asks two dozen times and counts the children that did not
+// leave 0.
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -27,8 +31,16 @@ sealed class Forking : PosixSignalHandler
         if (pid == 0)
         {
             Program.InChild = true;
-            // The delivering thread's copy: no thread of the program came with it.
-            if (Environment.CurrentManagedThreadId != Program.First) Environment.Exit(7);
+            // The delivering thread's copy: no thread of the program came
+            // with it, and it must go on delivering once this returns.
+            if (Environment.CurrentManagedThreadId != Program.First)
+            {
+                Program.OnDelivering = true;
+                Thread watch = new Thread(() => { Thread.Sleep(5000); Environment.Exit(3); });
+                watch.IsBackground = true;
+                watch.Start();
+                UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
+            }
         }
         else Volatile.Write(ref Program.Child, pid);
     }
@@ -42,13 +54,14 @@ sealed class Counting : PosixSignalHandler
     {
         context.Cancel = true;
         Interlocked.Increment(ref Ran);
+        if (Program.OnDelivering) Environment.Exit(0);
     }
 }
 
 static class Program
 {
     public static int First, Child;
-    public static volatile bool InChild;
+    public static volatile bool InChild, OnDelivering;
 
     static int Main()
     {
@@ -70,11 +83,11 @@ static class Program
                 return Volatile.Read(ref Counting.Ran) >= 1 ? 0 : 3;
             }
             int pid = Volatile.Read(ref Child);
+            // (Pause returns only once the handler has run and left the pid; none is a fork that failed.)
             if (pid <= 0) { wrong++; continue; }
             int status;
             UnixProcess.WaitPid(pid, out status);
-            int left = UnixProcess.Result(status);
-            if (left != 0 && left != 7) wrong++;
+            if (UnixProcess.Result(status) != 0) wrong++;
         }
         Console.WriteLine("rounds " + rounds + " children wrong " + wrong);
         GC.KeepAlive(forking);

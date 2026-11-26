@@ -1792,8 +1792,15 @@ public static partial class Os
     /// (Gc.ReadyFork, Gc.Forked), and the child forgets the program's other
     /// threads (Runtime.ForkedChild): believing the copy had them, a child
     /// waited for ever at the end of Main. Then its signal handlers get a
-    /// thread to run on again (Runtime.ForkedSignals). A fork made outside
-    /// this -- libc's own, through a DllImport -- has none of it.
+    /// thread to run on again (Runtime.ForkedSignals, ForkedSignalsThread).
+    /// A fork made outside this -- libc's own, through a DllImport -- has
+    /// none of it.
+    ///
+    /// Where the program has signal handlers every signal is blocked on
+    /// this thread from before the fork until both sides are set straight
+    /// -- the collector's readying and the hooks included, so a fault in
+    /// those would be fatal where it is an exception elsewhere; none of
+    /// them faults by design.
     public static int Fork()
     {
         // WHERE THE PROGRAM HAS SIGNAL HANDLERS, every signal is held back
@@ -1802,15 +1809,25 @@ public static partial class Os
         // words -- which the child then forgets -- with nobody to run it,
         // and its default action is no longer the kernel's to take. The
         // kernel keeps it for the child until the mask goes back.
-        bool handlers = Runtime.ForkedSignals != 0;
+        // (The hook read once: registered by another thread meanwhile, it
+        // is not half applied.)
+        nuint signals = Runtime.ForkedSignals;
+        bool handlers = signals != 0;
         long every = 0 - 1, was = 0;
         if (handlers) Sys.Syscall(LinuxCall.RtSigprocmask, 0, (SyscallWord)Sys.AddressOf(ref every), (SyscallWord)Sys.AddressOf(ref was), 8, 0, 0);   // SIG_BLOCK
         bool held = Gc.ReadyFork();
         int pid = (int)Platform.Result(Sys.Syscall(LinuxCall.Fork, 0, 0, 0));
         Gc.Forked(pid == 0, held);
         if (pid == 0 && Runtime.ForkedChild != 0) Sys.Call(Runtime.ForkedChild, 0, 0, 0);
-        if (pid == 0 && Runtime.ForkedSignals != 0) Sys.Call(Runtime.ForkedSignals, 0, 0, 0);
+        if (pid == 0 && handlers) Sys.Call(signals, 0, 0, 0);
         if (handlers) Sys.Syscall(LinuxCall.RtSigprocmask, 2, (SyscallWord)Sys.AddressOf(ref was), 0, 8, 0, 0);     // SIG_SETMASK
+        // THE CHILD'S DELIVERING THREAD ONLY NOW, with the signals as this
+        // thread has them again: a thread takes its maker's mask, and one
+        // made inside the hold kept every signal blocked for its life -- a
+        // fault in a handler it ran was the kernel's to kill the child for.
+        // A signal that lands before the thread is there waits in the
+        // pending word, which the thread reads before it first sleeps.
+        if (pid == 0 && handlers && Runtime.ForkedSignalsThread != 0) Sys.Call(Runtime.ForkedSignalsThread, 0, 0, 0);
         return pid;
     }
 

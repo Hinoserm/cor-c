@@ -4,6 +4,7 @@
 // expect-output:
 // child: handled SIGTERM 1
 // child: second 2
+// child: fault caught 2
 // parent: child 0
 // parent: handled SIGTERM 1
 //
@@ -16,6 +17,13 @@
 // could end. The child is given a delivering thread of its own
 // (ForkedChild, by Os.Fork), and none of what was pending for the parent.
 //
+// THE CHILD'S THREAD TAKES SIGNALS AS ANY OTHER DOES. Signals are held
+// back across the fork; a delivering thread made inside that hold kept
+// every one blocked for its life, and a null reference a handler caught
+// in the parent was the kernel's to kill the child for (a blocked
+// SIGSEGV is not delivered, it ends the process). Each of the child's
+// handlers reads through a null and catches it.
+//
 // The parent registers first, so its thread is running at the fork. The
 // child registers its own handler, sends itself SIGTERM twice, and must
 // see each run within five seconds; then the parent, whose own handler
@@ -26,13 +34,20 @@ using System.Threading;
 
 sealed class Counting : PosixSignalHandler
 {
-    public static int Ran;
+    public static int Ran, Caught;
     public static PosixSignal Last;
+    public static bool Faults;
+    static int[]? _nothing;
 
     public void Invoke(PosixSignalContext context)
     {
         Last = context.Signal;
         context.Cancel = true;
+        if (Faults)
+        {
+            try { Last = (PosixSignal)_nothing![3]; }
+            catch (NullReferenceException) { Interlocked.Increment(ref Caught); }
+        }
         Interlocked.Increment(ref Ran);
     }
 }
@@ -51,6 +66,7 @@ static class Program
         int pid = UnixProcess.Fork();
         if (pid == 0)
         {
+            Counting.Faults = true;
             // The child's own registration: the handlers' table is the copy's, the thread must be new.
             PosixSignalRegistration own = PosixSignalRegistration.Create(PosixSignal.SIGTERM, new Counting());
             UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
@@ -58,6 +74,7 @@ static class Program
             Console.WriteLine("child: " + (first ? "handled " + Counting.Last + " " + Counting.Ran : "never handled"));
             UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
             Console.WriteLine("child: " + (Until(2) ? "second " + Counting.Ran : "second never handled"));
+            Console.WriteLine("child: fault caught " + Volatile.Read(ref Counting.Caught));
             GC.KeepAlive(own);
             return first ? 0 : 3;
         }

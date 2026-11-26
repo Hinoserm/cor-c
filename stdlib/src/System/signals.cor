@@ -109,6 +109,7 @@ public class PosixSignalRegistration : IDisposable
         int n = (int)signal;
         _handlers[n] = handler;
         // (Said before the thread is started: a fork from here on sets the child straight.)
+        Runtime.ForkedSignalsThread = Sys.AddressOf(PosixSignalRegistration.ForkedThread);
         Runtime.ForkedSignals = Sys.AddressOf(PosixSignalRegistration.ForkedChild);
         StartDelivering();
         Install(n, Sys.AddressOf(PosixSignalRegistration.Dispatch));
@@ -135,9 +136,11 @@ public class PosixSignalRegistration : IDisposable
     /// thread that ran them stayed behind. A signal that arrived for the
     /// parent is not the child's (POSIX: none pending is inherited), nor a
     /// delivery the parent was in the middle of; then a delivering thread
-    /// of the child's own, where any handler is set. Every signal is
-    /// blocked from before the fork until this has run (Os.Fork), so none
-    /// of the child's own is forgotten with the parent's.
+    /// of the child's own, where any handler is set -- asked for here
+    /// (_needsThread) and started by ForkedThread. Every signal is blocked
+    /// from before the fork until this has run (Os.Fork), so none of the
+    /// child's own is forgotten with the parent's; the thread is started
+    /// after they are let through again, or it would keep them blocked.
     ///
     /// A FORK MADE BY A HANDLER copies the thread that was running it, in
     /// the middle of its delivery, and the delivery's lock is its to give
@@ -159,10 +162,23 @@ public class PosixSignalRegistration : IDisposable
         {
             if (_handlers[n] != null)
             {
-                StartDelivering();
+                _needsThread = true;
                 return;
             }
         }
+    }
+
+    /// Set by ForkedChild in a child that must be given a delivering thread.
+    static bool _needsThread;
+
+    /// The child's delivering thread, where ForkedChild asked for one
+    /// (Runtime.ForkedSignalsThread, from Os.Fork once the signals it held
+    /// back are let through).
+    static void ForkedThread()
+    {
+        if (!_needsThread) return;
+        _needsThread = false;
+        StartDelivering();
     }
 
     /// Asleep on the pending word until a signal sets a bit in it, then the

@@ -4382,8 +4382,8 @@ internal sealed partial class Selector
         // arguments themselves are all reached through EBP or registers,
         // never through ESP, so moving it under them is safe.
         bool native = NativeCall.Is(i);
-        // WHERE EACH ARGUMENT GOES is the convention's word (Conventions.
-        // I386): its register form for a call to a function that takes its
+        // WHERE EACH ARGUMENT GOES is the convention's word (PlanOf: here
+        // Conventions.I386): its register form for a call to a function that takes its
         // first three words so (RegisterArgs.Applies), its stack-only one
         // for a call into C and the rest.
         CallPlan plan = PlanOf(i, first, !native && RegisterArgs.Applies(i));

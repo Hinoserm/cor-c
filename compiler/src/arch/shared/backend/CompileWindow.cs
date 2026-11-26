@@ -8,8 +8,7 @@ namespace Corsac.Lang.Backends;
 /// workers select and allocate disjoint functions of the window while the
 /// backend takes the results in the module's order and encodes them one
 /// after another -- so the object is the same whatever the worker count,
-/// and no more than a window of machine code is held at once. Each backend
-/// had this loop of its own, word for word.
+/// and no more than a window of machine code is held at once.
 ///
 /// THE WINDOW is four functions a worker where the module holds its
 /// bodies. Where they are loaded as they are compiled (`loader`: a unit
