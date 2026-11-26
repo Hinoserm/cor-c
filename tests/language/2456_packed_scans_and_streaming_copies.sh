@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # The half of test 2456 its output cannot show: that a copy or a fill of a
-# length known only as it runs goes the runtime's streaming way at 256 KB
-# and over, in BOTH modes -- i386's by MOVNTQ through an MMX register, long
+# length known only as it runs goes the runtime's streaming way at three
+# quarters of --cpu's last cache and over (384 KB on the Athlon 64, 96 KB on
+# the Geode LX, never on the cacheless 386), in BOTH modes -- i386's by MOVNTQ through an MMX register, long
 # mode's by MOVNTI of a general register (it had none: every such block
 # went by REP MOVS, through the caches); and that the string scans go the
 # runtime's packed way in both -- long mode's by SSE2, where it scanned a
@@ -61,8 +62,24 @@ for target in x86 x86-64; do
     else
         if echo "$find" | grep -qE 'emms'; then pass "$target: the search leaves the MMX registers at its end"; else fail "$target: the search leaves the MMX registers at its end"; fi
     fi
-    # The call is on the far side of a compare with 256 KB.
-    if grep -qE '^ +cmp [a-z0-9]+, 262144$' "$listing"; then pass "$target: a length is compared with 256 KB"; else fail "$target: a length is compared with 256 KB"; fi
+    # The call is on the far side of a compare with three quarters of the Athlon 64's 512 KB.
+    if grep -qE '^ +cmp [a-z0-9]+, 393216$' "$listing"; then pass "$target: a length is compared with 384 KB"; else fail "$target: a length is compared with 384 KB"; fi
+done
+
+# THE LENGTH BY --cpu's CACHE: the Geode LX's 128 KB makes it 96 KB; the
+# 386 has no cache of its own to stream around, and asks nothing.
+for cpu in geode-lx 386; do
+    listing="$work/streams-$cpu.s"
+    fpu=""; [ $cpu = 386 ] && fpu="--fpu=387"
+    if ! $corc compile "$here/2456_packed_scans_and_streaming_copies.cor" --asm --target x86 --cpu=$cpu $fpu > "$listing" 2> "$listing.err"; then
+        fail "$cpu: the listing is printed"; head -5 "$listing.err"; continue
+    fi
+    compares=$(grep -cE '^ +cmp [a-z0-9]+, (98304|393216|262144)$' "$listing")
+    calls=$(grep -cE '^ +call m_Runtime_Stream(Copy|Fill)_' "$listing")
+    if [ $cpu = geode-lx ]; then
+        if grep -qE '^ +cmp [a-z0-9]+, 98304$' "$listing"; then pass "$cpu: a length is compared with 96 KB"; else fail "$cpu: a length is compared with 96 KB"; fi
+    elif [ "$compares" -eq 0 ] && [ "$calls" -eq 0 ]; then pass "$cpu: no length is compared and nothing streams"
+    else fail "$cpu: no length is compared and nothing streams ($compares compares, $calls calls)"; fi
 done
 
 echo

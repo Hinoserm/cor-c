@@ -117,13 +117,16 @@ internal sealed partial class Selector
     private string? _streamCopy, _streamFill;
 
     /// <summary>
-    /// The streaming length: beyond what a K7's or a K8's level-two cache
-    /// (256 KB to 1 MB) would keep of the block anyway. A shorter one is read
-    /// again soon, and stored around the cache it would be fetched back from
-    /// memory; the inline REP MOVS is the copy for it. (One length for every
-    /// processor of both modes today: by --cpu's cache is the TODO list's.)
+    /// The streaming length: three quarters of the last cache --cpu's
+    /// processor keeps a thread's data in (X86Cpu.LastLevelCacheKb; glibc's
+    /// per-thread rule): a block that long the cache would not keep anyway,
+    /// so stored around it, it evicts nothing. A shorter one is read again
+    /// soon, and stored around the cache it would be fetched back from
+    /// memory; the inline REP MOVS is the copy for it. A processor with no
+    /// cache of its own has nothing to stream around: never.
     /// </summary>
-    private const int StreamBytes = 256 * 1024;
+    private static int StreamBytes
+        => Target.Current.X86Profile.LastLevelCacheKb is var kb and > 0 ? kb * 768 : int.MaxValue;
 
     private Selector(Function f, List<string> errors, bool automaticPacked, bool sse)
     {
@@ -4117,6 +4120,8 @@ internal sealed partial class Selector
     private void StreamedOr(Instr i, string routine, Action inline)
     {
         bool longMode = X86Mode.Long;
+        // A processor with no cache to stream around: the inline form, asking nothing.
+        if (StreamBytes == int.MaxValue) { inline(); return; }
         // A LENGTH KNOWN HERE asks nothing as it runs: under StreamBytes
         // the inline form alone, at it and over the call alone.
         if (i.Operands[2] is ImmOperand { Value: var known })

@@ -200,6 +200,40 @@ public sealed class X86Cpu
         _ => throw new InvalidOperationException($"no instruction cache size for --cpu={Name}"),
     };
 
+    /// <summary>
+    /// THE LAST CACHE A THREAD'S DATA STAYS IN, in kilobytes: the level-two
+    /// cache of a processor with nothing beyond it, the level-two and the
+    /// board's level-three where the K6-III's family has one, and a share
+    /// of a shared level three -- what a copy that runs past it would only
+    /// evict (the streaming copy's threshold, Selector.StreamBytes, is
+    /// three quarters of it, glibc's per-thread rule for
+    /// non_temporal_threshold). None of its own on the 386; the boards' of
+    /// the 486, the Pentium, the 6x86MX and the K6 and K6-2, by the sizes
+    /// most of them carried (256 KB, 512 KB on Super Socket 7); 256 on the
+    /// Pentium Pro, the Pentium III's Coppermine, the Athlon's Thunderbird
+    /// and the Athlon XP's Palomino and Thoroughbred; 512 on the Pentium
+    /// II, the Pentium 4's Northwood and the Athlon 64's Winchester and
+    /// Venice; 128 on the Geode LX; 1 MB on Nocona; a Core 2's 4 MB shared
+    /// by two cores, 2 MB a core; the Phenom's 512 KB with a quarter of
+    /// its 6 MB; Nehalem to Skylake's 8 MB of a quad core's eight threads,
+    /// 1 MB a thread. The psABI levels: v1 tuned as the K8, the others as
+    /// the Intel line of their instructions. From each one's datasheet
+    /// (Intel 242769, 243502, 244453, 249199, 302352, 320390; AMD 21918,
+    /// 22007, 24319, 25112, 31116, 33234; Cyrix 94329).
+    /// </summary>
+    public int LastLevelCacheKb => Name switch
+    {
+        "386" => 0,
+        "486" or "pentium" or "pentium-mmx" or "686" or "pentium3" or "6x86mx" or "athlon" or "athlon-xp" => 256,
+        "geode-lx" => 128,
+        "pentium2" or "pentium4" or "k6" or "k6-2" or "k6-2+" or "athlon64" or "athlon64-sse3" or "x86-64" => 512,
+        "k6-3" or "k6-3+" or "nocona" or "nehalem" or "sandybridge" or "haswell" or "skylake" or "skylake-avx512"
+            or "x86-64-v2" or "x86-64-v3" or "x86-64-v4" => 1024,
+        "core2" or "amdfam10" => 2048,
+        // A model added without its cache is a decision not made: refused.
+        _ => throw new InvalidOperationException($"no last-level cache size for --cpu={Name}"),
+    };
+
     /// <summary>Whether the processor runs x86-64 code (X86Feature.LongMode): what --target x86-64 asks of --cpu.</summary>
     public bool LongMode => Has(X86Feature.LongMode);
 
