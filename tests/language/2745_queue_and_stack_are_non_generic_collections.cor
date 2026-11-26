@@ -26,6 +26,8 @@
 // after: x,_
 // stack mixed: InvalidCastException
 // after: _,_
+// queue boxed long into int[]: InvalidCastException
+// stack boxed int into long[]: InvalidCastException
 // 4 3 2 True
 //
 // Expected output from .NET 10. Queue and Stack name the index differently
@@ -89,6 +91,10 @@ static class Program {
         into = new string[2];
         Try("stack mixed", () => ((ICollection)mixedStack).CopyTo(into, 0));
         Console.WriteLine("after: " + Show(into));
+        Queue<object> boxedLong = new Queue<object>(); boxedLong.Enqueue(5L);
+        Try("queue boxed long into int[]", () => ((ICollection)boxedLong).CopyTo(new int[1], 0));
+        Stack<object> boxedInt = new Stack<object>(); boxedInt.Push(5);
+        Try("stack boxed int into long[]", () => ((ICollection)boxedInt).CopyTo(new long[1], 0));
         IEnumerable<int> asQueue = q;
         IEnumerable<string> asStack = s;
         Console.WriteLine(asQueue.Count() + " " + asStack.Count() + " " + asQueue.Count(x => x > 4) + " " + asStack.Contains("b"));

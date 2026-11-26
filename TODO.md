@@ -387,6 +387,29 @@ tasks below track that work; moving files alone does not reduce the working set.
   open defects, and add standard-behavior regression coverage. A feature
   with a known compatibility failure must not be marked complete merely
   because a custom workflow passes.
+- [ ] An array's element type at run time: `Type.GetElementType` and
+  `Type.IsAssignableFrom` do not exist. .NET's Array.Copy decides a copy
+  from the two element types before copying anything (CanAssignArrayType),
+  and so does the non-generic `ICollection.CopyTo` of Queue<T> and Stack<T>
+  (`CollectionCopy` in Core.cor), which makes the mismatch an
+  ArgumentException. Here each element goes through SetValue, so these
+  differ (each checked against .NET 10):
+  - same-size integers reinterpreted (`int` into `uint[]`, `long` into
+    `ulong[]`, `char` into `ushort[]`): copied by .NET, refused here;
+  - an enum and its underlying type, either way (`DayOfWeek` into `int[]`,
+    `int` into `DayOfWeek[]`): copied by .NET, not here;
+  - a Nullable and its plain type, either way (`int?` into `int[]`, `int`
+    into `int?[]`): refused by .NET, copied here;
+  - unrelated reference types (`string` into `int[]`, `string` into
+    `Uri[]`) and a sealed source into an interface it does not implement:
+    refused by .NET before the first copy, an InvalidCastException at the
+    first element here.
+  What matches already: a value type that cannot be held at all, an
+  interface or `object` target, a cast refused partway (kept as copied), and
+  a boxed value in a reference-type collection put into a primitive array
+  of another type (refused, as .NET's unboxing never widens). Needed: the element type of an array's
+  descriptor, .NET's assignability relation, and Array.Copy and
+  CollectionCopy deciding from it before the first element.
 - [x] Anonymous methods (C# 12.19): `delegate (int x) { ... }` is a block
   lambda with its types written; `delegate { ... }` converts to a delegate of
   any parameters but `out` ones and has no natural type; a cast may be
@@ -403,20 +426,6 @@ tasks below track that work; moving files alone does not reduce the working set.
   - generic bodies bound against the template's parameters.
   Until then such a copy only named in a body is declared while binding, so the
   refusal stays a message (Binder.MayCollide).
-- [ ] An array's element type at run time: `Type.GetElementType` and
-  `Type.IsAssignableFrom` do not exist. .NET's Array.Copy and the
-  non-generic `ICollection.CopyTo` refuse a copy between unrelated element
-  types before any element is copied, an ArrayTypeMismatchException (a
-  collection's ArgumentException). Two examples are a `string` into an
-  `int[]` and a `string` into a `Uri[]`. A cast that may succeed (a
-  downcast, an interface, `object`) is tried element by element instead, an
-  InvalidCastException at the one refused. Here every refusal is found at the
-  element. Value types are exact (Queue<T> and Stack<T>, `CollectionCopy` in
-  Core.cor), since each element is exactly T. A reference type T refused at
-  the first element is the cast's InvalidCastException, where .NET would
-  have refused the types. Needed: the element type of an array's descriptor,
-  the assignability relation .NET's CanAssignArrayType uses, and
-  Array.Copy and CollectionCopy deciding from it before the first element.
 - [x] `dynamic` and `object` as type arguments are one type (C# 10.2.2's
   identity conversion): Keeper<dynamic> is Keeper<object>, one copy with one
   set of statics, and a member typed T read through a `dynamic` use is

@@ -110,6 +110,13 @@ public class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T>, ICollection {
     object ICollection.SyncRoot => this;
     void ICollection.CopyTo(Array array, int index) {
         CollectionCopy.Check(array, index, count, "arrayIndex");
+        // An array of T itself, directly: a value type's only, for a
+        // reference type's T[] may be an array of a type below T (a string[]
+        // seen as object[]) whose every store is the cast below.
+        if (typeof(T).IsValueType && array is T[] same) {
+            for (int i = 0; i < count; i++) { same[index + i] = items[count - 1 - i]; }
+            return;
+        }
         bool valueType = typeof(T).IsValueType;
         for (int i = 0; i < count; i++) { CollectionCopy.Put(array, index + i, items[i], "array", valueType); }
         CollectionCopy.Reverse(array, index, count);

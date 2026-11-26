@@ -48,8 +48,9 @@ internal static class Elf64Object
     /// x86-64 psABI asks, since a linker may rewrite the instruction by its
     /// type (the GOTPCRELX relaxations, B.2). `call` or `jmp` through the
     /// slot (FF /2, FF /4: a module's call to its kernel's store sequence,
-    /// Selector.SequenceStub) is R_X86_64_GOTPCRELX. A load with REX
-    /// (`mov r64, [rip + sym@GOTPCREL]`) is R_X86_64_REX_GOTPCRELX. Anything
+    /// Selector.SequenceStub) is R_X86_64_GOTPCRELX. A 64-bit load (REX.W 8B,
+    /// `mov r64, [rip + sym@GOTPCREL]`, the form the selector writes and the
+    /// one Dynamic.RelaxableGotLoad relaxes) is R_X86_64_REX_GOTPCRELX. Anything
     /// else is plain R_X86_64_GOTPCREL, which no linker rewrites. The ModRM
     /// is RIP-relative in each (mod 00, r/m 101) and the field ends the
     /// instruction (TypeOf's GotPcRel is the load's, the form the backend
@@ -67,7 +68,7 @@ internal static class Elf64Object
         if ((modrm & 0xC7) != 0x05) return GotPcRel;
         int reg = (modrm >> 3) & 7;
         if (opcode == 0xFF && reg is 2 or 4) return GotPcRelX;
-        if (opcode == 0x8B && has == 3 && (before[0] & 0xF0) == 0x40) return RexGotPcRelX;
+        if (opcode == 0x8B && has == 3 && (before[0] & 0xF8) == 0x48) return RexGotPcRelX;
         return GotPcRel;
     }
 

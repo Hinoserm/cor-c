@@ -57,9 +57,19 @@ calls=$(awk '$5 ~ /^__corsac_(refstore|cardstore|refxchg|refcas)$/ && $3 == "R_X
 other=$(awk '$5 ~ /^__corsac_(refstore|cardstore|refxchg|refcas)$/ && $3 != "R_X86_64_GOTPCRELX" { n++ } END { print n + 0 }' "$work/sb16.relocs")
 test "$calls" -gt 0 || fail "the module makes no reference store through the kernel's stubs"
 test "$other" = 0 || fail "the module reaches a stub other than through its GOT slot ($other)"
-# Its link: each stub's slot bound by the loader, and every call through one.
+# Its link: the slot of every stub the module calls bound by the loader
+# (GLOB_DAT against the stub's name), and each stub call -- counted by its
+# target, a slot, so no virtual call through a register is taken for one --
+# a call through one of those slots.
 readelf -rW "$work/sb16.ko" > "$work/ko.relocs"
-grep -q 'R_X86_64_GLOB_DAT .* __corsac_refstore' "$work/ko.relocs" || fail "the module's link binds no slot for __corsac_refstore"
-through=$(objdump -d --no-show-raw-insn "$work/sb16.ko" | grep -c 'call   \*0x' || true)
-test "$through" -ge "$calls" || fail "the module's link has $through calls through a slot for $calls stub calls"
+awk '$5 ~ /^__corsac_(refstore|cardstore|refxchg|refcas)$/ { print $5 }' "$work/sb16.relocs" | sort -u > "$work/stubs.used"
+awk '$3 == "R_X86_64_GLOB_DAT" && $5 ~ /^__corsac_(refstore|cardstore|refxchg|refcas)$/ { print $5, $1 }' "$work/ko.relocs" | sort -u > "$work/stubs.slots"
+while read -r stub; do
+    awk -v n="$stub" '$1 == n { found = 1 } END { exit !found }' "$work/stubs.slots" || fail "the module's link binds no slot for $stub"
+done < "$work/stubs.used"
+objdump -d "$work/sb16.ko" > "$work/ko.dis"
+through=$(awk 'NR == FNR { slot[sprintf("%x", strtonum("0x" $2))] = 1; next }
+    /\tff 15 / && /call/ { if (match($0, /# [0-9a-f]+/)) { at = substr($0, RSTART + 2, RLENGTH - 2); sub(/^0+/, "", at); if (at in slot) n++ } }
+    END { print n + 0 }' "$work/stubs.slots" "$work/ko.dis")
+test "$through" = "$calls" || fail "the module's link calls through a stub's slot $through times for $calls stub calls"
 echo "PASS modules-long-mode-sequences ($calls stub calls through the kernel's GOT slots)"

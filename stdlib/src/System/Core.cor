@@ -13973,20 +13973,22 @@ public class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, IColle
 /// ICollection.CopyTo(Array, int) of the generic collections that are the
 /// non-generic ICollection as well (Queue<T>, Stack<T>), as .NET's Array.Copy
 /// under them: its refusals in its order -- no array, more than one rank, a
-/// place before or past the array, too little room -- then the elements one
-/// at a time. An element type the array's cannot hold at all is the
-/// collection's ArgumentException, as .NET turns its ArrayTypeMismatchException
-/// into one: a primitive that does not widen (SetValue's ArgumentException,
-/// which Array.Copy here makes that mismatch), or any element of a value type
-/// refused, every element being exactly that type. One element of a
-/// reference type that a cast refuses is the InvalidCastException itself,
-/// with what was copied before it left in place, as .NET leaves it. .NET
-/// refuses unrelated reference types before the first copy, from the two
-/// element types. The runtime has no Type.GetElementType or IsAssignableFrom
-/// to tell, so here a Stack<string> into an int[] is the cast's
-/// InvalidCastException. The names are each collection's own, as .NET's differ:
-/// Stack<T> calls the place arrayIndex and names the array in the mismatch,
-/// Queue<T> calls it index and names nothing there.
+/// place before or past the array, too little room -- then the elements. An
+/// array of the collection's own value type takes them directly. Any other
+/// array takes them one at a time through SetValue:
+///   - A value-type element the array cannot hold is the collection's
+///     ArgumentException, as .NET turns its ArrayTypeMismatchException into
+///     one. Every element is exactly that type, so the first refusal is all
+///     of them.
+///   - A reference-type element refused is InvalidCastException, with what
+///     was copied before it left in place, as .NET's cast of each element
+///     leaves it. A boxed primitive into a primitive array of another type
+///     is one, widening or not, since .NET's unboxing never widens.
+/// The names are each collection's own, as .NET's differ: Stack<T> calls the
+/// place arrayIndex and names the array in the mismatch, Queue<T> calls it
+/// index and names nothing there. Where .NET decides from the two element
+/// types and SetValue cannot see the array's, this differs (TODO.md, "An
+/// array's element type at run time").
 static class CollectionCopy {
     public static void Check(Array array, int index, int count, string indexName) {
         if (array == null) { throw new ArgumentNullException("array"); }
@@ -13996,9 +13998,29 @@ static class CollectionCopy {
     }
 
     public static void Put(Array array, int at, object? value, string? arrayName, bool valueType) {
+        if (valueType) {
+            try { array.SetValue(value, at); }
+            catch (ArgumentException) { throw Mismatch(arrayName); }
+            catch (InvalidCastException) { throw Mismatch(arrayName); }
+            return;
+        }
+        // A REFERENCE-TYPE ELEMENT IS CAST, AND UNBOXING NEVER WIDENS: a boxed
+        // int into a long[] is .NET's InvalidCastException, where SetValue
+        // would widen it. An element of another type read back is that
+        // widening: the old one goes back, as .NET never wrote the new.
+        object? old = array.GetValue(at);
         try { array.SetValue(value, at); }
-        catch (ArgumentException) { throw Mismatch(arrayName); }
-        catch (InvalidCastException) when (valueType) { throw Mismatch(arrayName); }
+        catch (ArgumentException) { throw NotCast(); }
+        if (value == null) { return; }
+        object? held = array.GetValue(at);
+        if (held != null && held.GetType() != value.GetType() && !ReferenceEquals(held, value)) {
+            array.SetValue(old, at);
+            throw NotCast();
+        }
+    }
+
+    private static InvalidCastException NotCast() {
+        return new InvalidCastException("At least one element in the source array could not be cast down to the destination array type.");
     }
 
     /// `length` elements from `index` the other way round: Stack<T> copies
@@ -14028,6 +14050,13 @@ public class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T>, ICollection {
     object ICollection.SyncRoot => this;
     void ICollection.CopyTo(Array array, int index) {
         CollectionCopy.Check(array, index, count, "index");
+        // An array of T itself, directly: a value type's only, for a
+        // reference type's T[] may be an array of a type below T (a string[]
+        // seen as object[]) whose every store is the cast below.
+        if (typeof(T).IsValueType && array is T[] same) {
+            for (int i = 0; i < count; i++) { same[index + i] = this[i]; }
+            return;
+        }
         bool valueType = typeof(T).IsValueType;
         for (int i = 0; i < count; i++) { CollectionCopy.Put(array, index + i, this[i], null, valueType); }
     }

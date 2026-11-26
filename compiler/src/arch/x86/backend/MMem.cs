@@ -143,8 +143,11 @@ public sealed class MMem : MOperand
         List<string> parts = new();
         if (Symbol is not null)
         {
+            // A GOT slot's operand is the slot, not the symbol: said so, as
+            // an assembler's listing says it (a module's call to its kernel's
+            // store sequence, the load of what another image defines).
             parts.Add("rip");
-            parts.Add(Symbol);
+            parts.Add(Got ? Symbol + "@GOTPCREL" : Symbol);
         }
         if (Label is not null)
         {
