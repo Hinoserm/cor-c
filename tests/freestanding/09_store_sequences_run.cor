@@ -59,6 +59,10 @@ class Holder
 static class Program
 {
     static object? _static;
+    // Wide's integer, read by an atomic add of nothing: a number the
+    // compiler cannot know, so its eleven longs are made as it runs and
+    // live in registers across the stubs (a constant folded them all away).
+    static long _wideSeed = 100;
 
     // Two doubles live across a store's stub and an exchange's: kept in XMM
     // registers by the allocator, which a stub's call keeps (MOp.CallKeep).
@@ -134,7 +138,7 @@ static class Program
         Interlocked.CompareExchange(ref marked.Value, "q", "p");
         string scalar = Scalar("r", "s");
         double floats = Floats(new Cell("e"), 1.0, 2.0);
-        string wide = Wide(new Cell("w0"), 100, 3.0);
+        string wide = Wide(new Cell("w0"), Interlocked.Add(ref _wideSeed, 0), 3.0);
         Runtime.Marking = 0;
         Host.Line("marking " + before + " " + (before == (object)"o" ? "p" : "wrong") + " " + marked.Value);
         Host.Line("scalar " + scalar);
