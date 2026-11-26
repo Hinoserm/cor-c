@@ -1,5 +1,4 @@
 // test: inline_asm_popf_direction_refused
-// only-target: x86
 // expect-compile-error: direction flag
 //
 // POPFD of anything but its own PUSHFD's flags may set the direction flag,

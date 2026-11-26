@@ -1,5 +1,4 @@
 // test: fork_from_a_worker_while_main_holds_a_mutex
-// only-target: x86
 // flags: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:

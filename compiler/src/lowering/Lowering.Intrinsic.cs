@@ -896,11 +896,6 @@ public sealed partial class Lowering
             case "CpuidPresent":
                 return _e.Call(MachineIntrinsics.CpuidPresent, IrType.I32)!;
             case "CpuidEax" or "CpuidEdx":
-                if (_t.WordSize != 4)
-                {
-                    Error(call, $"Sys.{name} is i386's; long mode asks Sys.Cpuid");
-                    return Void();
-                }
                 return _e.Call(name == "CpuidEax" ? MachineIntrinsics.CpuidEax : MachineIntrinsics.CpuidEdx, IrType.I32, R(ToI32(Arg(call, target, 0))))!;
             case "StreamPrefetch" or "StreamPrefetchLine" or "StreamCopy64" or "StreamFill64" or "StreamEnd"
                 or "PackedFindChar4" or "PackedFindChar8" or "PackedEqual8" or "PackedEnd" or "PackedEndFast":

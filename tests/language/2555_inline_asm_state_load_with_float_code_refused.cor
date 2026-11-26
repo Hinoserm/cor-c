@@ -1,5 +1,4 @@
 // test: inline_asm_state_load_with_float_code_refused
-// only-target: x86
 // expect-compile-error: a state load (FRSTOR, FLDENV, FXRSTOR) in a block with float code
 //
 // FRSTOR in a block that also computes with the x87: the load would replace

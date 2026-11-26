@@ -1,0 +1,61 @@
+// test: cpuid's EAX or EDX alone, against the whole instruction's four registers
+// expect-exit: 0
+// expect-output:
+// leaf 0 eax True
+// leaf 1 eax True edx True
+// extended eax True edx True
+// fpu True tsc True
+// unused ok
+//
+// Sys.CpuidEax and Sys.CpuidEdx ask a leaf (subleaf 0) and answer one
+// register straight out of the instruction, nothing stored: what a runtime
+// asks with before it has anywhere to put four. Each against the same
+// leaf's Sys.Cpuid, which stores all four. Long mode had no form of them
+// ("the machine intrinsic __x86.i.cpuideax has no x86-64 form"). CPUID
+// writes EBX too, a register both modes' callers keep: the values around
+// each call must come back, so Kept holds four across one. A read nobody
+// uses still compiles (the instruction made, nothing moved out of it).
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static int[] _four = new int[4];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Whole(int leaf) => Sys.Cpuid(leaf, 0, (nuint)Sys.ArrayData(_four));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Kept(int a, int b, int c, int d, int leaf)
+    {
+        int x = Sys.CpuidEax(leaf);
+        int y = Sys.CpuidEdx(leaf);
+        return (x == _four[0] && y == _four[3] ? 0 : 1000) + a + b * 2 + c * 3 + d * 4;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Unused(int leaf)
+    {
+        Sys.CpuidEax(leaf);
+        Sys.CpuidEdx(leaf);
+    }
+
+    static int Main()
+    {
+        Whole(0);
+        Console.WriteLine("leaf 0 eax " + (Sys.CpuidEax(0) == _four[0] && _four[0] >= 1));
+        Whole(1);
+        Console.WriteLine("leaf 1 eax " + (Sys.CpuidEax(1) == _four[0]) + " edx " + (Sys.CpuidEdx(1) == _four[3]));
+        if (Kept(1, 2, 3, 4, 1) != 30) return 1;
+        int extended = unchecked((int)0x80000000);
+        Whole(extended);
+        bool eax = Sys.CpuidEax(extended) == _four[0];
+        Whole(extended + 1);
+        Console.WriteLine("extended eax " + eax + " edx " + (Sys.CpuidEdx(extended + 1) == _four[3]));
+        int features = Sys.CpuidEdx(1);
+        Console.WriteLine("fpu " + ((features & 1) != 0) + " tsc " + ((features & 0x10) != 0));
+        Unused(1);
+        Console.WriteLine("unused ok");
+        return 0;
+    }
+}

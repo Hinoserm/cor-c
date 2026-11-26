@@ -1,5 +1,4 @@
 // test: inline_asm_jump_out_refused
-// only-target: x86
 // expect-compile-error: is not a label of this block
 //
 // An asm block jumps only to its own labels (docs/INLINE-ASSEMBLY.md).

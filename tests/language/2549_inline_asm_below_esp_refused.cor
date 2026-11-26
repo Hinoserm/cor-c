@@ -1,5 +1,4 @@
 // test: inline_asm_below_esp_refused
-// only-target: x86
 // expect-compile-error: below ESP
 //
 // Below ESP an interrupt or a signal may write at any time

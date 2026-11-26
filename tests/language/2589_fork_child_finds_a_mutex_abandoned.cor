@@ -1,5 +1,4 @@
 // test: fork_child_finds_a_mutex_abandoned
-// only-target: x86
 // flags: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:

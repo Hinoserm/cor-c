@@ -1,5 +1,4 @@
 // test: inline_asm_state_load_on_one_path_refused
-// only-target: x86
 // expect-compile-error: on one path to here and not on another
 //
 // FRSTOR on one path only: after the paths meet, the x87's depth is the

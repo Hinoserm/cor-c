@@ -1,5 +1,4 @@
 // test: inline_asm_bit_string_write_refused
-// only-target: x86
 // expect-compile-error: at an offset it states
 //
 // BTS with its bit's offset in a register reaches a byte on per eight past

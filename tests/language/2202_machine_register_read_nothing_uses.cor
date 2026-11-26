@@ -1,5 +1,4 @@
 // test: machine_register_read_nothing_uses
-// only-target: x86
 // expect-exit: 0
 // expect-output:
 // read 1

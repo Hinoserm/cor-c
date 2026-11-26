@@ -1,5 +1,4 @@
 // test: inline_asm_xlat_unset_al_refused
-// only-target: x86
 // expect-compile-error: this reads al, which the block has not set
 //
 // XLAT reads AL as the index into the table at EBX: an AL the block never

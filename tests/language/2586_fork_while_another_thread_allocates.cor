@@ -1,5 +1,4 @@
 // test: fork_while_another_thread_allocates
-// only-target: x86
 // flags: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:

@@ -1,5 +1,4 @@
 // test: inline_asm_unset_register_refused
-// only-target: x86
 // expect-compile-error: which the block has not set
 //
 // A block's registers hold nothing of the method's but what its own

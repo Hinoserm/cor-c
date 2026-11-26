@@ -1,5 +1,4 @@
 // test: inline_asm_width_refused
-// only-target: x86
 // expect-compile-error: is 16 bits
 //
 // A local's width is the register's it meets: `mov eax, w` with a ushort w

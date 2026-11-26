@@ -1,5 +1,4 @@
 // test: inline_asm_absolute_label_refused
-// only-target: x86
 // expect-compile-error: must not depend on where it is
 //
 // A block's code may not hold an absolute address of its own labels, which

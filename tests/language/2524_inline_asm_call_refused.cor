@@ -1,5 +1,4 @@
 // test: inline_asm_call_refused
-// only-target: x86
 // expect-compile-error: may not call
 //
 // A block is no safepoint, and a call would be one (docs/INLINE-ASSEMBLY.md).

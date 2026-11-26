@@ -1,5 +1,4 @@
 // test: inline_asm_frstor_local_refused
-// only-target: x86
 // expect-compile-error: frstor takes memory larger than a local
 //
 // FRSTOR reads 108 bytes: a local, four of them here, is too small for it,

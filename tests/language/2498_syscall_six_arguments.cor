@@ -1,6 +1,5 @@
 // test: a six-argument system call, its arguments from the frame
 // expect-exit: 0
-// only-target: x86
 // expect-output:
 // mapped
 // woke 0
@@ -8,32 +7,41 @@
 // constant woke 0
 // constant refused -22
 //
-// The sixth argument goes to EBP for the trap; read from a parameter, it
+// The sixth argument goes to EBP for i386's trap; read from a parameter, it
 // had no register while the other six held the number and five arguments.
+// Long mode's goes to R9, the fourth to R10 (SYSCALL takes RCX for itself).
 // futex(FUTEX_WAKE_BITSET) reads the sixth as its bit set: zero is refused
 // (EINVAL), any other wakes nobody (0), so a lost or zeroed sixth argument
-// shows -- read from a parameter, and written as a constant (straight into EBP).
+// shows -- read from a parameter, and written as a constant (straight into
+// the register). The calls' numbers are each mode's own: mmap2 and futex of
+// i386's table, mmap and futex of x86-64's.
 using System.Runtime.CompilerServices;
 
 static class Program
 {
+#if TARGET_64BIT
+    const int Map = 9, Futex = 202;
+#else
+    const int Map = 192, Futex = 240;
+#endif
+
     static uint _bits = 0xFFFFFFFF;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static long Call(int n, SyscallWord a = 0, SyscallWord b = 0, SyscallWord c = 0, SyscallWord d = 0, SyscallWord e = 0, SyscallWord f = 0)
+    static nint Call(int n, SyscallWord a = 0, SyscallWord b = 0, SyscallWord c = 0, SyscallWord d = 0, SyscallWord e = 0, SyscallWord f = 0)
     {
-        return (long)(int)Sys.Syscall(n, a, b, c, d, e, f);
+        return (nint)Sys.Syscall(n, a, b, c, d, e, f);
     }
 
     static int Main()
     {
-        // mmap2(0, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
-        long at = Call(192, 0, 4096, 3, 0x22, unchecked((SyscallWord)(-1)), 0);
+        // mmap(0, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+        nint at = Call(Map, 0, 4096, 3, 0x22, unchecked((SyscallWord)(-1)), 0);
         if (at < 0 && at > -4096) return 1;
         System.Console.WriteLine("mapped");
         // futex(at, FUTEX_WAKE_BITSET, 1, 0, 0, bits)
-        System.Console.WriteLine("woke " + Call(240, (SyscallWord)at, 10, 1, 0, 0, _bits));
-        System.Console.WriteLine("refused " + Call(240, (SyscallWord)at, 10, 1, 0, 0, 0));
+        System.Console.WriteLine("woke " + (int)Call(Futex, (SyscallWord)at, 10, 1, 0, 0, _bits));
+        System.Console.WriteLine("refused " + (int)Call(Futex, (SyscallWord)at, 10, 1, 0, 0, 0));
         Constant((SyscallWord)at);
         return 0;
     }
@@ -41,7 +49,7 @@ static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void Constant(SyscallWord at)
     {
-        System.Console.WriteLine("constant woke " + (int)Sys.Syscall(240, at, 10, 1, 0, 0, 0xFFFFFFFF));
-        System.Console.WriteLine("constant refused " + (int)Sys.Syscall(240, at, 10, 1, 0, 0, 0));
+        System.Console.WriteLine("constant woke " + (int)Sys.Syscall(Futex, at, 10, 1, 0, 0, 0xFFFFFFFF));
+        System.Console.WriteLine("constant refused " + (int)Sys.Syscall(Futex, at, 10, 1, 0, 0, 0));
     }
 }

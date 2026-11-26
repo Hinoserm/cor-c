@@ -927,7 +927,7 @@ public static class Prelude
             public static int CpuidPresent() { return 0; }
             // cpuid of a leaf (subleaf 0), its EAX or its EDX: nothing written
             // to memory, so a caller asks with no frame or heap to put the four
-            // registers in (Processor.Ask). i386 only.
+            // registers in (Processor.Ask).
             public static int CpuidEax(int leaf) { return 0; }
             public static int CpuidEdx(int leaf) { return 0; }
             // THE MMX REGISTERS' BULK AND SCANNING INSTRUCTIONS, i386 only, for

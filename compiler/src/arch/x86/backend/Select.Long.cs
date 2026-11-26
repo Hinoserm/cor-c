@@ -1155,6 +1155,25 @@ internal sealed partial class Selector
             case Corsac.Lang.X86.MachineIntrinsics.ReadCodeSegment:
                 if (i.Dest is not null) Emit(MOp.ReadCs, V(i.Dest));
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.GetGs:
+                // Nothing where nothing reads it, as i386's.
+                if (i.Dest is not null) Emit(MOp.GetGs, V(i.Dest));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.SetGs:
+                Emit(MOp.SetGs, RL(i.Operands[0]));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.CpuidEax:
+            case Corsac.Lang.X86.MachineIntrinsics.CpuidEdx:
+            {
+                // One register of the leaf, subleaf 0, straight out of the
+                // instruction: nothing stored.
+                MReg leaf = RL(i.Operands[0]);
+                MovL(Rax, leaf, 4);
+                EmitW(MOp.Mov, 4, Rcx, Imm(0));
+                Emit(MOp.Cpuid);
+                if (i.Dest is not null) MovL(V(i.Dest), name == Corsac.Lang.X86.MachineIntrinsics.CpuidEax ? Rax : Rdx, 4);
+                return;
+            }
             case Corsac.Lang.X86.MachineIntrinsics.ReadCr:
             {
                 long number = ControlRegisterL(i.Operands[0]);

@@ -11,6 +11,9 @@ namespace Corsac.Lang.X86;
 ///     upper half before it is written again (UpperRead). To every rule
 ///     of the family's a move of four bytes is no copy (Peephole.IsMov),
 ///     so what is left of these is safe among them.
+///   - a byte's or a word's sign extension to an int and the int's to a
+///     long, one after the other in one register, are one MOVSX through
+///     the whole register (SignExtendOnce).
 ///   - a jump to a block that holds nothing but another jump goes straight
 ///     to that jump's target, however long the chain (Thread; Layout's own
 ///     threading stops at eight and runs before the loops are rotated).
@@ -44,7 +47,9 @@ internal static partial class Peephole
             if (narrow is not { Op: MOp.Movsx, To32: true, Width: 1 or 2, Lock: false } || narrow.Operands[0] is not MReg { IsFloat: false } made) continue;
             if (wide is not { Op: MOp.Movsx, Width: 4, Lock: false } || wide.Operands[0] is not MReg to || wide.Operands[1] is not MReg from) continue;
             if (to.Id != made.Id || from.Id != made.Id) continue;
-            s[k] = new MInstr(MOp.Movsx, narrow.Operands[0], narrow.Operands[1]) { Width = narrow.Width, Line = narrow.Line };
+            MInstr once = narrow.WithOperands(narrow.Operands);
+            once.To32 = false;
+            s[k] = once;
             s.RemoveAt(k + 1);
         }
     }

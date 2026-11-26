@@ -1,5 +1,4 @@
 // test: inline_asm_push_word_immediate_refused
-// only-target: x86
 // expect-compile-error: pops more off the stack than the block pushed
 //
 // `push word 5` pushes two bytes; a 32-bit POP takes four

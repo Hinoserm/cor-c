@@ -1,5 +1,4 @@
 // test: chacha20_four_blocks_against_one
-// only-target: x86
 // cpu: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:

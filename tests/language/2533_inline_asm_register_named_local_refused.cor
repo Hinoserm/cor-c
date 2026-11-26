@@ -1,5 +1,4 @@
 // test: inline_asm_register_named_local_refused
-// only-target: x86
 // expect-compile-error: is a register in an asm block
 //
 // A local spelt as a register would be read as the register: the block may

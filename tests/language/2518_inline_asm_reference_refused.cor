@@ -1,5 +1,4 @@
 // test: inline_asm_reference_refused
-// only-target: x86
 // expect-compile-error: is an object reference
 //
 // No object reference in a register: the collector could not follow it

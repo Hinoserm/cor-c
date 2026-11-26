@@ -1,5 +1,4 @@
 // test: inline_asm_x87_after_state_load_refused
-// only-target: x86
 // expect-compile-error: after a state load
 //
 // After FRSTOR the x87 holds the state loaded, whose stack depth the block

@@ -1,5 +1,4 @@
 // test: inline_asm_ebp_refused
-// only-target: x86
 // expect-compile-error: may not write EBP
 //
 // The method's frame is reached through EBP (docs/INLINE-ASSEMBLY.md).

@@ -1,5 +1,4 @@
 // test: forks_while_threads_allocate_leave_no_half_made_block
-// only-target: x86
 // flags: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:

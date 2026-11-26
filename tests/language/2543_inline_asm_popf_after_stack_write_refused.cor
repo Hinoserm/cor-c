@@ -1,5 +1,4 @@
 // test: inline_asm_popf_after_stack_write_refused
-// only-target: x86
 // expect-compile-error: direction flag
 //
 // PUSHFD's flags changed through ESP before POPFD takes them back: DF may

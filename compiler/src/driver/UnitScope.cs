@@ -108,6 +108,29 @@ public static class UnitScope
     /// The unit left without a count (a failed unit's way out).
     public static void Leave() => _current = null;
 
+    /// A thread of its own (not yet started) for work done for the unit of
+    /// the thread that makes it, as Run's task: where the work may not be a
+    /// pool's (it would wait on itself) or needs a stack of its own size.
+    public static Thread OnThread(System.Action work, int stack)
+    {
+        UnitState? unit = _current;
+        if (unit is null) return new Thread(() => work(), stack);
+        return new Thread(() =>
+        {
+            _current = unit;
+            long begun = System.GC.GetAllocatedBytesForCurrentThread();
+            try
+            {
+                work();
+            }
+            finally
+            {
+                Interlocked.Add(ref unit.HelpersAllocated, System.GC.GetAllocatedBytesForCurrentThread() - begun);
+                _current = null;
+            }
+        }, stack);
+    }
+
     /// Task.Run, the work done for the unit of the thread that starts it:
     /// its settings, and its allocation counted to it.
     public static Task Run(System.Action work)

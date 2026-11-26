@@ -1,5 +1,4 @@
 // test: inline_asm_byte_div_unset_ah_refused
-// only-target: x86
 // expect-compile-error: this reads ax, which the block has set only part of
 //
 // A byte's DIV divides AX, not AL: AH holds nothing of the method's

@@ -1,5 +1,4 @@
 // test: inline_asm_local_in_address_refused
-// only-target: x86
 // expect-compile-error: must be a whole operand
 //
 // A local is a whole operand, never part of an address: load it into a

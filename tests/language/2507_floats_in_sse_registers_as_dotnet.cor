@@ -1,5 +1,4 @@
 // test: floats_in_sse_registers_as_dotnet
-// only-target: x86
 // cpu: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:

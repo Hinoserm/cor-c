@@ -1,5 +1,4 @@
 // test: unmanaged_pointer_calls_without_the_gc_transition
-// only-target: x86
 // expect-exit: 0
 // expect-output:
 // llabs 77

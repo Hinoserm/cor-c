@@ -347,6 +347,17 @@ internal sealed partial class Encoder
                 _out.Add(0x8C);
                 OpReg(0xC8, (MReg)i.Operands[0]);
                 return true;
+            case MOp.GetGs:
+                // The same with GS, sreg 5.
+                _out.Add(0x8C);
+                OpReg(0xE8, (MReg)i.Operands[0]);
+                return true;
+            case MOp.SetGs:
+                // 8E /5, mov gs, r32: the selector's descriptor read from
+                // the table, its 32-bit base GS's (the MSR's base is lost).
+                _out.Add(0x8E);
+                OpReg(0xE8, (MReg)i.Operands[0]);
+                return true;
             case MOp.ReadFlags:
                 // 9C pushfq (64 bits in long mode), then pop r64.
                 _out.Add(0x9C);

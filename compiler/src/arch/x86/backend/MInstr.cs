@@ -36,9 +36,10 @@ public sealed class MInstr : MOperandList
     /// register's low thirty-two bits (`movsx r32, r/m8`, no REX.W), whose
     /// write clears the upper half as every 32-bit result's does -- an
     /// I32's sign extension whole. Unset, MOVSX writes the whole register,
-    /// the sign through all sixty-four bits (an I64's).
+    /// the sign through all sixty-four bits (an I64's). Unset on a copy by
+    /// the pass that makes two extensions one (Peephole.SignExtendOnce).
     /// </summary>
-    public bool To32 { get; init; }
+    public bool To32 { get; set; }
 
     /// <summary>Long mode: a jump table's symbol (JmpTable).</summary>
     public string? TableSymbol { get; init; }

@@ -1,5 +1,4 @@
 // test: array_addresses_kept_across_a_system_call
-// only-target: x86
 // flags: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:
@@ -15,11 +14,19 @@
 // (Schedule). VmRead is kept out of line, as in the program it came from
 // (linuxcheck), where its body was the stretch. process_vm_readv of pid
 // 0x7fffffff is ESRCH; the reads and writes on fd -1 fail, as they may.
+// The addresses are words (an iovec is two), the calls' numbers each mode's
+// own, so long mode runs the same stretch.
 using System;
 using System.Runtime.CompilerServices;
 
 static class Program
 {
+#if TARGET_64BIT
+    const int Read = 0, Write = 1, VmReadv = 310;
+#else
+    const int Read = 3, Write = 4, VmReadv = 347;
+#endif
+
     static long Call(int number, long a = 0, long b = 0, long c = 0, long d = 0, long e = 0, long f = 0)
     {
         return Platform.Result(Sys.Syscall(number, (SyscallWord)(nuint)a, (SyscallWord)(nuint)b, (SyscallWord)(nuint)c,
@@ -30,23 +37,23 @@ static class Program
     static int VmRead(int pid, int[] word, int readyFd, int doneFd)
     {
         byte[] go = new byte[1];
-        Call(3, readyFd, (long)Sys.ArrayData(go), 1);
+        Call(Read, readyFd, (long)Sys.ArrayData(go), 1);
         int[] mine = new int[1];
-        int mineAt = (int)Sys.ArrayData(mine);
-        int wordAt = (int)Sys.ArrayData(word);
-        int[] vecs = new int[4];
+        nint mineAt = (nint)Sys.ArrayData(mine);
+        nint wordAt = (nint)Sys.ArrayData(word);
+        nint[] vecs = new nint[4];
         vecs[0] = mineAt;
         vecs[1] = 4;
         vecs[2] = wordAt;
         vecs[3] = 4;
-        int local = (int)Sys.ArrayData(vecs);
-        long got = VmCall(pid, local, local + 8);
-        Call(4, doneFd, (long)Sys.ArrayData(go), 1);
+        nint local = (nint)Sys.ArrayData(vecs);
+        long got = VmCall(pid, local, local + 2 * sizeof(nint));
+        Call(Write, doneFd, (long)Sys.ArrayData(go), 1);
         return got == 4 ? mine[0] : (int)got;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static long VmCall(int pid, int local, int remote) => Call(347, pid, local, 1, remote, 1, 0);
+    static long VmCall(int pid, nint local, nint remote) => Call(VmReadv, pid, local, 1, remote, 1, 0);
 
     static int Main()
     {

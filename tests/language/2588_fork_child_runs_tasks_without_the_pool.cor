@@ -1,5 +1,4 @@
 // test: fork_child_runs_tasks_without_the_pool
-// only-target: x86
 // flags: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:

@@ -409,7 +409,9 @@ public sealed class X86Backend : IBackend
         // Only where NONE is there: a module that holds its bodies (a unit
         // whose late passes run at the link) was judged whole just above,
         // and its functions are being rewritten by the workers from here on
-        // -- nothing reads them again for this.
+        // -- nothing reads them again for this. That verdict stands through
+        // the rewriting: a body the late passes bring in is a callee's, and
+        // a function is free only where every callee of it was.
         _fpuDeferred = FunctionLoader is null || module.Functions.Any(f => f.Blocks.Count != 0)
             ? null : new DeferredFacts(module, FunctionLoader, SafepointPolls, _fpuDefined);
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
@@ -1098,7 +1100,9 @@ public sealed class X86Backend : IBackend
         private readonly bool _polls;
         private readonly HashSet<string> _defined;
         private readonly Dictionary<string, List<string>?> _said = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, bool> _free = new(StringComparer.Ordinal);
+        // Read by every asker, with no lock where the answer is there: an
+        // answer once written never changes.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _free = new(StringComparer.Ordinal);
 
         public DeferredFacts(Module module, Func<int, Function> load, bool polls, HashSet<string> defined)
         {
@@ -1110,14 +1114,17 @@ public sealed class X86Backend : IBackend
 
         public bool Free(string name)
         {
+            if (_free.TryGetValue(name, out bool known)) return known;
             lock (this)
             {
-                if (_free.TryGetValue(name, out bool known)) return known;
+                if (_free.TryGetValue(name, out known)) return known;
                 // A thread of its own, not the pool's: a task waited on from
                 // a pool thread may be run by that very thread, and the
-                // loader forgets its thread's analyses as it starts.
+                // loader forgets its thread's analyses as it starts. The
+                // asker's unit goes with it (UnitScope.OnThread): the load
+                // runs the unit's passes, under its settings and counted to it.
                 Exception? failed = null;
-                Thread judge = new(() => { try { Judge(name); } catch (Exception e) { failed = e; } }, 16 * 1024 * 1024);
+                Thread judge = Corsac.UnitScope.OnThread(() => { try { Judge(name); } catch (Exception e) { failed = e; } }, 16 * 1024 * 1024);
                 judge.Start();
                 judge.Join();
                 if (failed is not null) throw new InvalidOperationException("judging " + name + " for FpuFree: " + failed.Message, failed);
@@ -1162,10 +1169,17 @@ public sealed class X86Backend : IBackend
         Corsac.Lang.Opt.SharedTrapFrees.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill, _x87);
-        // Asked by the selection alone: let go, so that a pool's idle thread
-        // holds no module by them.
-        FpuFree.Use(null, null);
+        MFunction m;
+        try
+        {
+            m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill, _x87);
+        }
+        finally
+        {
+            // Asked by the selection alone: let go, however it ended, so
+            // that a pool's idle thread holds no module by them.
+            FpuFree.Use(null, null);
+        }
         if (errors.Count > before)
         {
             return null;

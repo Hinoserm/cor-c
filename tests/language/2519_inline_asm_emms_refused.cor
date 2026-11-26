@@ -1,5 +1,4 @@
 // test: inline_asm_emms_refused
-// only-target: x86
 // expect-compile-error: EMMS
 //
 // EMMS after MMX, before the block ends (docs/INLINE-ASSEMBLY.md).

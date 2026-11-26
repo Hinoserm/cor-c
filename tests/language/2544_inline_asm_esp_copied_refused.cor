@@ -1,5 +1,4 @@
 // test: inline_asm_esp_copied_refused
-// only-target: x86
 // expect-compile-error: may not read ESP as a value
 //
 // ESP copied into a register: a write through the copy could change what
