@@ -63,6 +63,54 @@ internal abstract class FamilyTarget
     protected abstract AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks);
 
     /// <summary>
+    /// What an instruction does besides its registers, for the scheduler
+    /// (Effect): the flags and memory of the plain integer and scalar SSE
+    /// instructions it may move; anything else -- a call, a branch, a push, a
+    /// divide (it may fault on its own), x87 and MMX state, a fence, a locked,
+    /// device or segment-relative access -- a barrier. INC, DEC, a rotate
+    /// (SF, ZF and PF kept), a shift by CL or by a constant the processor
+    /// masks to 0 (the flags all kept) and ADC/SBB read the flags they leave
+    /// partly or wholly as they were. One table for both modes: an opcode
+    /// only one of them makes is in it for that one.
+    /// </summary>
+    protected static Effect Effects(MInstr i)
+    {
+        if (i.Lock) return Effect.Barrier;
+        // (The count the processor masks: to six bits for a 64-bit shift, five for any other.)
+        bool countImm = i.Operands.Count >= 2 && i.Operands[^1] is MImm { Value: var c } && (c & (i.Width == 8 ? 63 : 31)) != 0;
+        Effect e = i.Op switch
+        {
+            MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Not or MOp.Bswap or MOp.Cdq or MOp.Cwd => Effect.None,
+            MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg
+                or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.MulWide or MOp.ImulWide => Effect.WritesFlags,
+            MOp.Adc or MOp.Sbb or MOp.Inc or MOp.Dec => Effect.ReadsFlags | Effect.WritesFlags,
+            MOp.Shl or MOp.Shr or MOp.Sar or MOp.Shld or MOp.Shrd
+                => countImm ? Effect.WritesFlags : Effect.ReadsFlags | Effect.WritesFlags,
+            MOp.Rol or MOp.Ror => Effect.ReadsFlags | Effect.WritesFlags,
+            MOp.Setcc or MOp.Cmov => Effect.ReadsFlags,
+            MOp.MovF or MOp.MovGx or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.XorF or MOp.XorPs
+                or MOp.CvtFToF or MOp.CvtIntToF or MOp.CvtFToInt or MOp.Cvttss2si or MOp.Cvttsd2si
+                or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX
+                or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV => Effect.None,
+            MOp.UcomiF => Effect.WritesFlags,
+            _ => Effect.Barrier,
+        };
+        if (e == Effect.Barrier) return e;
+        for (int k = 0; k < i.Operands.Count; k++)
+        {
+            if (i.Operands[k] is not MMem m || i.Op == MOp.Lea) continue;
+            // Device memory is read and written when and as often as the source
+            // says, in its order; a segment-relative word is another thread's
+            // or processor's at any instruction.
+            if (m.Segment != 0 || m.Device) return Effect.Barrier;
+            Roles.Role role = Roles.Of(i.Op, k);
+            if ((role & Roles.Role.Use) != 0) e |= Effect.ReadsMemory;
+            if ((role & Roles.Role.Def) != 0) e |= Effect.WritesMemory;
+        }
+        return e;
+    }
+
+    /// <summary>
     /// THE FUNCTION AS THE ALLOCATOR SEES IT: a block for a block, each
     /// instruction lowered once, and the blocks whose address something
     /// holds (a label as an immediate or in a memory operand) marked.
