@@ -41,7 +41,10 @@ internal static class FramePointerFree
     public static void Run(MFunction m)
     {
         int word = X86Mode.Word;
-        if (!m.Frameless && OnlyColdCalls(m))
+        // (Not long mode's function with a slot at sixteen: only a frame's
+        // base is known to be a multiple of sixteen.)
+        bool wideSlots = X86Mode.Long && m.Frame.Allocations.Any(a => a.Align > 8);
+        if (!m.Frameless && !wideSlots && OnlyColdCalls(m))
         {
             m.Frameless = true;
             m.ColdFrames = true;
@@ -59,11 +62,11 @@ internal static class FramePointerFree
         }
         // A LONG MODE LEAF'S SLOTS ARE EIGHT-ALIGNED AND NO MORE: off a stack
         // pointer that is a multiple of eight wherever its pushes left it. A
-        // slot asked a wider alignment (none is today: long mode spills XMM
-        // values as scalars and moves sixteen bytes unaligned) has its frame
-        // again, whose base is a multiple of sixteen -- and where the leaf
-        // gave the base register a value there is none to go back to.
-        if (X86Mode.Long && m.Frameless && !m.ReservedFrame && m.Frame.Allocations.Any(a => a.Align > 8))
+        // slot asked a wider alignment (a packed value's spill: FamilyTarget.
+        // NewSlot) has its frame again, whose base is a multiple of sixteen
+        // -- and where the leaf gave the base register a value there is
+        // none to go back to (FamilyTarget.Registers keeps it from one).
+        if (m.Frameless && !m.ReservedFrame && wideSlots)
         {
             if (m.FramePointerFree)
                 throw new InvalidOperationException($"{m.Source.Name}: a slot aligned past eight bytes in a leaf that gives the frame's base register a value");

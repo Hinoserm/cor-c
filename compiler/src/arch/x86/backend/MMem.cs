@@ -14,7 +14,7 @@ public sealed class MMem : MOperand
     /// <summary>Private allocator storage, never an address-taken source-language slot.</summary>
     public bool IsSpill { get; init; }
 
-    /// <summary>Sixteen-byte aligned (AlignedSlots): MovF moves it with MOVAPS.</summary>
+    /// <summary>Sixteen-byte aligned (i386's AlignedSlots, long mode's FamilyPasses.AlignedSpills): MovF moves it with MOVAPS.</summary>
     public bool Aligned { get; init; }
 
     /// <summary>
@@ -77,6 +77,13 @@ public sealed class MMem : MOperand
     {
         Index = Index, Scale = Scale, Symbol = Symbol, Reloc = Reloc, Got = Got, Label = Label, IsSpill = IsSpill, Device = true,
         Aligned = Aligned, Segment = Segment,
+    };
+
+    /// <summary>The same reference, known to be at sixteen (Aligned): everything else of it kept.</summary>
+    public MMem AsAligned() => new(Base, Disp)
+    {
+        Index = Index, Scale = Scale, Symbol = Symbol, Reloc = Reloc, Got = Got, Label = Label, IsSpill = IsSpill, Device = Device,
+        Aligned = true, Segment = Segment,
     };
 
     /// <summary>The same reference, its displacement moved.</summary>

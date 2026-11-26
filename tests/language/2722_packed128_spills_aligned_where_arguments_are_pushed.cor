@@ -1,5 +1,4 @@
 // test: packed128_spills_aligned_where_arguments_are_pushed
-// only-target: x86
 // cpu: --cpu=athlon64 --disable-3dnow
 // requires-host: sse2
 // expect-exit: 0

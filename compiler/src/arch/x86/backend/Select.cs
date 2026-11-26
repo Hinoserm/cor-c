@@ -1423,9 +1423,17 @@ internal sealed partial class Selector
         // is taken -- goes through the packed registers, which then hold
         // XMM4 to XMM7 (PackedFree) and the class XMM0 to XMM3 (X86Target),
         // so neither knows of the other.
-        // (Long mode selects no packed operation yet: its packed state is
-        // none, in every block, and nothing below finds one to hold.)
+        // LONG MODE HAS NO PACKED REGISTERS: every packed operation is on
+        // the class's registers (Select.PackedValues), a value taken or
+        // not, so its packed state is none in every block and the class
+        // keeps every XMM register; its spills are of the whole register
+        // wherever a function names a packed operation.
         bool longMode = X86Mode.Long;
+        if (longMode && UsesPackedRegisters(_f))
+        {
+            PackedFindValues();
+            _m.XmmSpillWidth = 16;
+        }
         if (!longMode)
         {
             if (_xmm32 && UsesPackedRegisters(_f)) PackedFindValues();
@@ -1926,13 +1934,13 @@ internal sealed partial class Selector
                 SelectMemCopy(i);
                 break;
             case Opcode.MemSet:
+                if (PackedValueMemSet(i)) break;
                 // (Long mode: a small clear of known length as stores, any other by the string instructions.)
                 if (X86Mode.Long)
                 {
                     if (!SmallSetL(i)) InlineMemSet(i);
                     break;
                 }
-                if (PackedValueMemSet(i)) break;
                 if (SelectFrameSet(i)) break;
                 SelectMemSet(i);
                 break;
@@ -2011,8 +2019,7 @@ internal sealed partial class Selector
 
     private void SelectCopy(Instr i)
     {
-        // (Long mode has no Packed128 value of the class yet.)
-        if (!X86Mode.Long && PackedValueCopy(i)) return;
+        if (PackedValueCopy(i)) return;
         VReg d = i.Dest!;
         Operand src = i.Operands[0];
         switch (d.Type)
@@ -3860,6 +3867,8 @@ internal sealed partial class Selector
 
     private void SelectStore(Instr i)
     {
+        // Long mode: a Packed64 kept in a register, written whole (Select.PackedValues).
+        if (X86Mode.Long && PackedValueStore(i)) return;
         MMem m = Address(i.Operands[0], i.Offset);
         // A device's register (Instr.Device): the operand says so to every
         // pass after (MMem.Device), as a device's load's does.
@@ -4066,16 +4075,17 @@ internal sealed partial class Selector
 
     private void SelectMemCopy(Instr i)
     {
+        // A packed value kept in a register, copied whole (both modes).
+        if (PackedValueMemCopy(i)) return;
         // Long mode: a small copy of known length as moves (SmallCopyL), any
-        // other by the string instructions. i386's ways with a Packed128
-        // value, the MMX registers, a small copy and the runtime's streamed
-        // routine are its own.
+        // other by the string instructions. i386's ways with the MMX
+        // registers, a small copy and the runtime's streamed routine are
+        // its own.
         if (X86Mode.Long)
         {
             if (!SmallCopyL(i)) InlineMemCopy(i);
             return;
         }
-        if (PackedValueMemCopy(i)) return;
         if (SelectMmxFrameCopy(i)) return;
         if (SelectSmallCopy(i)) return;
         if (i.Operands[2] is not ImmOperand && _streamCopy is { } copy) StreamedOr(i, copy, () => InlineMemCopy(i));

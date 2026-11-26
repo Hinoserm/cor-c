@@ -961,8 +961,13 @@ public sealed partial class Lowering
                 return Void();
             }
             // WHICH OF A PACKED BLOCK'S VARIANTS RUNS (Parser.ParsePackedBlock):
-            // the last, featureless, in long mode (its packed operations are
-            // their scalar forms), the others nothing; the one left, where
+            // in long mode the first with no 3DNow! and no banned feature,
+            // known at the compile -- every processor of it has MMX's
+            // instructions, their extensions, SSE and SSE2, done there on
+            // the XMM registers (Lowering.PackedIntrinsic), and 3DNow! is
+            // not used -- the others nothing (but where the image's knob caps
+            // the features: then the run decides there too, among those
+            // without 3DNow!); the one left, where
             // --cpu's floor and its bans leave one; else the processor's
             // answer among those left, asked the first time the block is
             // reached (Runtime.PackedChoose) and kept in a word of the
@@ -976,10 +981,17 @@ public sealed partial class Lowering
                 // A CUTOFF'S (Parser.PackedCutoff): the last variant kept for
                 // little work, outside the floor's choice.
                 bool keepLast = call.Args.Count > 3 && LiteralInteger(call.Args[3]) is 1 && CutoffLive;
-                if (_t.WordSize != 4)
+                if (_t.WordSize != 4 && !CpuCapped)
                 {
-                    for (int v = 0; v < count - 1; v++) _packedDead.Add((_f, block - count + v));
-                    return Fit(_e.Const(count - 1, IrType.I32), returns);
+                    int runs = count - 1;
+                    for (int v = 0; v < count - 1; v++)
+                    {
+                        int mask = (int)(masks >> (8 * v) & 0xFF);
+                        if ((mask & PackedOps.ThreeDNow) == 0 && (mask & PackedBits(_t.X86Profile.Banned)) == 0) { runs = v; break; }
+                    }
+                    for (int v = 0; v < count; v++)
+                        if (v != runs) _packedDead.Add((_f, block - count + v));
+                    return Fit(_e.Const(runs, IrType.I32), returns);
                 }
                 // --cpu IS THE FLOOR: the processor has at least its features,
                 // so the first variant they cover always wins over every one
@@ -1021,7 +1033,8 @@ public sealed partial class Lowering
                 // floor: those variants are nothing here, and the floor -- the
                 // run's last word, which needs nothing the processor lacks --
                 // is where it falls back.
-                int allowed = ((Freestanding || Windows) && !_t.X86Profile.Has(X86Feature.Sse) ? ~(PackedOps.Sse | PackedOps.Sse2) : ~0) & ~PackedBits(_t.X86Profile.Banned);
+                int allowed = ((Freestanding || Windows) && _t.WordSize == 4 && !_t.X86Profile.Has(X86Feature.Sse) ? ~(PackedOps.Sse | PackedOps.Sse2) : ~0) & ~PackedBits(_t.X86Profile.Banned)
+                    & (_t.WordSize == 8 ? ~PackedOps.ThreeDNow : ~0);
                 VReg answer = _e.Call(CallLabel(asked), IrType.I32, R(AsParam(_e.Const((long)masks, IrType.I64), asked.Params[0].Type)),
                     R(_e.Const(capped ? count : floor + 1, IrType.I32)), R(_e.Const(allowed, IrType.I32)))!;
                 _e.Store(RegOperand.Of(at), RegOperand.Of(_e.Binary(Opcode.Add, answer, 1)), 0, 4);
@@ -1340,9 +1353,9 @@ public sealed partial class Lowering
     /// <summary>Whether a packed block's variant, by its number and features, is never picked here (Sys.PackedChoose): one after the first --cpu covers, or one with SSE in freestanding or Windows i386 code whose --cpu has none.</summary>
     private bool PackedVariantNeverRuns(int number, int features) => _packedDead.Contains((_f, number)) || PackedFeaturesNeverRun(features);
 
-    /// <summary>Whether a variant's features are never picked here, whatever the processor: one a --disable-NAME bans, or one with SSE in freestanding or Windows i386 code whose --cpu has none.</summary>
+    /// <summary>Whether a variant's features are never picked here, whatever the processor: one a --disable-NAME bans, one with 3DNow! in long mode (which does every packed operation by SSE2), or one with SSE in freestanding or Windows i386 code whose --cpu has none.</summary>
     private bool PackedFeaturesNeverRun(int features)
-        => (features & PackedBits(_t.X86Profile.Banned)) != 0 || (Freestanding || Windows) && _t.WordSize == 4 && !_t.X86Profile.Has(X86Feature.Sse) && (features & (PackedOps.Sse | PackedOps.Sse2)) != 0;
+        => (features & PackedBits(_t.X86Profile.Banned)) != 0 || _t.WordSize == 8 && (features & PackedOps.ThreeDNow) != 0 || (Freestanding || Windows) && _t.WordSize == 4 && !_t.X86Profile.Has(X86Feature.Sse) && (features & (PackedOps.Sse | PackedOps.Sse2)) != 0;
 
     /// <summary>
     /// PROCESSOR.HAS OF CONSTANT FEATURES, AT THE COMPILE (Runtime's

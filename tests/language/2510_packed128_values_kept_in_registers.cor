@@ -1,5 +1,4 @@
 // test: packed128_values_kept_in_registers
-// only-target: x86
 // cpu: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:

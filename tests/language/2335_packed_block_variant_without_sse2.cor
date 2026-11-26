@@ -1,0 +1,47 @@
+// test: without SSE2 (i386 only): a method with packed operations runs the version its processor's features pick: one at the compile where --cpu's floor and its bans leave one, the processor's own among those kept otherwise, and never a banned one
+// only-target: x86
+// cpu: --cpu=athlon64 --disable-3dnow --disable-sse2
+// requires-host: mmx sse sse2
+// expect-exit: 0
+// expect-output:
+// float+average 1C 4040000040400002
+// add8 14 1112131415161718
+//
+// run-with: --runtime-knob Corsac.Cpu.Features=124
+// expect-output:
+// float+average 1C 4040000040400002
+// add8 14 1112131415161718
+//
+// Test 2470's program under --disable-sse2, a switch x86-64 code cannot be
+// built with: the ban takes the SSE2 variants away at the compile, and the
+// knob's SSE2 gives none back.
+//
+// The features each variant may use (PackedOps' bits: MMX 04, the MMX
+// extensions 08, SSE 10, SSE2 20, 3DNow! 40), as Packed.Features() says inside
+// it -- each method's own. The knob caps what the run sees, so every variant kept runs on one
+// machine; a --disable-NAME bans its feature from the variants a run may pick
+// as well as from --cpu, so with SSE2 banned no cap brings it back.
+static class Program
+{
+    // Each method its processors' versions, by its own packed operations.
+    static int FloatAverage(out ulong x)
+    {
+        x = Packed.AddF32(Packed.FromBits(0x3F8000003F800000UL), Packed.FromBits(0x4000000040000000UL)).Bits
+          ^ Packed.Average8(Packed.FromBits(1UL), Packed.FromBits(3UL)).Bits;
+        return Packed.Features();
+    }
+
+    static int AddEight(out ulong y)
+    {
+        y = Packed.Add8(Packed.FromBits(0x0102030405060708UL), Packed.FromBits(0x1010101010101010UL)).Bits;
+        return Packed.Features();
+    }
+
+    static int Main()
+    {
+        int a = FloatAverage(out ulong x), b = AddEight(out ulong y);
+        System.Console.WriteLine("float+average " + a.ToString("X2") + " " + x.ToString("X16"));
+        System.Console.WriteLine("add8 " + b.ToString("X2") + " " + y.ToString("X16"));
+        return 0;
+    }
+}

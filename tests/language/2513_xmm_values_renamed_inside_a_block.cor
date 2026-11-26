@@ -1,5 +1,4 @@
 // test: xmm_values_renamed_inside_a_block
-// only-target: x86
 // cpu: --cpu=athlon64 --disable-3dnow
 // requires-host: sse2
 // expect-exit: 0

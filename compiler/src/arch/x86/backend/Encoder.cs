@@ -398,6 +398,8 @@ internal sealed partial class Encoder
         MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas
             or MOp.Jmp or MOp.Jcc or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Setcc
             or MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.XorF or MOp.XorPs => false,
+        // No operand of a width at all: a prefetch's line, a fence.
+        MOp.PrefetchNta or MOp.PrefetchWrite or MOp.Sfence => false,
         _ => i.Width == 8,
     };
 

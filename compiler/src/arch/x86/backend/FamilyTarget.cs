@@ -122,10 +122,15 @@ internal abstract class FamilyTarget
     /// <summary>
     /// A slot of a word; on i386 an XMM value's is the one its moves fill --
     /// eight bytes, sixteen for a Packed128's (MFunction.XmmSpillWidth).
-    /// Long mode's XMM values are scalars, a word each.
+    /// Long mode's XMM values are scalars, a word each, but in a function
+    /// that keeps packed values in the class: sixteen bytes there, at
+    /// sixteen from the frame's base, which a framed function's prologue
+    /// leaves at sixteen (LongAlignedSpills marks them for MOVAPS).
     /// </summary>
     public int NewSlot(int vreg)
-        => !X86Mode.Long && _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(Math.Max(8, _m.XmmSpillWidth), 8) : _m.Frame.Spill();
+        => !_m.XmmRegs.Contains(vreg) ? _m.Frame.Spill()
+            : X86Mode.Long ? (_m.XmmSpillWidth == 16 ? _m.Frame.Allocate(16, 16) : _m.Frame.Spill())
+            : _m.Frame.Allocate(Math.Max(8, _m.XmmSpillWidth), 8);
 
     /// <summary>A new virtual register of the kind `like` is: its class, its byte limit, its being half of a wide value.</summary>
     public int NewVRegLike(int like)
@@ -155,14 +160,14 @@ internal abstract class FamilyTarget
     /// word; an XMM one by MOVSS or MOVSD at the width its home has
     /// (Homes), else its class's spill slot's -- i386's by what the function
     /// keeps there (MFunction.XmmSpillWidth), long mode's a scalar's eight
-    /// bytes. The copy the allocator made of one virtual register into
+    /// bytes or, where the function keeps packed values, the whole sixteen. The copy the allocator made of one virtual register into
     /// another, each where it was placed, is this move too.
     /// </summary>
     private MInstr Move(MOperand to, MOperand from, int line)
         => to is MReg r && ClassOf(r.Id) == 1 || from is MReg s && ClassOf(s.Id) == 1
             ? new MInstr(MOp.MovF, to, from)
             {
-                Width = from is MMem { Disp: > 0 } home && _homeWidths.TryGetValue(home.Disp, out int width) ? width : X86Mode.Long ? 8 : _m.XmmSpillWidth,
+                Width = from is MMem { Disp: > 0 } home && _homeWidths.TryGetValue(home.Disp, out int width) ? width : X86Mode.Long ? Math.Max(8, _m.XmmSpillWidth) : _m.XmmSpillWidth,
                 Line = line,
             }
             : new MInstr(MOp.Mov, to, from) { Width = X86Mode.Word, Line = line };
@@ -216,7 +221,12 @@ internal abstract class FamilyTarget
     protected virtual RegisterFile Fitted(RegisterFile file) => file;
 
     /// <summary>The mode's registers as the allocator has them, for this function: a thunk's, a leaf's, or the whole file.</summary>
-    public RegisterFile Registers => _registers ??= Fitted(_m.Source.KeepsCallerRegisters ? ModeFiles.CallerOnly : _leaf ? ModeFiles.Leaf : ModeFiles.Whole);
+    // (A long mode leaf that keeps packed values leaves the base register
+    // alone: a spill of one asks a slot at sixteen, for which the leaf has
+    // its frame again -- FramePointerFree.Run -- and the base must be free
+    // to be it.)
+    public RegisterFile Registers => _registers ??= Fitted(_m.Source.KeepsCallerRegisters ? ModeFiles.CallerOnly
+        : _leaf && !(X86Mode.Long && _m.XmmSpillWidth == 16) ? ModeFiles.Leaf : ModeFiles.Whole);
 
     private RegisterFile? _registers;
 

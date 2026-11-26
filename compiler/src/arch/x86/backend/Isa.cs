@@ -56,7 +56,7 @@ internal static class Isa
         MOp.MmxOp or MOp.MmxShiftImm => X86Feature.Mmx,
         MOp.MmxShuffleW or MOp.MmxExtractW or MOp.MmxInsertW => X86Feature.Mmx | X86Feature.MmxExtensions,
         MOp.XmmLoad or MOp.XmmStore or MOp.XmmLoadLow or MOp.XmmStoreLow or MOp.XmmOp or MOp.XmmOpRR or MOp.XmmOpV or MOp.XmmOpVDef => X86Feature.Sse,
-        MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV or MOp.XmmStoreNtV => X86Feature.Sse | X86Feature.Sse2,
+        MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV or MOp.XmmStoreNtV or MOp.Movnti => X86Feature.Sse | X86Feature.Sse2,
         MOp.XmmShiftImm or MOp.XmmExtractW or MOp.XmmInsertW => X86Feature.Sse | X86Feature.Sse2,
         MOp.ThreeDNowOp => X86Feature.Mmx | X86Feature.ThreeDNow,
         // FXSAVE with LDMXCSR: the SSE state's.

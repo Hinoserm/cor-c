@@ -31,6 +31,15 @@ using Block = Corsac.Lang.Ir.Block;
 /// touching none of them -- a Packed64's floats (f2) among them -- goes
 /// through the packed registers as before, in XMM4 to XMM7, the class keeping
 /// XMM0 to XMM3 (MFunction.XmmShared).
+///
+/// LONG MODE has no packed registers at all -- no MMX state, as GCC's and
+/// Clang's 64-bit code has none: every packed operation is made here, on
+/// the class's registers, an operand that is no value kept loaded into one
+/// and a result that is none stored from one. A PACKED64 is the low half of
+/// an XMM register there (the "q" operations, SSE2's on eight bytes), so a
+/// slot of eight bytes is taken as one of sixteen is, by the same rules at
+/// its own width; and a whole 64-bit store into one (Packed64.FromBits) or
+/// load from one is a MOVQ between the files.
 /// </summary>
 internal sealed partial class Selector
 {
@@ -42,12 +51,30 @@ internal sealed partial class Selector
 
     private bool PackedValueMode => _packedValues is not null;
 
-    /// <summary>Whether a packed operation's name is one on the XMM registers' sixteen bytes.</summary>
+    /// <summary>Whether a packed operation's name is one on the XMM registers: their sixteen bytes, or long mode's eight of a Packed64 ("q").</summary>
     private static bool XmmValueOp(string callee, out string[] part)
     {
         part = callee[MachineIntrinsics.PackedOpPrefix.Length..].Split('.');
-        return part[0] is "x" or "xshift" or "xshuffle" or "xextract" or "xinsert" or "xstorent" or "xf";
+        return part[0] is "x" or "xshift" or "xshuffle" or "xextract" or "xinsert" or "xstorent" or "xf"
+            or "q" or "qshift" or "qshuffle" or "qextract" or "qinsert" or "qf";
     }
+
+    /// <summary>The bytes of the values such an operation is on: eight for a "q" one.</summary>
+    private static int PackedWidthOf(string kind) => kind[0] == 'q' ? 8 : 16;
+
+    /// <summary>Whether a slot can be a value of the class: sixteen bytes, or in long mode a Packed64's eight.</summary>
+    private static bool PackedSlot(FrameSlot s) => s.Bytes == 16 || s.Bytes == 8 && X86Mode.Long;
+
+    /// <summary>The bytes of a value kept (its slot's; a variable's, those of what it copies).</summary>
+    private Dictionary<object, int>? _packedWidths;
+
+    private int PackedWidth(Operand o) => o switch
+    {
+        SlotOperand { Slot: var s } when _packedWidths!.TryGetValue(s, out int w) => w,
+        RegOperand { Reg: var r } when _packedAliases!.TryGetValue(r, out FrameSlot? s) && _packedWidths!.TryGetValue(s, out int w) => w,
+        RegOperand { Reg: var r } when _packedWidths!.TryGetValue(r, out int w) => w,
+        _ => 16,
+    };
 
     /// <summary>The values taken (the class above), or none: null where nothing is taken.</summary>
     private void PackedFindValues()
@@ -56,7 +83,7 @@ internal sealed partial class Selector
         HashSet<VReg> variables = new(ReferenceEqualityComparer.Instance);
         // Aliases: one definition, the address of a slot of sixteen bytes.
         foreach ((VReg v, Instr? d) in _definitions)
-            if (d is { Op: Opcode.Copy, Operands: [SlotOperand { Slot: { Bytes: 16 } s }] } && !_rangeDefinitions.ContainsKey(v))
+            if (d is { Op: Opcode.Copy, Operands: [SlotOperand { Slot: var s }] } && PackedSlot(s) && !_rangeDefinitions.ContainsKey(v))
                 aliases[v] = s;
         // Variables: every definition a copy of a slot's address, an alias or a variable.
         foreach ((VReg v, List<Instr> defs) in _rangeDefinitions)
@@ -66,7 +93,7 @@ internal sealed partial class Selector
         {
             changed = false;
             foreach (VReg v in variables.ToList())
-                if (!_rangeDefinitions[v].All(d => d.Operands[0] is SlotOperand { Slot.Bytes: 16 }
+                if (!_rangeDefinitions[v].All(d => d.Operands[0] is SlotOperand { Slot: var named } && PackedSlot(named)
                         || d.Operands[0] is RegOperand { Reg: var q } && (aliases.ContainsKey(q) || variables.Contains(q))))
                 {
                     variables.Remove(v);
@@ -77,7 +104,7 @@ internal sealed partial class Selector
         // The node an operand names: a slot (directly or by its alias), a variable, or none.
         object? NodeOf(Operand o) => o switch
         {
-            SlotOperand { Slot: { Bytes: 16 } s } => s,
+            SlotOperand { Slot: var s } when PackedSlot(s) => s,
             RegOperand { Reg: var r } when aliases.TryGetValue(r, out FrameSlot? s) => s,
             RegOperand { Reg: var r } when variables.Contains(r) => r,
             _ => null,
@@ -99,6 +126,12 @@ internal sealed partial class Selector
         List<object> operated = new();
         // Every slot named, directly or by an alias: each in a group kept is given its register.
         List<FrameSlot> slots = new();
+        // The bytes each use takes its node to be of -- exactly (an
+        // operation's, a copy's), or at least (a read of some of them): a
+        // group whose slots are of another width is left in memory.
+        List<(object Node, int Bytes, bool Exact)> widths = new();
+        // The whole copies between two nodes (a MemCopy of both).
+        List<(object To, object From)> copies = new();
         bool anyOperation = false;
         foreach (Block b in _f.Blocks)
             foreach (Instr i in b.Instrs)
@@ -116,26 +149,82 @@ internal sealed partial class Selector
                 }
                 // An alias's one definition: it is its slot.
                 if (i.Op == Opcode.Copy && i.Dest is { } alias && aliases.ContainsKey(alias)) continue;
+                if (i.Op == Opcode.MemCopy && i.Operands[2] is ImmOperand { Value: 16 or 8 } && NodeOf(i.Operands[0]) is { } copyTo && NodeOf(i.Operands[1]) is { } copyFrom)
+                    copies.Add((copyTo, copyFrom));
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     if (NodeOf(i.Operands[k]) is not { } node) continue;
                     if (valueOp) operated.Add(node);
                     if (node is FrameSlot named) slots.Add(named);
                     bool slotItself = node is FrameSlot;
-                    bool fine = valueOp
-                        ? !(kind == "xinsert" && k == 2) && !(kind == "xstorent" && k == 0)
-                          && (k != 0 || kind == "xextract" || slotItself)
-                        : i.Op == Opcode.MemCopy && k < 2 && i.Operands[2] is ImmOperand { Value: 16 } && (k == 1 || slotItself)
-                          // Zeroed whole: a fresh block escape analysis put in the frame (`b = a`'s copy).
-                          || i.Op == Opcode.MemSet && k == 0 && slotItself && i.Operands[1] is ImmOperand { Value: 0 } && i.Operands[2] is ImmOperand { Value: 16 }
-                          || i.Op == Opcode.Load && k == 0 && i.Offset >= 0 && i.Offset + i.Size <= 16;
+                    bool fine;
+                    if (valueOp)
+                    {
+                        // (A shift's count in a register, an "x" or "q" operation's third operand, is read at the operation's width as any other.)
+                        fine = !(kind is "xinsert" or "qinsert" && k == 2) && !(kind == "xstorent" && k == 0)
+                            && (k != 0 || kind is "xextract" or "qextract" || slotItself);
+                        widths.Add((node, PackedWidthOf(kind), true));
+                    }
+                    else if (i.Op == Opcode.MemCopy && k < 2 && i.Operands[2] is ImmOperand { Value: 16 or 8 } copied && (k == 1 || slotItself))
+                    {
+                        fine = true;
+                        widths.Add((node, (int)copied.Value, true));
+                    }
+                    // Zeroed whole: a fresh block escape analysis put in the frame (`b = a`'s copy).
+                    else if (i.Op == Opcode.MemSet && k == 0 && slotItself && i.Operands[1] is ImmOperand { Value: 0 } && i.Operands[2] is ImmOperand { Value: 16 or 8 } cleared)
+                    {
+                        fine = true;
+                        widths.Add((node, (int)cleared.Value, true));
+                    }
+                    else if (i.Op == Opcode.Load && k == 0 && i.Offset >= 0 && i.Offset + i.Size <= 16 && !i.Device)
+                    {
+                        fine = true;
+                        widths.Add((node, (int)(i.Offset + i.Size), false));
+                    }
+                    // Long mode: a Packed64 written whole from a general register (FromBits).
+                    else if (X86Mode.Long && i.Op == Opcode.Store && k == 0 && slotItself && i.Offset == 0 && i.Size == 8 && !i.Device
+                        && NodeOf(i.Operands[1]) is null && i.Operands[1] is not RegOperand { Reg.Type: IrType.F32 or IrType.F64 })
+                    {
+                        fine = true;
+                        widths.Add((node, 8, true));
+                    }
+                    else fine = false;
                     if (!fine) escaped.Add(node);
                 }
             }
         if (!anyOperation) return;
         HashSet<object> lost = new(ReferenceEqualityComparer.Instance), kept = new(ReferenceEqualityComparer.Instance);
         foreach (object e in escaped) lost.Add(Find(e));
+        // A group is of its slots' width, all of one; every use of it at that width.
+        Dictionary<object, int> groupWidth = new(ReferenceEqualityComparer.Instance);
+        foreach (FrameSlot s in slots.Concat(aliases.Values))
+        {
+            object root = Find(s);
+            if (groupWidth.TryGetValue(root, out int was) && was != s.Bytes) lost.Add(root);
+            groupWidth[root] = s.Bytes;
+        }
+        foreach ((object node, int bytes, bool exact) in widths)
+        {
+            object root = Find(node);
+            if (!groupWidth.TryGetValue(root, out int of) || (exact ? of != bytes : of < bytes)) lost.Add(root);
+        }
         foreach (object o in operated) if (!lost.Contains(Find(o))) kept.Add(Find(o));
+        // A VALUE COPIED WHOLE INTO OR OUT OF ONE KEPT is kept too, where
+        // nothing else loses it: an operand built in a buffer of its own
+        // and copied into the variable an operation names (FromBits'
+        // result, a temporary's) would be stored to memory only to be
+        // loaded from it at once.
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach ((object a, object b) in copies)
+            {
+                object ra = Find(a), rb = Find(b);
+                if (lost.Contains(ra) || lost.Contains(rb) || kept.Contains(ra) == kept.Contains(rb)) continue;
+                grew |= kept.Add(ra) | kept.Add(rb);
+            }
+        }
         Dictionary<object, MReg> values = new(ReferenceEqualityComparer.Instance);
         void Take(object node)
         {
@@ -146,6 +235,7 @@ internal sealed partial class Selector
         foreach (VReg v in variables) Take(v);
         foreach (object o in operated) Take(o);
         foreach (FrameSlot s in slots) Take(s);
+        foreach ((object a, object b) in copies) { Take(a); Take(b); }
         if (values.Count == 0) return;
 
         // A RESULT MADE ONLY TO BE A VARIABLE'S NEXT VALUE -- `x = x + y` is
@@ -163,7 +253,8 @@ internal sealed partial class Selector
                 Instr i = b.Instrs[at];
                 if (i.Op == Opcode.Copy && i.Dest is { } alias && aliases.ContainsKey(alias)) continue;
                 bool result = i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
-                    && XmmValueOp(c, out string[] part) && part[0] is "x" or "xshift" or "xshuffle" or "xinsert" or "xf";
+                    && XmmValueOp(c, out string[] part) && part[0] is "x" or "xshift" or "xshuffle" or "xinsert" or "xf"
+                        or "q" or "qshift" or "qshuffle" or "qinsert" or "qf";
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     if (NodeOf(i.Operands[k]) is not FrameSlot s) continue;
@@ -199,11 +290,13 @@ internal sealed partial class Selector
                 || !XmmValueOp(c, out string[] part) || part[0] == "xstorent")
                 return false;
             for (int k = 0; k < i.Operands.Count; k++)
-                if (!(part[0] == "xinsert" && k == 2) && !(NodeOf(i.Operands[k]) is { } n && values.ContainsKey(n))) return false;
+                if (!(part[0] is "xinsert" or "qinsert" && k == 2) && !(NodeOf(i.Operands[k]) is { } n && values.ContainsKey(n))) return false;
             return true;
         }
         _packedValues = values;
         _packedAliases = aliases;
+        _packedWidths = new(ReferenceEqualityComparer.Instance);
+        foreach (object node in values.Keys) _packedWidths[node] = groupWidth[Find(node)];
     }
 
     /// <summary>Whether a packed operation names a value this mode keeps: then it is made on registers (SelectPackedValueOp).</summary>
@@ -248,20 +341,33 @@ internal sealed partial class Selector
         return true;
     }
 
-    /// <summary>A sixteen-byte MemCopy from or to a value this mode keeps: a load, a store, or a register's copy.</summary>
+    /// <summary>A MemCopy of a value this mode keeps, whole (sixteen bytes, or a Packed64's eight), from or to it: a load, a store, or a register's copy.</summary>
     private bool PackedValueMemCopy(Instr i)
     {
-        if (_packedValues is null || i.Operands[2] is not ImmOperand { Value: 16 }) return false;
+        if (_packedValues is null || i.Operands[2] is not ImmOperand { Value: 16 or 8 } size) return false;
+        int bytes = (int)size.Value;
         MReg? to = PackedValue(i.Operands[0]), from = PackedValue(i.Operands[1]);
         if (to is null && from is null) return false;
         if (to is not null && from is not null) MovF(to, from, 16);
         else if (to is not null)
         {
             // Straight into the value's register: bytes the MMX registers hold newer written back first.
-            PackedLetGo(PackedPlaceOf(i.Operands[1]), 16, replaced: false);
-            MovF(to, PackedAt(i.Operands[1]), 16);
+            PackedLetGo(PackedPlaceOf(i.Operands[1]), bytes, replaced: false);
+            MovF(to, PackedAt(i.Operands[1]), bytes);
         }
-        else PackedValueOut(i.Operands[0], from!);
+        else PackedValueOut(i.Operands[0], from!, bytes);
+        return true;
+    }
+
+    /// <summary>
+    /// Long mode: a Packed64 this mode keeps written whole from a general
+    /// register or a number (Packed64.FromBits) -- MOVQ xmm, r64, which
+    /// clears the register's upper half.
+    /// </summary>
+    private bool PackedValueStore(Instr i)
+    {
+        if (_packedValues is null || i.Offset != 0 || i.Size != 8 || PackedValue(i.Operands[0]) is not { } v) return false;
+        EmitW(MOp.MovGx, 8, v, RL(i.Operands[1]));
         return true;
     }
 
@@ -280,6 +386,7 @@ internal sealed partial class Selector
     /// </summary>
     private bool PackedValueLane(Instr i)
     {
+        if (X86Mode.Long) return PackedValueLaneL(i);
         if (PackedValue(i.Operands[0]) is not { } v || i.Size != 4 || i.Dest is not { Type: IrType.I32 } d
             || (i.Offset & 3) != 0 || i.Offset is < 0 or > 12 || !Target.Current.X86Profile.Has(X86Feature.Sse2)) return false;
         MReg lane = v;
@@ -293,6 +400,28 @@ internal sealed partial class Selector
     }
 
     /// <summary>
+    /// Long mode's: a doubleword or a quadword of a value this mode keeps,
+    /// at its own boundary, by MOVD or MOVQ -- the low one straight from the
+    /// register, another brought down first (PSHUFD: a doubleword by its
+    /// number, the upper quadword by 0xEE).
+    /// </summary>
+    private bool PackedValueLaneL(Instr i)
+    {
+        if (PackedValue(i.Operands[0]) is not { } v || i.Dest is not { } d || i.Dest.Type is not (IrType.I32 or IrType.I64)
+            || i.Size is not (4 or 8) || i.Size == 4 && i.Dest.Type != IrType.I32 && i.Signed
+            || i.Offset < 0 || i.Offset % i.Size != 0 || i.Offset + i.Size > PackedWidth(i.Operands[0])) return false;
+        MReg lane = v;
+        if (i.Offset != 0)
+        {
+            lane = XTemp();
+            Emit(new MInstr(MOp.XmmOpVDef, Imm(0x66), Imm(0x70), lane, v, Imm(i.Size == 8 ? 0xEE : (int)(i.Offset / 4))) { Probed = true });
+        }
+        // (A doubleword into a 64-bit value unsigned: the 32-bit move clears the upper half.)
+        EmitW(MOp.MovGx, i.Size, V(d), lane);
+        return true;
+    }
+
+    /// <summary>
     /// A field of a value this mode keeps read: the value stored to a
     /// sixteen-byte scratch of the frame, the bytes read from there.
     /// </summary>
@@ -300,31 +429,31 @@ internal sealed partial class Selector
     {
         if (PackedValue(address) is not { } v) return null;
         MMem scratch = MMem.Frame(_m.Frame.PackedScratch);
-        MovF(scratch, v, 16);
+        MovF(scratch, v, PackedWidth(address));
         return Displaced(scratch, checked((int)offset));
     }
 
-    /// <summary>An operand's value in an XMM register: its own, or one it is loaded into (MOVUPS: no alignment asked).</summary>
-    private MReg PackedValueIn(Operand o)
+    /// <summary>An operand's value in an XMM register: its own, or one it is loaded into (MOVUPS: no alignment asked; a Packed64's eight bytes by MOVSD, the upper half cleared).</summary>
+    private MReg PackedValueIn(Operand o, int bytes = 16)
     {
         if (PackedValue(o) is { } v) return v;
         // Bytes the MMX registers hold newer than memory, written back first.
-        PackedLetGo(PackedPlaceOf(o), 16, replaced: false);
+        PackedLetGo(PackedPlaceOf(o), bytes, replaced: false);
         MReg t = XTemp();
-        MovF(t, PackedAt(o), 16);
+        MovF(t, PackedAt(o), bytes);
         return t;
     }
 
     /// <summary>A result into the value an operand names, or stored to the memory it addresses.</summary>
-    private void PackedValueOut(Operand o, MReg value)
+    private void PackedValueOut(Operand o, MReg value, int bytes = 16)
     {
         if (PackedValue(o) is { } v)
         {
             MovF(v, value, 16);
             return;
         }
-        PackedStoredTo(o, 16);
-        MovF(PackedAt(o), value, 16);
+        PackedStoredTo(o, bytes);
+        MovF(PackedAt(o), value, bytes);
     }
 
     /// <summary>The register a result is made in: its value's, unless that is `avoid`'s (a source read after the result begins), then a new one.</summary>
@@ -335,32 +464,56 @@ internal sealed partial class Selector
     {
         MInstr P(MOp op, params MOperand[] operands) => Emit(new MInstr(op, operands) { Probed = true });
         Operand Address(int k) => i.Operands[k];
+        // A Packed64's operation ("q"): the same instruction on the
+        // registers' low halves, eight bytes in and out. What its upper
+        // half holds is whatever the instruction left there, read by no one.
+        int bytes = PackedWidthOf(part[0]);
         switch (part[0])
         {
             case "x":
+            case "q":
             {
-                MReg a = PackedValueIn(Address(1)), b = PackedValueIn(Address(2));
+                byte op = Convert.ToByte(part[2], 16);
+                MReg a = PackedValueIn(Address(1), bytes), b = PackedValueIn(Address(2), bytes);
                 MReg made = PackedValueResult(Address(0), a.Id == b.Id ? null : b);
                 MovF(made, a, 16);
-                P(MOp.XmmOpV, Imm(Convert.ToByte(part[1], 16)), Imm(Convert.ToByte(part[2], 16)), made, b);
-                PackedValueOut(Address(0), made);
+                // A PACKED64'S OPERATIONS WHOSE SIXTEEN-BYTE FORM IS NOT THE
+                // EIGHT-BYTE ONE ON THE LOW HALF (as GCC makes them where it
+                // keeps a 64-bit vector in an XMM register): an unpack of
+                // the high halves is the low one's -- which interleaves all
+                // eight bytes of each -- and its upper eight bytes brought
+                // down (PSRLDQ 8); a pack leaves the second operand's four
+                // in the upper half's low doubleword, brought beside the
+                // first's (PSHUFD 0x08).
+                bool high = bytes == 8 && op is 0x68 or 0x69 or 0x6A, pack = bytes == 8 && op is 0x63 or 0x67 or 0x6B;
+                P(MOp.XmmOpV, Imm(Convert.ToByte(part[1], 16)), Imm(high ? op - 8 : op), made, b);
+                if (high) P(MOp.XmmShiftV, made, Imm(0x73), Imm(3), Imm(8));
+                if (pack) P(MOp.XmmOpVDef, Imm(0x66), Imm(0x70), made, made, Imm(0x08));
+                PackedValueOut(Address(0), made, bytes);
                 return;
             }
             case "xshift":
+            case "qshift":
             {
-                MReg a = PackedValueIn(Address(1));
+                byte group = Convert.ToByte(part[1], 16);
+                int digit = int.Parse(part[2]);
+                MReg a = PackedValueIn(Address(1), bytes);
                 MReg made = PackedValueResult(Address(0), null);
-                MovF(made, a, 16);
-                P(MOp.XmmShiftV, made, Imm(Convert.ToByte(part[1], 16)), Imm(int.Parse(part[2])), Imm(int.Parse(part[3])));
-                PackedValueOut(Address(0), made);
+                // A Packed64's bytes shifted right take in the upper half's:
+                // cleared first (MOVQ xmm, xmm), whatever was left there.
+                if (bytes == 8 && group == 0x73 && digit == 3) P(MOp.XmmOpVDef, Imm(0xF3), Imm(0x7E), made, a);
+                else MovF(made, a, 16);
+                P(MOp.XmmShiftV, made, Imm(group), Imm(digit), Imm(int.Parse(part[3])));
+                PackedValueOut(Address(0), made, bytes);
                 return;
             }
             case "xshuffle":
+            case "qshuffle":
             {
-                MReg a = PackedValueIn(Address(1));
+                MReg a = PackedValueIn(Address(1), bytes);
                 MReg made = PackedValueResult(Address(0), null);
                 P(MOp.XmmOpVDef, Imm(Convert.ToByte(part[1], 16)), Imm(0x70), made, a, Imm(int.Parse(part[2])));
-                PackedValueOut(Address(0), made);
+                PackedValueOut(Address(0), made, bytes);
                 return;
             }
             case "xstorent":
@@ -371,21 +524,24 @@ internal sealed partial class Selector
                 return;
             }
             case "xextract":
+            case "qextract":
             {
-                MReg a = PackedValueIn(Address(0));
-                P(MOp.XmmExtractV, i.Dest is not null ? Lo(i.Dest) : Temp(), a, Imm(int.Parse(part[1])));
+                MReg a = PackedValueIn(Address(0), bytes);
+                P(MOp.XmmExtractV, i.Dest is not null ? (X86Mode.Long ? V(i.Dest) : Lo(i.Dest)) : Temp(), a, Imm(int.Parse(part[1])));
                 return;
             }
             case "xinsert":
+            case "qinsert":
             {
-                MReg a = PackedValueIn(Address(1));
+                MReg a = PackedValueIn(Address(1), bytes);
                 MReg made = PackedValueResult(Address(0), null);
                 MovF(made, a, 16);
-                P(MOp.XmmInsertV, made, R(i.Operands[2]), Imm(int.Parse(part[1])));
-                PackedValueOut(Address(0), made);
+                P(MOp.XmmInsertV, made, X86Mode.Long ? RL(i.Operands[2]) : R(i.Operands[2]), Imm(int.Parse(part[1])));
+                PackedValueOut(Address(0), made, bytes);
                 return;
             }
             case "xf":
+            case "qf":
             {
                 byte prefix = Convert.ToByte(part[1], 16), op = Convert.ToByte(part[2], 16);
                 int immediate = int.Parse(part[3]);
@@ -393,20 +549,20 @@ internal sealed partial class Selector
                 MReg made;
                 if (unary)
                 {
-                    MReg a = PackedValueIn(Address(1));
+                    MReg a = PackedValueIn(Address(1), bytes);
                     made = PackedValueResult(Address(0), null);
                     if (immediate >= 0) P(MOp.XmmOpVDef, Imm(prefix), Imm(op), made, a, Imm(immediate));
                     else P(MOp.XmmOpVDef, Imm(prefix), Imm(op), made, a);
                 }
                 else
                 {
-                    MReg a = PackedValueIn(Address(1)), b = PackedValueIn(Address(2));
+                    MReg a = PackedValueIn(Address(1), bytes), b = PackedValueIn(Address(2), bytes);
                     made = PackedValueResult(Address(0), a.Id == b.Id ? null : b);
                     MovF(made, a, 16);
                     if (immediate >= 0) P(MOp.XmmOpV, Imm(prefix), Imm(op), made, b, Imm(immediate));
                     else P(MOp.XmmOpV, Imm(prefix), Imm(op), made, b);
                 }
-                PackedValueOut(Address(0), made);
+                PackedValueOut(Address(0), made, bytes);
                 return;
             }
         }

@@ -1,0 +1,234 @@
+// test: packed values kept across calls -- spilled whole, in slots moved by MOVAPS in long mode -- on the main thread, a new thread, a pool's thread, in a handler, and at every depth of calls
+// cpu: --cpu=athlon64 --disable-3dnow
+// requires-host: sse2
+// expect-exit: 0
+// expect-output:
+// main True
+// thread True
+// task True
+// handler True
+// depths True
+// many True
+// narrow True
+//
+// A PACKED VALUE LIVE ACROSS A CALL IS SPILLED: long mode's XMM registers
+// are all the caller's to save. Its spill slot is sixteen bytes at sixteen
+// from the frame's base (FamilyTarget.NewSlot), moved by MOVAPS
+// (FamilyPasses.AlignedSpills) -- which faults unless the base is a multiple
+// of sixteen, as a framed function's is when the stack was at sixteen
+// before its call. That holds on the program's first thread; here it is
+// asked of every other way code is entered: a thread's start, a pool's
+// worker, a handler entered by a throw, and under one to seven calls of
+// functions with frames of different sizes and saves. Four
+// rows across a call each lap, against the same sums made a word at a
+// time; twenty values at once in a function that calls nothing, more than
+// there are XMM registers; then a Packed64's two, which long mode keeps in
+// XMM registers too.
+// i386 runs the same program (its spills are AlignedSlots').
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int s_calls;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Called(int lap) { s_calls++; return lap * 3 + 1; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe void Rows(uint[] s, uint[] o)
+    {
+        nuint f = Sys.ArrayData(s), t = Sys.ArrayData(o);
+        Packed128 a = Packed.Load128(f), b = Packed.Load128(f + 16), c = Packed.Load128(f + 32), d = Packed.Load128(f + 48);
+        for (int lap = 0; lap < 5; lap++)
+        {
+            a = Packed.Add32(a, b);
+            b = Packed.Xor(b, c);
+            c = Packed.Add32(c, d);
+            d = Packed.Xor(d, a);
+            s[16] += (uint)Called(lap);
+        }
+        Packed.Store(t, a); Packed.Store(t + 16, b); Packed.Store(t + 32, c); Packed.Store(t + 48, d);
+    }
+
+    static void Words(uint[] s, uint[] o)
+    {
+        uint[] w = (uint[])s.Clone();
+        for (int lap = 0; lap < 5; lap++)
+        {
+            for (int k = 0; k < 4; k++) w[k] += w[4 + k];
+            for (int k = 0; k < 4; k++) w[4 + k] ^= w[8 + k];
+            for (int k = 0; k < 4; k++) w[8 + k] += w[12 + k];
+            for (int k = 0; k < 4; k++) w[12 + k] ^= w[k];
+        }
+        for (int k = 0; k < 16; k++) o[k] = w[k];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe ulong Pair(ulong x, ulong y)
+    {
+        Packed64 a = Packed.FromBits(x), b = Packed.FromBits(y);
+        for (int lap = 0; lap < 5; lap++)
+        {
+            a = Packed.Add16(a, b);
+            b = Packed.Xor(b, a);
+            s_calls += Called(lap) & 1;
+        }
+        ulong[] o = new ulong[2];
+        Packed.Store(Sys.ArrayData(o), a);
+        Packed.Store(Sys.ArrayData(o) + 8, b);
+        return o[0] ^ (o[1] << 1 | o[1] >> 63);
+    }
+
+    static ulong PairWords(ulong x, ulong y)
+    {
+        for (int lap = 0; lap < 5; lap++)
+        {
+            ulong sum = 0;
+            for (int k = 0; k < 64; k += 16) sum |= (ulong)(ushort)((x >> k) + (y >> k)) << k;
+            x = sum;
+            y ^= x;
+        }
+        return x ^ (y << 1 | y >> 63);
+    }
+
+    static bool Once(int seed)
+    {
+        uint[] s = new uint[17], made = new uint[16], wanted = new uint[16];
+        for (int k = 0; k < 16; k++) s[k] = (uint)(seed * 0x9E3779B1 + k * 0x85EBCA6B) ^ (uint)(k << 27);
+        Words(s, wanted);
+        Rows(s, made);
+        for (int k = 0; k < 16; k++)
+            if (made[k] != wanted[k]) return false;
+        return s[16] == 35;
+    }
+
+    // MORE VALUES THAN LONG MODE HAS XMM REGISTERS, in a function that calls
+    // nothing: some are spilled, and a leaf with such a slot has its frame
+    // again (FramePointerFree), whose base is at sixteen.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe void Many(uint[] s, uint[] o)
+    {
+        nuint f = Sys.ArrayData(s), t = Sys.ArrayData(o);
+        Packed128 v0 = Packed.Load128(f + 0);
+        Packed128 v1 = Packed.Load128(f + 16);
+        Packed128 v2 = Packed.Load128(f + 32);
+        Packed128 v3 = Packed.Load128(f + 48);
+        Packed128 v4 = Packed.Load128(f + 64);
+        Packed128 v5 = Packed.Load128(f + 80);
+        Packed128 v6 = Packed.Load128(f + 96);
+        Packed128 v7 = Packed.Load128(f + 112);
+        Packed128 v8 = Packed.Load128(f + 128);
+        Packed128 v9 = Packed.Load128(f + 144);
+        Packed128 v10 = Packed.Load128(f + 160);
+        Packed128 v11 = Packed.Load128(f + 176);
+        Packed128 v12 = Packed.Load128(f + 192);
+        Packed128 v13 = Packed.Load128(f + 208);
+        Packed128 v14 = Packed.Load128(f + 224);
+        Packed128 v15 = Packed.Load128(f + 240);
+        Packed128 v16 = Packed.Load128(f + 256);
+        Packed128 v17 = Packed.Load128(f + 272);
+        Packed128 v18 = Packed.Load128(f + 288);
+        Packed128 v19 = Packed.Load128(f + 304);
+        for (int lap = 0; lap < 3; lap++)
+        {
+            v0 = Packed.Add32(v0, v1);
+            v1 = Packed.Add32(v1, v2);
+            v2 = Packed.Add32(v2, v3);
+            v3 = Packed.Add32(v3, v4);
+            v4 = Packed.Add32(v4, v5);
+            v5 = Packed.Add32(v5, v6);
+            v6 = Packed.Add32(v6, v7);
+            v7 = Packed.Add32(v7, v8);
+            v8 = Packed.Add32(v8, v9);
+            v9 = Packed.Add32(v9, v10);
+            v10 = Packed.Add32(v10, v11);
+            v11 = Packed.Add32(v11, v12);
+            v12 = Packed.Add32(v12, v13);
+            v13 = Packed.Add32(v13, v14);
+            v14 = Packed.Add32(v14, v15);
+            v15 = Packed.Add32(v15, v16);
+            v16 = Packed.Add32(v16, v17);
+            v17 = Packed.Add32(v17, v18);
+            v18 = Packed.Add32(v18, v19);
+            v19 = Packed.Add32(v19, v0);
+        }
+        Packed.Store(t + 0, v0);
+        Packed.Store(t + 16, v1);
+        Packed.Store(t + 32, v2);
+        Packed.Store(t + 48, v3);
+        Packed.Store(t + 64, v4);
+        Packed.Store(t + 80, v5);
+        Packed.Store(t + 96, v6);
+        Packed.Store(t + 112, v7);
+        Packed.Store(t + 128, v8);
+        Packed.Store(t + 144, v9);
+        Packed.Store(t + 160, v10);
+        Packed.Store(t + 176, v11);
+        Packed.Store(t + 192, v12);
+        Packed.Store(t + 208, v13);
+        Packed.Store(t + 224, v14);
+        Packed.Store(t + 240, v15);
+        Packed.Store(t + 256, v16);
+        Packed.Store(t + 272, v17);
+        Packed.Store(t + 288, v18);
+        Packed.Store(t + 304, v19);
+    }
+
+    static bool ManyRight(int seed)
+    {
+        uint[] s = new uint[80], made = new uint[80], w = new uint[80];
+        for (int k = 0; k < s.Length; k++) w[k] = s[k] = (uint)(seed * 0x9E3779B1 + k * 0x85EBCA6B) ^ (uint)(k << 25);
+        for (int lap = 0; lap < 3; lap++)
+            for (int v = 0; v < 20; v++)
+                for (int k = 0; k < 4; k++) w[4 * v + k] += w[4 * ((v + 1) % 20) + k];
+        Many(s, made);
+        for (int k = 0; k < w.Length; k++)
+            if (made[k] != w[k]) return false;
+        return true;
+    }
+
+    // A chain of calls, each frame of another size: a local array's slot,
+    // values kept in saved registers across the call below.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Deep(int depth, int a, long b, int c)
+    {
+        if (depth == 0) return Once(a + c) ? 1 : 0;
+        int kept = a * 7 + depth;
+        long wide = b ^ kept;
+        int below = depth % 3 == 0 ? Deep(depth - 1, a + 1, wide, c) : depth % 3 == 1 ? Deep(depth - 1, c, b + 1, a) + (int)(wide & 0) : Deep(depth - 1, a, b, c + depth);
+        return below + (kept - a * 7 - depth) + (int)((wide ^ b ^ kept) & 1);
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("main " + Once(1));
+        bool threaded = false;
+        Thread thread = new(() => threaded = Once(2));
+        thread.Start();
+        thread.Join();
+        Console.WriteLine("thread " + threaded);
+        Console.WriteLine("task " + Task.Run(() => Once(3)).Result);
+        bool handled = false;
+        try
+        {
+            int[] none = new int[1];
+            none[s_calls + 1000] = 1;
+        }
+        catch (IndexOutOfRangeException) { handled = Once(4); }
+        Console.WriteLine("handler " + handled);
+        bool depths = true;
+        for (int depth = 1; depth <= 7; depth++) depths &= Deep(depth, depth, 0x1234_5678_9ABCL, 3) == 1;
+        Console.WriteLine("depths " + depths);
+        bool many = ManyRight(6);
+        Thread other = new(() => many &= ManyRight(7));
+        other.Start();
+        other.Join();
+        Console.WriteLine("many " + many);
+        ulong x = 0x0123456789ABCDEF, y = 0xFEDCBA9876543210;
+        Console.WriteLine("narrow " + (Pair(x, y) == PairWords(x, y)));
+        return 0;
+    }
+}

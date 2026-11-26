@@ -1,5 +1,4 @@
 // test: packed128_spills_in_an_aligned_area
-// only-target: x86
 // cpu: --cpu=athlon64 --disable-3dnow
 // requires-host: sse2
 // expect-exit: 0
@@ -43,7 +42,15 @@ static class Program
         Packed.Store(t + 64, v4); Packed.Store(t + 80, v5); Packed.Store(t + 96, v6); Packed.Store(t + 112, v7);
         Packed.Store(t + 128, v8); Packed.Store(t + 144, v9); Packed.Store(t + 160, v10); Packed.Store(t + 176, v11);
         o[at] ^= 0;
+#if TARGET_64BIT
+        // Long mode's packed spills are at sixteen from the frame's base
+        // (FamilyPasses.AlignedSpills), and with sixteen XMM registers this
+        // function spills none: its stack pointer, a leaf's, owes no
+        // sixteen. Test 2336 asks the alignment of long mode's spills.
+        return 1;
+#else
         return (Sys.Stack() & 15) == 0 ? 1 : 2;
+#endif
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

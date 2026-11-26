@@ -13,13 +13,15 @@ static class Program
         nuint table = Platform.Map(count * WordSize.Bytes);
         if (table == 0) return 1;
         long before = HeapChunks.HeapBytes;
-        // A chunk's first block follows its record, however long that is.
+        // A chunk's first block follows its record, however long that is
+        // (sixteen words: 64 bytes on i386, 128 in long mode), and each
+        // synthetic chunk ends sixteen bytes after it.
         for (nuint i = 0; i < count; i++)
         {
             nuint chunk = HeapChunks.Take(64);
             if (chunk == 0) return 2;
             Sys.WriteAddress(table + i * WordSize.Bytes, chunk);
-            HeapChunks.SetEnd(chunk, chunk + 80);
+            HeapChunks.SetEnd(chunk, HeapChunks.First(chunk) + 16);
         }
         nuint first = HeapChunks.First(Sys.ReadAddress(table)) - Sys.ReadAddress(table);
         // Walk in reverse and nonadjacent order to defeat the one-entry memo.
@@ -27,9 +29,9 @@ static class Program
         {
             nuint chunk = Sys.ReadAddress(table + ((i * 37) % count) * WordSize.Bytes);
             if (HeapChunks.Of(HeapChunks.First(chunk)) != chunk) return 3;
-            if (HeapChunks.Of(chunk + 79) != chunk) return 4;
+            if (HeapChunks.Of(chunk + first + 15) != chunk) return 4;
             if (HeapChunks.Of(chunk + first - 1) != 0) return 5;
-            if (HeapChunks.Of(chunk + 80) != 0) return 6;
+            if (HeapChunks.Of(chunk + first + 16) != 0) return 6;
             if (HeapChunks.Of(HeapChunks.Limit(chunk) - 1) != 0) return 7;
         }
         for (nuint n = count; n > 0; n -= 2)
@@ -48,7 +50,7 @@ static class Program
         }
         nuint replacement = HeapChunks.Take(64);
         if (replacement == 0) return 11;
-        HeapChunks.SetEnd(replacement, replacement + 80);
+        HeapChunks.SetEnd(replacement, HeapChunks.First(replacement) + 16);
         if (HeapChunks.Of(replacement + first + 8) != replacement) return 12;
         HeapChunks.Release(replacement);
         if (HeapChunks.HeapBytes != before) return 13;

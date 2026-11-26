@@ -1,7 +1,6 @@
 // test: a method with packed operations runs the version its processor's features pick: one at the compile where --cpu's floor and its bans leave one, the processor's own among those kept otherwise, and never a banned one
 // cpu: --cpu=athlon64 --disable-3dnow
 // requires-host: mmx sse sse2
-// only-target: x86
 // expect-exit: 0
 // expect-output:
 // float+average 3C 4040000040400002
@@ -27,15 +26,9 @@
 // float+average 3C 4040000040400002
 // add8 34 1112131415161718
 //
-// run-with: --disable-sse2
-// expect-output:
-// float+average 1C 4040000040400002
-// add8 14 1112131415161718
-//
-// run-with: --disable-sse2 --runtime-knob Corsac.Cpu.Features=124
-// expect-output:
-// float+average 1C 4040000040400002
-// add8 14 1112131415161718
+// (The runs under --disable-sse2, which only i386 code can be built with,
+// are test 2335's. Long mode does a variant's operations by SSE2 on the XMM
+// registers whatever its features name, and takes none with 3DNow!.)
 //
 // The features each variant may use (PackedOps' bits: MMX 04, the MMX
 // extensions 08, SSE 10, SSE2 20, 3DNow! 40), as Packed.Features() says inside

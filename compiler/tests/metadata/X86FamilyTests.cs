@@ -166,6 +166,56 @@ public static class X86FamilyTests
         DeviceLoadKept();
         Lowered();
         FramelessForms();
+        PackedForms();
+    }
+
+    /// <summary>
+    /// LONG MODE'S PACKED OPERATIONS ON THE REGISTERS A REX NAMES, byte for
+    /// byte: the family's cases for a shift, a word's extraction and its
+    /// insertion put the register into a ModRM by hand and knew no XMM8 to
+    /// XMM15 nor R8 to R15; MOVNTI is long mode's own; a sixteen-byte move of
+    /// an aligned slot is MOVAPS.
+    /// </summary>
+    private static void PackedForms()
+    {
+        bool was = X86Mode.Long;
+        X86Mode.Long = true;
+        try
+        {
+            static void Same(string what, MInstr i, params byte[] expected)
+            {
+                MFunction m = new(new Function("packed", IrType.Void)) { Frameless = true };
+                m.NewBlock("entry").Instrs.Add(i);
+                Section text = new(".text", SectionKind.Code);
+                new Encoder(text).Encode(m);
+                byte[] made = text.Bytes.ToArray();
+                if (!made.SequenceEqual(expected))
+                    throw new InvalidOperationException($"x86 family (long mode, packed): {what}: {Convert.ToHexString(made)}, not {Convert.ToHexString(expected)}");
+            }
+            MImm N(int n) => new(n);
+            Same("psrldq xmm9, 8", new MInstr(MOp.XmmShiftV, MReg.Xmm(9), N(0x73), N(3), N(8)) { Probed = true }, 0x66, 0x41, 0x0F, 0x73, 0xD9, 0x08);
+            Same("psllw xmm2, 5", new MInstr(MOp.XmmShiftV, MReg.Xmm(2), N(0x71), N(6), N(5)) { Probed = true }, 0x66, 0x0F, 0x71, 0xF2, 0x05);
+            Same("pextrw r10d, xmm11, 3", new MInstr(MOp.XmmExtractV, MReg.Of(Gpr.R10), MReg.Xmm(11), N(3)) { Probed = true }, 0x66, 0x45, 0x0F, 0xC5, 0xD3, 0x03);
+            Same("pextrw eax, xmm1, 0", new MInstr(MOp.XmmExtractV, MReg.Of(Gpr.Rax), MReg.Xmm(1), N(0)) { Probed = true }, 0x66, 0x0F, 0xC5, 0xC1, 0x00);
+            Same("pinsrw xmm12, r9d, 2", new MInstr(MOp.XmmInsertV, MReg.Xmm(12), MReg.Of(Gpr.R9), N(2)) { Probed = true }, 0x66, 0x45, 0x0F, 0xC4, 0xE1, 0x02);
+            Same("pinsrw xmm3, edx, 7", new MInstr(MOp.XmmInsertV, MReg.Xmm(3), MReg.Of(Gpr.Rdx), N(7)) { Probed = true }, 0x66, 0x0F, 0xC4, 0xDA, 0x07);
+            Same("paddb xmm8, xmm15", new MInstr(MOp.XmmOpV, N(0x66), N(0xFC), MReg.Xmm(8), MReg.Xmm(15)) { Probed = true }, 0x66, 0x45, 0x0F, 0xFC, 0xC7);
+            Same("pshufd xmm1, xmm10, 0xEE", new MInstr(MOp.XmmOpVDef, N(0x66), N(0x70), MReg.Xmm(1), MReg.Xmm(10), N(0xEE)) { Probed = true }, 0x66, 0x41, 0x0F, 0x70, 0xCA, 0xEE);
+            Same("movq xmm9, xmm2", new MInstr(MOp.XmmOpVDef, N(0xF3), N(0x7E), MReg.Xmm(9), MReg.Xmm(2)) { Probed = true }, 0xF3, 0x44, 0x0F, 0x7E, 0xCA);
+            Same("movntdq [r8], xmm13", new MInstr(MOp.XmmStoreNtV, new MMem(MReg.Of(Gpr.R8), 0), MReg.Xmm(13)) { Probed = true }, 0x66, 0x45, 0x0F, 0xE7, 0x28);
+            Same("movnti [rdi], rsi", new MInstr(MOp.Movnti, new MMem(MReg.Of(Gpr.Rdi), 0), MReg.Of(Gpr.Rsi)) { Width = 8, Probed = true }, 0x48, 0x0F, 0xC3, 0x37);
+            Same("movnti [r9 + 8], r14", new MInstr(MOp.Movnti, new MMem(MReg.Of(Gpr.R9), 8), MReg.Of(Gpr.R14)) { Width = 8, Probed = true }, 0x4D, 0x0F, 0xC3, 0x71, 0x08);
+            Same("movq xmm8, rax", new MInstr(MOp.MovGx, MReg.Xmm(8), MReg.Of(Gpr.Rax)) { Width = 8, Probed = true }, 0x66, 0x4C, 0x0F, 0x6E, 0xC0);
+            Same("movq r11, xmm1", new MInstr(MOp.MovGx, MReg.Of(Gpr.R11), MReg.Xmm(1)) { Width = 8, Probed = true }, 0x66, 0x49, 0x0F, 0x7E, 0xCB);
+            Same("prefetchnta [rdi]", new MInstr(MOp.PrefetchNta, new MMem(MReg.Of(Gpr.Rdi), 0)) { Probed = true }, 0x0F, 0x18, 0x07);
+            Same("prefetchw [r9]", new MInstr(MOp.PrefetchWrite, new MMem(MReg.Of(Gpr.R9), 0)) { Probed = true }, 0x41, 0x0F, 0x0D, 0x09);
+            Same("sfence", new MInstr(MOp.Sfence) { Probed = true }, 0x0F, 0xAE, 0xF8);
+            Same("movaps xmm9, [rbp - 32], the slot aligned",
+                new MInstr(MOp.MovF, MReg.Xmm(9), new MMem(MReg.Of(Gpr.Rbp), -32) { IsSpill = true }.AsAligned()) { Width = 16, Probed = true }, 0x44, 0x0F, 0x28, 0x4D, 0xE0);
+            Same("movups [rbp - 24], xmm9, the slot not",
+                new MInstr(MOp.MovF, new MMem(MReg.Of(Gpr.Rbp), -24) { IsSpill = true }, MReg.Xmm(9)) { Width = 16, Probed = true }, 0x44, 0x0F, 0x11, 0x4D, 0xE8);
+        }
+        finally { X86Mode.Long = was; }
     }
 
     /// <summary>

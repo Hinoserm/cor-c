@@ -142,14 +142,21 @@ public sealed partial class Lowering
 
         if (_packedFeatures.Count == 0)
             return Fail(call, "Packed." + name + " outside a method's own body -- in a lambda, or in a body that awaits or yields, whose frame outlives a run: write the packed operations in a method of their own, whose body the compiler makes each processor's version of");
-        // What this variant may use: nothing in long mode, whose packed
-        // operations are their scalar forms.
-        int has = _t.WordSize == 4 ? _packedFeatures.Peek() : 0;
+        // What this variant may use.
+        int has = _packedFeatures.Peek();
         // THE VARIANT RUNNING, as the features it may use (PackedOps' bits):
         // a constant in each, which says which one the processor got.
         if (name == "Features") return _e.Const(has, IrType.I32);
-        bool mmx = (has & PackedOps.Mmx) != 0, ext = mmx && (has & PackedOps.MmxExtensions) != 0;
-        bool sse = (has & PackedOps.Sse) != 0, sse2 = sse && (has & PackedOps.Sse2) != 0, amd = mmx && (has & PackedOps.ThreeDNow) != 0;
+        // LONG MODE HAS NO MMX STATE AND EVERY PROCESSOR OF IT HAS SSE2: a
+        // variant with any feature (PackedChoose leaves the first without
+        // 3DNow!) does a Packed128's operations by SSE2 and a Packed64's by
+        // the same instructions on an XMM register's low half (`narrow`:
+        // MachineIntrinsics.PackedNarrow and its kin), as GCC and Clang do
+        // a 64-bit vector's in 64-bit code -- no MMX register, no EMMS, no
+        // 3DNow!. The featureless variant is the lanes, as everywhere.
+        bool narrow = _t.WordSize == 8 && has != 0;
+        bool mmx = !narrow && (has & PackedOps.Mmx) != 0, ext = mmx && (has & PackedOps.MmxExtensions) != 0;
+        bool sse = narrow || (has & PackedOps.Sse) != 0, sse2 = narrow || sse && (has & PackedOps.Sse2) != 0, amd = mmx && (has & PackedOps.ThreeDNow) != 0;
 
         switch (name)
         {
@@ -160,7 +167,16 @@ public sealed partial class Lowering
             case "StoreNonTemporal":
             {
                 VReg at = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1, direct: ext && !wide);
-                if (!ext)
+                // Long mode's is MOVNTI of a Packed64's word; a Packed128's
+                // MOVNTDQ where the address is at sixteen, two MOVNTI otherwise.
+                void Word(int offset) => _e.Call(MachineIntrinsics.PackedStoreNonTemporalWord, IrType.Void, R(Plus(at, offset)),
+                    R(_e.Load(IrType.I64, value, offset, 8, signed: false)));
+                if (narrow && !wide)
+                {
+                    Word(0);
+                    return Void();
+                }
+                if (!ext && !narrow)
                 {
                     _e.Emit(Opcode.MemCopy, null, R(at), R(value), Imm(bytes, IrTypes.Word));
                     return Void();
@@ -178,8 +194,16 @@ public sealed partial class Lowering
                     _e.Call(MachineIntrinsics.PackedWideStoreNonTemporal, IrType.Void, R(at), R(value));
                     _e.Jump(done);
                     _e.SetBlock(apart);
-                    _e.Call(MachineIntrinsics.PackedStoreNonTemporal, IrType.Void, R(at), R(value));
-                    _e.Call(MachineIntrinsics.PackedStoreNonTemporal, IrType.Void, R(Plus(at, 8)), R(Plus(value, 8)));
+                    if (narrow)
+                    {
+                        Word(0);
+                        Word(8);
+                    }
+                    else
+                    {
+                        _e.Call(MachineIntrinsics.PackedStoreNonTemporal, IrType.Void, R(at), R(value));
+                        _e.Call(MachineIntrinsics.PackedStoreNonTemporal, IrType.Void, R(Plus(at, 8)), R(Plus(value, 8)));
+                    }
                     _e.Jump(done);
                     _e.SetBlock(done);
                     return Void();
@@ -189,7 +213,7 @@ public sealed partial class Lowering
                 return Void();
             }
             case "Fence":
-                if (ext) _e.Call(MachineIntrinsics.PackedFence, IrType.Void);
+                if (ext || narrow) _e.Call(MachineIntrinsics.PackedFence, IrType.Void);
                 return Void();
             // A CACHE LINE ASKED FOR AHEAD: PREFETCHNTA where the MMX
             // extensions are, 3DNow!'s PREFETCH (PREFETCHW to be written,
@@ -203,10 +227,14 @@ public sealed partial class Lowering
                 VReg at = ToWord(Arg(call, target, 0));
                 // --cpu only where it is the floor: a knob capping the
                 // processor's features (CpuCapped) may run any variant anywhere.
+                // Long mode: PREFETCHNTA always (SSE's, every x86-64
+                // processor's); PREFETCHW only where --cpu promises 3DNow!.
                 bool floor = _t.WordSize == 4 && !CpuCapped;
-                bool three = (has & PackedOps.ThreeDNow) != 0 || floor && _t.X86Profile.Has(X86Feature.ThreeDNow);
-                bool nta = (has & PackedOps.MmxExtensions) != 0 || floor && _t.X86Profile.Has(X86Feature.MmxExtensions);
+                bool three = _t.WordSize == 8 ? !CpuCapped && _t.X86Profile.Has(X86Feature.ThreeDNow)
+                    : (has & PackedOps.ThreeDNow) != 0 || floor && _t.X86Profile.Has(X86Feature.ThreeDNow);
+                bool nta = _t.WordSize == 8 || (has & PackedOps.MmxExtensions) != 0 || floor && _t.X86Profile.Has(X86Feature.MmxExtensions);
                 string? kind = name == "PrefetchWrite" && three ? "write" : nta ? "nta" : three ? "line" : null;
+                // (Long mode asks ahead for a read by PREFETCHNTA, never 3DNow!'s PREFETCH.)
                 if (kind is not null) _e.Call(MachineIntrinsics.PackedPrefetch(kind), IrType.Void, R(at));
                 return Void();
             }
@@ -241,6 +269,8 @@ public sealed partial class Lowering
             bool quad = binary.Op is 0xD4 or 0xFB;
             if (wide && sse2)
                 _e.Call(MachineIntrinsics.PackedWide(0x66, binary.Op), IrType.Void, R(made), R(a), R(b));
+            else if (narrow)
+                _e.Call(MachineIntrinsics.PackedNarrow(0x66, binary.Op), IrType.Void, R(made), R(a), R(b));
             else if (wide && !binary.Crosses)
             {
                 Half64(call, binary.Op, binary.Ext, quad, mmx, ext, sse2, made, a, b, 0);
@@ -268,13 +298,14 @@ public sealed partial class Lowering
                 VReg by = ToI32(Arg(call, target, 1));
                 VReg result = ResultBuffer(call, returns);
                 byte op = PackedOps.ShiftByRegister[(shift.Group, shift.Sub)];
-                if (wide && sse2 || mmx)
+                if (wide && sse2 || mmx || narrow)
                 {
                     // MOVUPS reads sixteen for SSE2's: the high eight zero.
                     VReg counts = _e.SlotAddress(_f.NewSlot(wide && sse2 ? 16 : 8, 8, "count"));
                     _e.Store(RegOperand.Of(counts), RegOperand.Of(_e.Unary(Opcode.ZExt32, R(by), IrType.I64)), 0, 8);
                     if (wide && sse2) _e.Store(RegOperand.Of(counts), new ImmOperand(0, IrType.I64), 8, 8);
                     if (wide && sse2) _e.Call(MachineIntrinsics.PackedWide(0x66, op), IrType.Void, R(result), R(source), R(counts));
+                    else if (narrow) _e.Call(MachineIntrinsics.PackedNarrow(0x66, op), IrType.Void, R(result), R(source), R(counts));
                     else
                         for (int half = 0; half < bytes; half += 8)
                             _e.Call(MachineIntrinsics.PackedOp(op), IrType.Void, R(Plus(result, half)), R(Plus(source, half)), R(counts));
@@ -292,6 +323,8 @@ public sealed partial class Lowering
                 _e.Call(MachineIntrinsics.PackedWideShift(shift.Group, shift.Sub, count), IrType.Void, R(made), R(a));
             else if (bytewise)
                 LanesByteShift(shift.Sub, count, made, a);
+            else if (narrow)
+                _e.Call(MachineIntrinsics.PackedNarrowShift(shift.Group, shift.Sub, count), IrType.Void, R(made), R(a));
             else if (mmx)
                 for (int half = 0; half < bytes; half += 8)
                     _e.Call(MachineIntrinsics.PackedShift(shift.Group, shift.Sub, count), IrType.Void, R(Plus(made, half)), R(Plus(a, half)));
@@ -317,7 +350,8 @@ public sealed partial class Lowering
                     "FloatToInt32" => ((byte)0xF3, (byte)0x5B, -1),
                     _ => ((byte)0, flt.Sse, flt.Predicate),
                 };
-                _e.Call(MachineIntrinsics.PackedFloat(wide, prefix, op, predicate, unary), IrType.Void, R(made), R(a), R(b));
+                _e.Call(narrow && !wide ? MachineIntrinsics.PackedNarrowFloat(prefix, op, predicate, unary) : MachineIntrinsics.PackedFloat(wide, prefix, op, predicate, unary),
+                    IrType.Void, R(made), R(a), R(b));
                 return made;
             }
             // 3DNow!'s, where it has the operation exactly: a half each.
@@ -349,6 +383,12 @@ public sealed partial class Lowering
                 if (ext)
                 {
                     _e.Call(MachineIntrinsics.PackedShuffle(order), IrType.Void, R(made), R(a));
+                    return made;
+                }
+                // Long mode's is PSHUFLW, the low four words' on an XMM register.
+                if (narrow)
+                {
+                    _e.Call(MachineIntrinsics.PackedNarrowShuffle(0xF2, order), IrType.Void, R(made), R(a));
                     return made;
                 }
                 LanesShuffle16(order, made, a);
@@ -388,6 +428,7 @@ public sealed partial class Lowering
                 if (PackedConstant(call, target, 1, 0, wide ? 7 : 3) is not int at) return Void();
                 VReg a = PackedArg(call, target, 0);
                 if (wide && sse2) return _e.Call(MachineIntrinsics.PackedWideExtract(at), IrType.I32, R(a))!;
+                if (narrow) return _e.Call(MachineIntrinsics.PackedNarrowExtract(at), IrType.I32, R(a))!;
                 VReg half = Plus(a, at >= 4 ? 8 : 0);
                 if (ext) return _e.Call(MachineIntrinsics.PackedExtract(at & 3), IrType.I32, R(half))!;
                 return LaneAt(half, 16, at & 3, false);
@@ -401,6 +442,11 @@ public sealed partial class Lowering
                 if (wide && sse2)
                 {
                     _e.Call(MachineIntrinsics.PackedWideInsert(at), IrType.Void, R(made), R(a), R(value));
+                    return made;
+                }
+                if (narrow)
+                {
+                    _e.Call(MachineIntrinsics.PackedNarrowInsert(at), IrType.Void, R(made), R(a), R(value));
                     return made;
                 }
                 // A Packed128's other half as it was, and this one's word put in.

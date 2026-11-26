@@ -181,6 +181,18 @@ internal static class MachineIntrinsics
     /// <summary>A 3DNow! operation on two floats: its suffix (0F 0F /r xx).</summary>
     public static string Packed3DNow(byte suffix) => PackedOpPrefix + "3d." + suffix.ToString("x2");
     public const string PackedFence = PackedOpPrefix + "fence";
+    // LONG MODE'S, where a Packed64 is the low half of an XMM register and
+    // there is no MMX state (Select.PackedValues): the XMM operations'
+    // names with "q" for "x", on eight bytes; and a 64-bit word stored
+    // around the caches by MOVNTI (the address, the word).
+    public static string PackedNarrow(byte prefix, byte op) => PackedOpPrefix + "q." + prefix.ToString("x2") + "." + op.ToString("x2");
+    public static string PackedNarrowShift(byte group, byte sub, int count) => PackedOpPrefix + "qshift." + group.ToString("x2") + "." + sub + "." + count;
+    public static string PackedNarrowShuffle(byte prefix, int order) => PackedOpPrefix + "qshuffle." + prefix.ToString("x2") + "." + order;
+    public static string PackedNarrowExtract(int at) => PackedOpPrefix + "qextract." + at;
+    public static string PackedNarrowInsert(int at) => PackedOpPrefix + "qinsert." + at;
+    public static string PackedNarrowFloat(byte prefix, byte op, int immediate, bool unary)
+        => PackedOpPrefix + "qf." + prefix.ToString("x2") + "." + op.ToString("x2") + "." + immediate + "." + (unary ? 1 : 0);
+    public const string PackedStoreNonTemporalWord = PackedOpPrefix + "storentw";
     public const string PackedEndFast = Prefix + "femms";
     public const string ReadCodeSegment = Prefix + "readcs";
     public const string SwapGs = Prefix + "swapgs";

@@ -290,6 +290,40 @@ internal sealed partial class Encoder
                 // To double from single is F3 5A; to single from double is F2 5A.
                 SseL(w == 8 ? (byte)0xF3 : (byte)0xF2, false, Hw(i.Operands[0]), i.Operands[1], 0x5A);
                 return true;
+            // ---- packed values in the XMM class (Select.PackedValues) ----
+            // The family's cases put a shift's, an extraction's and an
+            // insertion's registers into a ModRM byte by hand, with no REX
+            // for XMM8 to XMM15 or R8 to R15.
+            case MOp.XmmOpV:
+            case MOp.XmmOpVDef:
+                // [prefix] 0F op /r [ib]: no REX.W, which the family's way in would give it.
+                SseL((byte)((MImm)i.Operands[0]).Value, false, Hw(i.Operands[2]), i.Operands[3], (byte)((MImm)i.Operands[1]).Value);
+                if (i.Operands.Count > 4) _out.Add((byte)((MImm)i.Operands[4]).Value);
+                return true;
+            case MOp.XmmStoreNtV:
+                // movntdq m128, xmm: 66 0F E7 /r.
+                SseL(0x66, false, Hw(i.Operands[1]), i.Operands[0], 0xE7);
+                return true;
+            case MOp.XmmShiftV:
+                // 66 0F op /digit ib: the register is the r/m field.
+                SseL(0x66, false, (int)((MImm)i.Operands[2]).Value, i.Operands[0], (byte)((MImm)i.Operands[1]).Value);
+                _out.Add((byte)((MImm)i.Operands[3]).Value);
+                return true;
+            case MOp.XmmExtractV:
+                // pextrw r32, xmm, ib: 66 0F C5 /r, the general register the reg field.
+                SseL(0x66, false, Hw(i.Operands[0]), i.Operands[1], 0xC5);
+                _out.Add((byte)((MImm)i.Operands[2]).Value);
+                return true;
+            case MOp.XmmInsertV:
+                // pinsrw xmm, r32, ib: 66 0F C4 /r, the general register the r/m field.
+                B(0x66);
+                OpL(4, Hw(i.Operands[0]), i.Operands[1], 0x0F, 0xC4);
+                _out.Add((byte)((MImm)i.Operands[2]).Value);
+                return true;
+            case MOp.Movnti:
+                // movnti m64, r64 (m32, r32): 0F C3 /r, around the caches.
+                OpL(w, Hw(i.Operands[1]), i.Operands[0], 0x0F, 0xC3);
+                return true;
             // ---- odds and ends ----
             case MOp.Int3: _out.Add(0xCC); return true;
             case MOp.Ud2: B(0x0F, 0x0B); return true;
@@ -396,7 +430,7 @@ internal sealed partial class Encoder
     /// list.)
     /// </summary>
     private static bool FamilyForm(MOp op) => op is MOp.Shld or MOp.Shrd or MOp.XorPs or MOp.Cvttss2si or MOp.Cvttsd2si
-        or MOp.LockOrEsp or MOp.Int or MOp.PrefetchNta or MOp.Sfence;
+        or MOp.LockOrEsp or MOp.Int or MOp.PrefetchNta or MOp.PrefetchWrite or MOp.Sfence;
 
     private void Lock(MInstr i)
     {

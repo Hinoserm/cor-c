@@ -1002,8 +1002,43 @@ internal sealed partial class Selector
         return new MMem(RL(offset), 0) { Segment = 0x65 };
     }
 
+    /// <summary>
+    /// LONG MODE'S PACKED OPERATIONS (Lowering.PackedIntrinsic): the XMM
+    /// registers' and a Packed64's on their low halves, each on registers
+    /// the allocator gives (SelectPackedValueOp) -- there are no packed
+    /// registers here to hold or give up; a word stored around the caches;
+    /// the fence and the prefetches, which touch no register.
+    /// </summary>
+    private void SelectPackedOpL(string name, Instr i)
+    {
+        if (XmmValueOp(name, out string[] part))
+        {
+            SelectPackedValueOp(part, i);
+            return;
+        }
+        switch (part[0])
+        {
+            case "fence":
+                Emit(new MInstr(MOp.Sfence) { Probed = true });
+                return;
+            case "prefetch":
+                Emit(new MInstr(part[1] == "write" ? MOp.PrefetchWrite : MOp.PrefetchNta, new MMem(RL(i.Operands[0]), 0)) { Probed = true });
+                return;
+            // MOVNTI: the word a Packed64 is, or a half of a Packed128 whose address is not at sixteen.
+            case "storentw":
+                Emit(new MInstr(MOp.Movnti, new MMem(RL(i.Operands[0]), 0), RL(i.Operands[1])) { Width = 8, Probed = true });
+                return;
+        }
+        Error("the packed operation " + name + " has no x86-64 form");
+    }
+
     private void SelectMachineIntrinsicL(string name, Instr i)
     {
+        if (name.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal))
+        {
+            SelectPackedOpL(name, i);
+            return;
+        }
         switch (name)
         {
             case Corsac.Lang.X86.MachineIntrinsics.ThreadBlock:

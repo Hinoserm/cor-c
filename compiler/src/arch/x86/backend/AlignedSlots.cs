@@ -212,8 +212,11 @@ internal static class AlignedSlots
     /// write counts as all of the register: nothing reads a scalar's top
     /// lanes (as ForwardXmmSpillLoads).
     /// </summary>
-    private static void FoldReloads(List<MInstr> instrs, Dictionary<MInstr, int> depth)
+    /// (Long mode's aligned spills are off the frame's base, which no push
+    /// moves: FamilyPasses.AlignedSpills passes no depths.)
+    internal static void FoldReloads(List<MInstr> instrs, Dictionary<MInstr, int>? depth)
     {
+        int Depth(MInstr i, int missing) => depth is null ? 0 : depth.GetValueOrDefault(i, missing);
         static bool Names(MInstr i, int reg)
         {
             foreach (MOperand o in i.Operands)
@@ -236,8 +239,8 @@ internal static class AlignedSlots
             int n = k + 1;
             // Not across a move of ESP: the operand's displacement is the load's depth's.
             while (n < instrs.Count && !Names(instrs[n], x.Id) && !Jumps(instrs[n]) && !NamesSlot(instrs[n], slot.Disp)
-                   && depth.GetValueOrDefault(instrs[n], -1) == depth.GetValueOrDefault(instrs[k], -2)) n++;
-            if (n < instrs.Count && depth.GetValueOrDefault(instrs[n], -1) != depth.GetValueOrDefault(instrs[k], -2)) continue;
+                   && Depth(instrs[n], -1) == Depth(instrs[k], -2)) n++;
+            if (n < instrs.Count && Depth(instrs[n], -1) != Depth(instrs[k], -2)) continue;
             if (n >= instrs.Count) continue;
             MInstr user = instrs[n];
             if (user.Op is not (MOp.XmmOpV or MOp.XmmOpVDef) || user.Operands[3] is not MReg { } source || source.Id != x.Id
@@ -248,6 +251,8 @@ internal static class AlignedSlots
             for (int after = n + 1; after < instrs.Count && !Jumps(instrs[after]); after++)
             {
                 MInstr i = instrs[after];
+                // Long mode's call changes every XMM register (LongAbi): the value is dead at one.
+                if (X86Mode.Long && i.Op is MOp.Call or MOp.CallInd) { dead = true; break; }
                 if (!Names(i, x.Id)) continue;
                 bool read = false, written = false;
                 for (int o = 0; o < i.Operands.Count; o++)
