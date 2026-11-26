@@ -1,0 +1,138 @@
+// test: a function whose only call is a bounds check's, with more values alive than the registers a call may change -- so it saves the registers a call keeps, and one keeps slots besides -- makes its frame in a reserved word on the way to the check; caught by its caller and two calls up, traces in order
+// expect-exit: 0
+// expect-output:
+// 436100
+// -5876
+// 2292102
+// -7879
+// 199330
+// -25
+// 37056783825880
+// True
+// True
+//
+// Checked and CheckedWider keep twelve and eighteen values alive round a
+// loop that reads an array: their one call is the bounds check's, which
+// never returns, so neither has a frame but on the way to it
+// (MFunction.ColdFrames) -- and both save registers a call keeps (long
+// mode's RBX and R12 to R15; i386's EBX, ESI, EDI), the wider one keeping
+// slots too, so the word for the frame pointer is reserved on the way in
+// and written only there: `mov [sp + X], bp ; lea bp, [sp + X]`
+// (MFunction.ReservedFrame). In long mode the stack must be a multiple of
+// sixteen at that call: where the slots and saves are an odd number of
+// words a word more is pushed below them (Encoder.ReservedPad).
+//
+// The check's throw unwinds through that frame to a catch in the caller
+// (Near) and two calls up (Outer), past a frame holding five references
+// across the call; three thousand rounds with collections falling inside
+// throws, and the trace names the function, its caller and Main in order.
+// Output as .NET 10 prints it.
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Tag
+{
+    public long N;
+    public Tag(long n) { N = n; }
+}
+
+static class Program
+{
+    static object? _sink;
+    static readonly long[] Numbers = { 3, 5, 8, 13 };
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Checked(long[] a, int i, long x, long y)
+    {
+        long a0 = x + 1, a1 = y + 2, a2 = x * 3, a3 = y * 5, a4 = x ^ 7, a5 = y ^ 11;
+        long a6 = x - 13, a7 = y - 17, a8 = x * y, a9 = x + y, a10 = x - y, a11 = y * 19;
+        long acc = 0;
+        for (int k = 0; k < 2; k++)
+        {
+            acc += (a0 ^ acc) + a1 + (a2 ^ a3) + a4 + (a5 ^ a6) + a7 + (a8 ^ a9) + a10 + a11;
+            acc += a[i + k];
+        }
+        return acc;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long CheckedWider(long[] a, int i, long x, long y)
+    {
+        long a0 = x + 1, a1 = y + 2, a2 = x * 3, a3 = y * 5, a4 = x ^ 7, a5 = y ^ 11;
+        long a6 = x - 13, a7 = y - 17, a8 = x * y, a9 = x + y, a10 = x - y, a11 = y * 19;
+        long a12 = x * 23, a13 = y + 29, a14 = x ^ 31, a15 = y * 37, a16 = x + 41, a17 = y ^ 43;
+        long acc = 0;
+        for (int k = 0; k < 2; k++)
+        {
+            acc += (a0 ^ acc) + a1 + (a2 ^ a3) + a4 + (a5 ^ a6) + a7 + (a8 ^ a9) + a10 + a11
+                + (a12 ^ a13) + a14 + (a15 ^ a16) + a17;
+            acc += a[i + k];
+        }
+        return acc;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Near(int i, long x, string keep, bool wider)
+    {
+        string held = keep + x;
+        long got;
+        try { got = wider ? CheckedWider(Numbers, i, x, x + 1) : Checked(Numbers, i, x, x + 1); }
+        catch (IndexOutOfRangeException) { got = -x - 1; }
+        return got * 1000 + held.Length + held[0];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Middle(int i, long x, Tag t0, Tag t1, Tag t2, Tag t3, Tag t4)
+    {
+        long got = Checked(Numbers, i, x, x + 1) + CheckedWider(Numbers, i, x + 2, x + 3);
+        return got + t0.N + t1.N + t2.N + t3.N + t4.N;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Outer(int i, long x)
+    {
+        Tag t0 = new Tag(x + 1), t1 = new Tag(x + 2), t2 = new Tag(x + 3), t3 = new Tag(x + 4), t4 = new Tag(x + 5);
+        long got;
+        try { got = Middle(i, x, t0, t1, t2, t3, t4); }
+        catch (IndexOutOfRangeException) { got = -1; }
+        for (int n = 0; n < 40; n++) _sink = new long[24];
+        return got * 100 + t0.N + t1.N + t2.N + t3.N + t4.N;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool Traced(bool wider)
+    {
+        try
+        {
+            if (wider) CheckedWider(Numbers, 7, 3, 4);
+            else Checked(Numbers, 7, 3, 4);
+            return false;
+        }
+        catch (IndexOutOfRangeException e)
+        {
+            string trace = e.StackTrace ?? "";
+            int thrower = trace.IndexOf(wider ? "Program.CheckedWider(" : "Program.Checked(");
+            int caller = trace.IndexOf("Program.Traced(");
+            int above = trace.IndexOf("Program.Main(");
+            return thrower >= 0 && caller > thrower && above > caller;
+        }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Near(1, 4, "ab", false));
+        Console.WriteLine(Near(3, 5, "xyz", false));
+        Console.WriteLine(Near(2, 6, "cd", true));
+        Console.WriteLine(Near(-1, 7, "uvw", true));
+        Console.WriteLine(Outer(1, 3));
+        Console.WriteLine(Outer(9, 12));
+        long total = 0;
+        for (int k = 0; k < 3000; k++)
+            total += Outer(k % 3 == 0 ? 3 : 1, k) + Near(k % 5, k, "n", false) + Near(4 - k % 5, k, "w", true);
+        Console.WriteLine(total);
+        Console.WriteLine(Traced(false));
+        Console.WriteLine(Traced(true));
+        return 0;
+    }
+}

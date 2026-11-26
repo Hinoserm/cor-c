@@ -883,7 +883,8 @@ public static class Platform
                 // A leaf stood for its call has its caller's RBX and R12 to
                 // R15 where it pushed them: put back, as its return would
                 // have (Runtime.LeafSaved), before anything walks the stack.
-                // (The gregs: R12 the 5th to R15 the 8th, RBX the 12th.)
+                // (Counted from 0, as above: R12 the 4th of the gregs to R15
+                // the 7th, RBX the 11th.)
                 if (faultPc != stoppedPc)
                 {
                     nuint stoppedSp = Sys.ReadAddress(uc + 160);

@@ -23,16 +23,32 @@ internal sealed partial class Encoder
     /// <summary>Long mode: the bytes the prologue takes below the saved base, frame and saved registers, sixteen-aligned.</summary>
     private int _frameBytes;
 
-    /// <summary>The bytes a long-mode function's prologue takes below its saved base: the frame and the callee-saved registers' slots, to a multiple of sixteen.</summary>
+    /// <summary>
+    /// What the prologue takes off the stack pointer: a framed function's
+    /// slots and its saved registers' slots, to a multiple of sixteen; a
+    /// function's without a frame, its slots alone (FramelessBytes).
+    /// </summary>
     public static int FrameBytes(MFunction m) => m.Frameless ? FramelessBytes(m) : (m.Frame.Size + m.SavedRegs.Count * 8 + 15) & ~15;
 
     /// <summary>
-    /// What a function without a frame reserves below the registers it
-    /// pushes (MFunction.Frameless): its slots -- long mode's in whole
-    /// words, the stack pointer kept a multiple of eight; no sixteen to
-    /// keep, it calls nothing. (i386's frame is whole words as it is made.)
+    /// What a function without a frame reserves for its slots
+    /// (MFunction.Frameless): the frame's size, whole words as it is made
+    /// (Frame.Size). No sixteen to keep in a leaf, which calls nothing; a
+    /// reserved frame keeps one by ReservedPad.
     /// </summary>
-    public static int FramelessBytes(MFunction m) => X86Mode.Long ? (m.Frame.Size + 7) & ~7 : m.Frame.Size;
+    public static int FramelessBytes(MFunction m) => m.Frame.Size;
+
+    /// <summary>
+    /// The word a reserved frame (MFunction.ReservedFrame) pushes below its
+    /// saves in long mode where its slots and its saves are an odd number of
+    /// words, so that the stack is a multiple of sixteen at the calls it
+    /// makes its frame for: the return address left it eight short, the
+    /// base register's word made that up, and the rest must be whole
+    /// sixteens. None on i386, and none where the function is not decided
+    /// to have one (asked before it is, as one would be).
+    /// </summary>
+    public static int ReservedPad(MFunction m)
+        => X86Mode.Long && (FramelessBytes(m) + 8 * m.SavedRegs.Count) % 16 != 0 ? 8 : 0;
 
     /// <summary>A register operand's whole hardware number (0 to 15), general or XMM; 0 for anything else. Never a register left unallocated.</summary>
     private static int Hw(MOperand o) => o is not MReg r ? 0 : r.IsMachine ? r.Hw
@@ -207,8 +223,8 @@ internal sealed partial class Encoder
                 Tables.Add((i.TableSymbol!, i.Table!));
                 return true;
             case MOp.JmpInd: OpD(4, 4, i.Operands[0], 0xFF); return true;
-            case MOp.Call: CallL((MImm)i.Operands[0]); return true;
-            case MOp.CallInd: OpD(4, 2, i.Operands[0], 0xFF); return true;
+            case MOp.Call: ColdFrameL(); CallL((MImm)i.Operands[0]); return true;
+            case MOp.CallInd: ColdFrameL(); OpD(4, 2, i.Operands[0], 0xFF); return true;
             case MOp.CallSafe:
             {
                 // The nine caller-saved general registers, and eight bytes more
@@ -518,6 +534,27 @@ internal sealed partial class Encoder
     /// </summary>
     private void PrologueL()
     {
+        // A RESERVED FRAME (MFunction.ReservedFrame): RBP's word and the
+        // slots, then the saves, a framed function's layout with RBP not
+        // written -- and a word more where that leaves the stack eight off
+        // a sixteen (ReservedPad). RBP's word alone: a push of anything, RAX.
+        if (_m.ReservedFrame)
+        {
+            int reserve = _frameBytes + 8;
+            if (reserve == 8) _out.Add(0x50);
+            else AluL(5, MReg.Of(Gpr.Rsp), new MImm(reserve), 8);
+            foreach (Gpr g in _m.SavedRegs)
+            {
+                NextInstr();
+                OpReg(0x50, MReg.Of(g));
+            }
+            if (ReservedPad(_m) != 0)
+            {
+                NextInstr();
+                _out.Add(0x50);
+            }
+            return;
+        }
         if (_m.Frameless)
         {
             bool first = true;
@@ -558,8 +595,53 @@ internal sealed partial class Encoder
         ? new MMem(MReg.Of(Gpr.Rsp), _frameBytes + 8 * (_m.SavedRegs.Count - 1 - k))
         : MMem.Frame(-_m.Frame.Size - 8 * (k + 1));
 
+    /// <summary>
+    /// The frame a function with none makes on its way to a call that never
+    /// returns (MFunction.ColdFrames): `push rbp ; mov rbp, rsp` where
+    /// nothing lies below its return address -- the push also what makes the
+    /// stack a multiple of sixteen for the call -- else, the word for its
+    /// RBP kept (ReservedFrame), `mov [rsp + X], rbp ; lea rbp, [rsp + X]`.
+    /// The call is an instruction of its own after them.
+    /// </summary>
+    private void ColdFrameL()
+    {
+        if (!_m.ColdFrames) return;
+        if (!_m.ReservedFrame) B(0x55, 0x48, 0x89, 0xE5);
+        else
+        {
+            // (Within a byte's displacement, FramePointerFree.Run sees to
+            // it: the only form Runtime.FrameAt reads.)
+            int x = _frameBytes + 8 * _m.SavedRegs.Count + ReservedPad(_m);
+            if (x > 127) throw new InvalidOperationException($"{_m.Source.Name}: a reserved frame of {x} bytes, more than a byte's displacement");
+            B(0x48, 0x89, 0x6C, 0x24, (byte)x);
+            B(0x48, 0x8D, 0x6C, 0x24, (byte)x);
+        }
+        NextInstr();
+    }
+
     private void EpilogueL()
     {
+        if (_m.ReservedFrame)
+        {
+            // (The padding word and RBP's word alone: popped into RCX, which
+            // no return value is in.)
+            if (ReservedPad(_m) != 0)
+            {
+                _out.Add(0x59);
+                NextInstr();
+            }
+            for (int k = _m.SavedRegs.Count - 1; k >= 0; k--)
+            {
+                OpReg(0x58, MReg.Of(_m.SavedRegs[k]));
+                NextInstr();
+            }
+            int reserve = _frameBytes + 8;
+            if (reserve == 8) _out.Add(0x59);
+            else AluL(0, MReg.Of(Gpr.Rsp), new MImm(reserve), 8);
+            NextInstr();
+            _out.Add(0xC3);
+            return;
+        }
         if (_m.Frameless)
         {
             if (_frameBytes > 0)

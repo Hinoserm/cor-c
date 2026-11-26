@@ -5,7 +5,7 @@ namespace Corsac.Lang.X86;
 
 /// <summary>
 /// A FUNCTION WITHOUT A FRAME made so, last before it is written, in both
-/// modes: a leaf (MFunction.Frameless), or on i386 one whose only calls
+/// modes: a leaf (MFunction.Frameless), or one whose only calls
 /// never return, which makes its frame on the way to them alone
 /// (MFunction.ColdFrames, OnlyColdCalls). Every pass until here took an
 /// operand based on the base register for the frame, and the value the base
@@ -30,16 +30,18 @@ namespace Corsac.Lang.X86;
 /// (MFunction.ReservedFrame) is laid out the other way round, as a framed
 /// function is: from the return address down, the base register's word
 /// (reserved, not written), the frame, then the saves; base + D is SP + N +
-/// S + D, slot or argument alike.
+/// S + D, slot or argument alike. LONG MODE'S CALL WANTS ITS STACK A
+/// MULTIPLE OF SIXTEEN: the plain form's `push rbp` makes it one (the
+/// return address left it eight short), and a reserved frame whose slots
+/// and saves are an odd number of words has one word more pushed below
+/// them (Encoder.ReservedPad).
 /// </summary>
 internal static class FramePointerFree
 {
     public static void Run(MFunction m)
     {
         int word = X86Mode.Word;
-        // (Frames made on the way to a call that never returns are i386's
-        // alone yet: long mode's call wants its stack sixteen-aligned.)
-        if (!X86Mode.Long && !m.Frameless && OnlyColdCalls(m))
+        if (!m.Frameless && OnlyColdCalls(m))
         {
             m.Frameless = true;
             m.ColdFrames = true;
@@ -48,19 +50,32 @@ internal static class FramePointerFree
         // A reserved frame costs eight bytes at each such call where the
         // plain one costs three: at most two of them, and a frame and saves
         // a byte's displacement covers (else the frame stays a prologue's).
-        if (m.ReservedFrame && (ColdCalls(m) > 2 || m.Frame.Size + word * m.SavedRegs.Count > 127))
+        if (m.ReservedFrame && (ColdCalls(m) > 2 || Encoder.FramelessBytes(m) + word * m.SavedRegs.Count + Encoder.ReservedPad(m) > 127))
         {
             m.Frameless = false;
             m.ColdFrames = false;
             m.ReservedFrame = false;
             return;
         }
+        // A LONG MODE LEAF'S SLOTS ARE EIGHT-ALIGNED AND NO MORE: off a stack
+        // pointer that is a multiple of eight wherever its pushes left it. A
+        // slot asked a wider alignment (none is today: long mode spills XMM
+        // values as scalars and moves sixteen bytes unaligned) has its frame
+        // again, whose base is a multiple of sixteen -- and where the leaf
+        // gave the base register a value there is none to go back to.
+        if (X86Mode.Long && m.Frameless && !m.ReservedFrame && m.Frame.Allocations.Any(a => a.Align > 8))
+        {
+            if (m.FramePointerFree)
+                throw new InvalidOperationException($"{m.Source.Name}: a slot aligned past eight bytes in a leaf that gives the frame's base register a value");
+            m.Frameless = false;
+        }
         if (!m.Frameless) return;
         // The frame as the prologue reserves it (Encoder.FramelessBytes:
         // whole words) and the registers pushed above it.
-        int frame = Encoder.FramelessBytes(m), saved = word * m.SavedRegs.Count;
+        int frame = Encoder.FramelessBytes(m), saved = word * m.SavedRegs.Count + (m.ReservedFrame ? Encoder.ReservedPad(m) : 0);
         // (A reserved frame is a framed function's: where the base would
-        // point is SP + N + S, every slot and argument as far from it.)
+        // point is SP + N + S, every slot and argument as far from it --
+        // S with long mode's word of padding, where it has one.)
         int Address(int disp) => m.ReservedFrame ? frame + saved + disp
             // An argument, two words or more above where the base would
             // point: past the frame, the saves and the return address.
@@ -133,8 +148,9 @@ internal static class FramePointerFree
     /// </summary>
     private static bool OnlyColdCalls(MFunction m)
     {
-        if (m.AlignedArea != 0 || m.FramePointerFree
+        if (m.AlignedArea != 0 || m.FramePointerFree || m.SavesEverything || m.RealignsStack
             || m.Source.KeepsCallerRegisters || m.Source.Blocks.Any(b => b.IsLandingPad)) return false;
+        int word = X86Mode.Word;
         bool calls = false;
         List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
         foreach (MBlock b in m.Blocks)
@@ -147,22 +163,26 @@ internal static class FramePointerFree
                     // (Not through memory: an argument's word above the frame
                     // is ESP-based after this, and the frame's two pushes,
                     // before the call reads it, would move it.)
-                    // Never returning: the selector's unreachable (INT3, no
-                    // operand) after it, straight or after a trap -- a trap
-                    // the program may run on from (INT3 1) alone is a call
-                    // that comes back, past a frame never undone.
+                    // Never returning: the selector's unreachable (INT3 with
+                    // no operand, long mode's UD2) after it, straight or
+                    // after a trap -- a trap the program may run on from
+                    // (INT3 1) alone is a call that comes back, past a frame
+                    // never undone.
                     int after = k + 1;
                     if (after < b.Instrs.Count && b.Instrs[after] is { Op: MOp.Int3, Operands.Count: > 0 }) after++;
-                    if (after >= b.Instrs.Count || b.Instrs[after] is not { Op: MOp.Int3, Operands.Count: 0 } || i.Operands.Count > 0 && i.Operands[0] is MMem) return false;
+                    MInstr? next = after < b.Instrs.Count ? b.Instrs[after] : null;
+                    bool unreachable = next is not null && (next.Op == MOp.Int3 && next.Operands.Count == 0 || next.Op == MOp.Ud2);
+                    if (!unreachable || i.Operands.Count > 0 && i.Operands[0] is MMem) return false;
                     calls = true;
                 }
-                if (i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe or MOp.Push or MOp.Pop
+                if (i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallKeepRax or MOp.CallKeepCas
+                    or MOp.CallSafe or MOp.Syscall or MOp.SoftInt or MOp.Push or MOp.Pop
                     or MOp.Pushf or MOp.Popf or MOp.CallerReg or MOp.InlineAsm or MOp.SaveRegs) return false;
                 foreach (MOperand o in i.Operands)
                 {
                     if (o is MReg { Id: (int)Gpr.Ebp or MReg.EbpDataId }) return false;
                     if (o is MMem mem && (mem.Index?.Id is (int)Gpr.Ebp or MReg.EbpDataId || mem.Base?.Id == MReg.EbpDataId
-                        || mem.Base?.Id == (int)Gpr.Ebp && mem.Disp is >= 0 and < 8)) return false;
+                        || mem.Base?.Id == (int)Gpr.Ebp && mem.Disp >= 0 && mem.Disp < 2 * word)) return false;
                 }
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;

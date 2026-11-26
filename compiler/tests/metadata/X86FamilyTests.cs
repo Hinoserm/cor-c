@@ -165,6 +165,94 @@ public static class X86FamilyTests
         }
         DeviceLoadKept();
         Lowered();
+        FramelessForms();
+    }
+
+    /// <summary>
+    /// LONG MODE'S WAYS IN AND OUT OF A FUNCTION WITHOUT A FRAME, byte for
+    /// byte, as the runtime reads them (Runtime.FrameAt, Prologue): a leaf's
+    /// pushes then its slots, RBP first where it holds a value; and a
+    /// reserved frame's the other way round, with the word that keeps the
+    /// stack a multiple of sixteen at its call pushed below the saves where
+    /// its slots and saves are an odd number of words -- one save and no
+    /// slot wants it, two saves want none.
+    /// </summary>
+    private static void FramelessForms()
+    {
+        bool was = X86Mode.Long;
+        X86Mode.Long = true;
+        try
+        {
+            static byte[] Encoded(MFunction m)
+            {
+                Section text = new(".text", SectionKind.Code);
+                new Encoder(text).Encode(m);
+                return text.Bytes.ToArray();
+            }
+            static void Same(string what, byte[] made, params byte[] expected)
+            {
+                if (!made.SequenceEqual(expected))
+                    throw new InvalidOperationException($"x86 family (long mode): {what}: {Convert.ToHexString(made)}, not {Convert.ToHexString(expected)}");
+            }
+
+            // A leaf that saves nothing and keeps nothing: no way in at all.
+            MFunction bare = new(new Function("bare", IrType.Void)) { Frameless = true };
+            bare.NewBlock("entry").Instrs.AddRange(new[] { new MInstr(MOp.Prologue), new MInstr(MOp.Epilogue) { Width = 0 } });
+            Same("a leaf with nothing to save is its return", Encoded(bare), 0xC3);
+
+            // A leaf that gives RBP a value and uses RBX and R12, with a slot:
+            // RBP pushed first, then the others, then the slot's word.
+            MFunction leaf = new(new Function("leaf", IrType.Void)) { Frameless = true, FramePointerFree = true };
+            leaf.SavedRegs.AddRange(new[] { Gpr.Rbp, Gpr.Rbx, Gpr.R12 });
+            leaf.Frame.Allocate(8, 8);
+            leaf.NewBlock("entry").Instrs.AddRange(new[]
+            {
+                new MInstr(MOp.Prologue),
+                new MInstr(MOp.Mov, MReg.Of(Gpr.Rbp), MReg.Of(Gpr.Rsp)) { Width = 8 },
+                new MInstr(MOp.Epilogue) { Width = 0 },
+            });
+            Same("a leaf's pushes, its slot, its own `mov rbp, rsp` written 8B EC, and the way out",
+                Encoded(leaf), 0x55, 0x53, 0x41, 0x54, 0x48, 0x83, 0xEC, 0x08, 0x48, 0x8B, 0xEC, 0x48, 0x83, 0xC4, 0x08, 0x41, 0x5C, 0x5B, 0x5D, 0xC3);
+
+            // A reserved frame: one save, no slot -- RBP's word (push rax),
+            // the save, and the word that makes the stack a sixteen; the
+            // frame made at the call sixteen bytes up.
+            foreach (int saves in new[] { 1, 2 })
+            {
+                MFunction cold = new(new Function("cold" + saves, IrType.Void)) { Frameless = true, ColdFrames = true, ReservedFrame = true };
+                cold.SavedRegs.Add(Gpr.Rbx);
+                if (saves == 2) cold.SavedRegs.Add(Gpr.R12);
+                cold.NewBlock("entry").Instrs.AddRange(new[]
+                {
+                    new MInstr(MOp.Prologue), new MInstr(MOp.Epilogue) { Width = 0 },
+                    new MInstr(MOp.CallInd, MReg.Of(Gpr.R8)), new MInstr(MOp.Ud2),
+                });
+                if (Encoder.ReservedPad(cold) != (saves == 1 ? 8 : 0))
+                    throw new InvalidOperationException($"x86 family (long mode): a reserved frame of {saves} saves and no slot pads {Encoder.ReservedPad(cold)} bytes");
+                if (saves == 1)
+                    Same("a reserved frame of one save: the frame pointer's word, the save, a word of padding; the frame made 16 up before a call through R8",
+                        Encoded(cold), 0x50, 0x53, 0x50, 0x59, 0x5B, 0x59, 0xC3,
+                        0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x8D, 0x6C, 0x24, 0x10, 0x41, 0xFF, 0xD0, 0x0F, 0x0B);
+                else
+                    Same("a reserved frame of two saves: no padding; the frame made 16 up",
+                        Encoded(cold), 0x50, 0x53, 0x41, 0x54, 0x41, 0x5C, 0x5B, 0x59, 0xC3,
+                        0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x8D, 0x6C, 0x24, 0x10, 0x41, 0xFF, 0xD0, 0x0F, 0x0B);
+            }
+
+            // The plain cold frame: `push rbp ; mov rbp, rsp` before the call.
+            MFunction plain = new(new Function("plain", IrType.Void)) { Frameless = true, ColdFrames = true };
+            plain.NewBlock("entry").Instrs.AddRange(new[]
+            {
+                new MInstr(MOp.Prologue), new MInstr(MOp.Epilogue) { Width = 0 },
+                new MInstr(MOp.CallInd, MReg.Of(Gpr.Rax)), new MInstr(MOp.Ud2),
+            });
+            Same("a plain cold frame: the push that also makes the stack a sixteen, then the call", Encoded(plain), 0xC3, 0x55, 0x48, 0x89, 0xE5, 0xFF, 0xD0, 0x0F, 0x0B);
+            Console.WriteLine("x86 family: long mode's frameless ways in and out are the bytes the runtime reads -- a leaf's, a reserved frame's with and without its padding word, a plain cold frame's");
+        }
+        finally
+        {
+            X86Mode.Long = was;
+        }
     }
 
     /// <summary>
@@ -311,7 +399,7 @@ public static class X86FamilyTests
 
                 // A thunk C enters keeps the callee-saved registers as its caller left them.
                 MFunction thunk = new(new Function("thunk", IrType.I32) { KeepsCallerRegisters = true });
-                thunk.NewBlock("entry").Instrs.AddRange(new[] { new MInstr(MOp.Prologue), new MInstr(MOp.Epilogue) { Width = 0 }, new MInstr(MOp.Ret) });
+                thunk.NewBlock("entry").Instrs.AddRange(new[] { new MInstr(MOp.Prologue), new MInstr(MOp.Epilogue) { Width = 0 } });
                 File("a thunk", (longMode ? new LongTarget(thunk).Lower() : new X86Target(thunk).Lower()).Registers, callerSaved, new int[0], new[] { sp, bp },
                     longMode ? null : new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx });
 
