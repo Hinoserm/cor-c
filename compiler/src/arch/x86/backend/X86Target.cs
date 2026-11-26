@@ -15,7 +15,7 @@ namespace Corsac.Lang.X86;
 /// rebuilt from what was decided, the loads, stores and constants around
 /// each instruction made here.
 /// </summary>
-internal sealed class X86Target : ITarget
+internal sealed class X86Target : FamilyTarget, ITarget
 {
     /// <summary>
     /// THE XMM CLASS: scalar floats where --cpu has SSE and the code owns its
@@ -51,13 +51,10 @@ internal sealed class X86Target : ITarget
         },
     };
 
-    private readonly MFunction _m;
     private readonly List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> _regs = new();
 
-    public X86Target(MFunction m)
+    public X86Target(MFunction m) : base(m, Leaf(m))
     {
-        _m = m;
-        _leaf = Leaf(m);
     }
 
     /// <summary>
@@ -90,7 +87,6 @@ internal sealed class X86Target : ITarget
         },
     };
 
-    private readonly bool _leaf;
 
     /// <summary>
     /// A THUNK'S REGISTERS (Function.KeepsCallerRegisters): EAX, ECX and EDX
@@ -415,150 +411,33 @@ internal sealed class X86Target : ITarget
         return homes;
     }
 
+    protected override MInstr Remade(int reg, int slot, object? constant, int line)
+        => constant is MMem address
+            ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = line }
+            : constant is MImm imm ? new MInstr(MOp.Mov, Out(reg), imm) { Line = line }
+            : constant is FloatPoolLoad pool ? new MInstr(MOp.MovF, Out(reg), pool.Pool) { Width = pool.Width, Line = line }
+            : Move(Out(reg), Slot(slot), line);
+
     /// <summary>
-    /// THE FUNCTION REBUILT from the allocation: each instruction from the
-    /// places of the registers it names, in the order it named them -- a
-    /// register, its spill slot as a memory operand, or its constant as an
-    /// immediate -- with the loads and constants before it and the stores
-    /// after; the copies and jumps the allocator made, made; a call's live
-    /// values written into its stack map; the callee-saved registers the
-    /// function touches saved.
+    /// The callee-saved registers the function touches, or all of them where
+    /// it catches (a landing pad is entered with them as the thrower left
+    /// them); a leaf has no frame, and one that gave EBP a value saves it
+    /// first, as the prologue's push would have.
     /// </summary>
-    public void Rebuild(AFunction f, IPlacement p)
+    protected override void Saved(AFunction f, IPlacement p)
     {
-        Dictionary<ABlock, MBlock> blocks = new(ReferenceEqualityComparer.Instance);
-        foreach (ABlock ab in f.Blocks) blocks[ab] = ab.Tag as MBlock ?? new MBlock(ab.Name);
-        List<MBlock> laid = new();
-        int index = 0;
-        foreach (ABlock ab in f.Blocks)
-        {
-            MBlock b = blocks[ab];
-            List<MInstr> outList = new();
-            foreach (AInstr ai in ab.Instrs)
-            {
-                // Asked first: a dropped instruction is not built at all.
-                MInstr? n = p.Dropped(index) ? null : Build(ai, index, p, blocks);
-                if (n is not null && p.LiveAcross(index) is { } live)
-                {
-                    Safepoint map = new();
-                    map.SlotOffsets.AddRange(live.Slots);
-                    foreach (int r in live.Registers) map.Registers |= 1u << r;
-                    _m.Safepoints[n] = map;
-                }
-                foreach ((int reg, int slot, bool load) in p.MovesBefore(index))
-                    outList.Add(load ? Move(Out(reg), Slot(slot), ai.Line) : Move(Slot(slot), Out(reg), ai.Line));
-                foreach ((int reg, int slot, object? constant) in p.Before(index))
-                    outList.Add(constant is MMem address
-                        ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = ai.Line }
-                        : constant is MImm imm ? new MInstr(MOp.Mov, Out(reg), imm) { Line = ai.Line }
-                        : constant is FloatPoolLoad pool ? new MInstr(MOp.MovF, Out(reg), pool.Pool) { Width = pool.Width, Line = ai.Line }
-                        : Move(Out(reg), Slot(slot), ai.Line));
-                if (n is not null) outList.Add(n);
-                foreach ((int reg, int slot) in p.After(index))
-                    outList.Add(Move(Slot(slot), Out(reg), ai.Line));
-                index++;
-            }
-            b.Instrs.Clear();
-            b.Instrs.AddRange(outList);
-            laid.Add(b);
-        }
-        // THE EDGES THAT CARRY STORES (IPlacement.StoredEdges), each made a
-        // block of its own: a critical edge a value leaves its register by,
-        // or comes back into it by, from a block with other ways out into one
-        // with other ways in. The stores and loads, then on into the edge's target -- by falling through, laid
-        // right after the block it leaves where that block falls into the
-        // target, else by a jump, laid there too where nothing falls through
-        // from that block, or at the end -- and the block's branches to the
-        // target retargeted to it.
-        if (p.StoredEdges.Count > 0)
-        {
-            Dictionary<int, List<MBlock>> fallingInto = new();
-            List<MBlock> jumpingTo = new();
-            foreach ((int from, int to) in p.StoredEdges)
-            {
-                MBlock source = blocks[f.Blocks[from]], target = blocks[f.Blocks[to]];
-                MBlock edge = new(source.Name + "_to_" + target.Name) { EdgeFrom = source };
-                int line = source.Instrs.Count > 0 ? source.Instrs[^1].Line : 0;
-                foreach ((int reg, int slot, bool load) in p.EdgeMoves(from, to))
-                    edge.Instrs.Add(load ? Move(Out(reg), Slot(slot), line) : Move(Slot(slot), Out(reg), line));
-                foreach (MInstr branch in source.Instrs)
-                    for (int k = 0; k < branch.Operands.Count; k++)
-                        if (branch.Operands[k] is MLabel label && ReferenceEquals(label.Target, target)) branch.Operands[k] = new MLabel(edge);
-                if (to == from + 1 && !source.EndsUnconditionally)
-                {
-                    if (!fallingInto.TryGetValue(from, out List<MBlock>? after)) fallingInto[from] = after = new();
-                    after.Add(edge);
-                }
-                else
-                {
-                    edge.Instrs.Add(new MInstr(MOp.Jmp, new MLabel(target)) { Line = line });
-                    // Beside its source where nothing falls from that into the
-                    // next block, else at the end -- whose jump back is a
-                    // loop's only where its source's would be (EdgeFrom).
-                    if (source.EndsUnconditionally)
-                    {
-                        if (!fallingInto.TryGetValue(from, out List<MBlock>? after)) fallingInto[from] = after = new();
-                        after.Add(edge);
-                    }
-                    else jumpingTo.Add(edge);
-                }
-            }
-            List<MBlock> withEdges = new(laid.Count + fallingInto.Count + jumpingTo.Count);
-            for (int i = 0; i < laid.Count; i++)
-            {
-                withEdges.Add(laid[i]);
-                if (fallingInto.TryGetValue(i, out List<MBlock>? after)) withEdges.AddRange(after);
-            }
-            withEdges.AddRange(jumpingTo);
-            laid = withEdges;
-        }
-        _m.Blocks.Clear();
-        _m.Blocks.AddRange(laid);
-        _m.NextVReg = Math.Max(_m.NextVReg, f.NextVReg);
-        // A FUNCTION THAT CATCHES SAVES THEM ALL: a throw restores only ESP
-        // and EBP, so the registers the unwound frames saved and used reach
-        // its landing pad as they left them, and only an epilogue that
-        // restores every one gives its caller back what it had.
         bool catches = f.Blocks.Any(b => b.LandingPad);
         foreach (int g in File.Classes[0].CalleeSaved)
             if (catches || p.Touched.Contains(g)) _m.SavedRegs.Add((Gpr)g);
-        // A LEAF HAS NO FRAME (MFunction.Frameless). EBP given a value in one
-        // is saved as the others are, first, so the caller's EBP lies just
-        // below the return address: the frame link a fault's walk reads
-        // (Runtime.FrameAt).
         _m.Frameless = _leaf;
         _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Ebp);
         if (_m.FramePointerFree) _m.SavedRegs.Insert(0, Gpr.Ebp);
-        // A THUNK C ENTERS GIVES NONE OF THEM A VALUE (Function.KeepsCallerRegisters):
-        // what it calls on its way out reads them for C's, and one it saved it
-        // wrote -- an instruction's own register (CPUID's EBX, REP MOVS's ESI
-        // and EDI) the register file does not see. Refused, never a reference
-        // the collector would not find.
-        if (_m.Source.KeepsCallerRegisters && _m.SavedRegs.Count > 0)
-            throw new InvalidOperationException($"{_m.Source.Name}: the way in from C writes {string.Join(", ", _m.SavedRegs)}, which it must leave as C left them");
     }
 
-    /// <summary>
-    /// A value's slot as an operand: the allocator's own below the frame
-    /// pointer, or a home above it -- an argument's word, read as the
-    /// argument load it is, not counted as a spill slot's traffic.
-    /// </summary>
-    private static MMem Slot(int offset) => offset > 0 ? MMem.Frame(offset) : MMem.Spill(offset);
+    protected override bool Fixed(MReg original) => original.IsPhys;
 
-    private static MOperand PlaceOf((Place Place, int Reg, int Slot, object? Constant) at, MReg original)
-        => at.Place switch
-        {
-            Place.Slot => Slot(at.Slot),
-            Place.Constant => (MImm)at.Constant!,
-            _ => original.IsPhys ? original : Out(at.Reg),
-        };
-
-    /// <summary>
-    /// A move the allocator asked for, by the class of its register: MOV for
-    /// a general one, MOVSD (MOVSS without SSE2) to or from an XMM one's slot,
-    /// MOVAPS between two.
-    /// </summary>
-    private MInstr Move(MOperand to, MOperand from, int line)
+    /// <summary>An XMM value by MOVSS/MOVSD at the width its home or its class's spill slot has; a general one by MOV.</summary>
+    protected override MInstr Move(MOperand to, MOperand from, int line)
         => to is MReg { IsXmm: true } || from is MReg { IsXmm: true }
             ? new MInstr(MOp.MovF, to, from)
             {
@@ -568,53 +447,5 @@ internal sealed class X86Target : ITarget
             : new MInstr(MOp.Mov, to, from) { Line = line };
 
     /// <summary>A register the allocator placed a value in: EBP as the value it holds (MReg.EbpData), no frame's base.</summary>
-    private static MReg Out(int reg) => reg == (int)Gpr.Ebp ? MReg.EbpData : MReg.Of(reg);
-
-    private MInstr Build(AInstr ai, int index, IPlacement p, Dictionary<ABlock, MBlock> blocks)
-    {
-        if (ai.Tag is not MInstr i)
-        {
-            if (ai.Made == Made.Jump) return new MInstr(MOp.Jmp, new MLabel(blocks[ai.Targets![0]])) { Line = ai.Line };
-            return Move(PlaceOf(p.Of(index, 0), MReg.Of(ai.Regs[0].Reg)), PlaceOf(p.Of(index, 1), MReg.Of(ai.Regs[1].Reg)), ai.Line);
-        }
-        // The table as it is where no pass moved a target, so nothing that holds it sees another list.
-        List<MBlock>? table = i.Table;
-        if (i.Op == MOp.JmpTable && ai.Targets is { } targets && targets.Where((t, k) => !ReferenceEquals(blocks[t], i.Table![k])).Any())
-            table = targets.Select(t => blocks[t]).ToList();
-        MInstr n = i.Rebuilt(table);
-        // The registers named, walked in the order Allocator.RegsOf named them.
-        int k = 0;
-        for (int o = 0; o < i.Operands.Count; o++)
-        {
-            switch (i.Operands[o])
-            {
-                case MReg r:
-                    n.Operands.Add(PlaceOf(p.Of(index, k), r));
-                    k++;
-                    break;
-                case MMem m:
-                    // Everything about the operand but its registers survives.
-                    // Losing Reloc here turned a `[got + sym@GOTOFF]` back into
-                    // an absolute address, which a shared object can only
-                    // honour with a text relocation -- and not needing one is
-                    // the whole point of position-independent code.
-                    // A leaf's frame base is named nowhere (LowerInstr): as it is.
-                    MReg? baseReg = m.Base is null ? null : _leaf && m.Base.Id == (int)Gpr.Ebp ? m.Base : (MReg)PlaceOf(p.Of(index, k++), m.Base);
-                    MReg? indexReg = m.Index is null ? null : (MReg)PlaceOf(p.Of(index, k++), m.Index);
-                    n.Operands.Add(new MMem(baseReg, m.Disp)
-                    {
-                        Index = indexReg, Scale = m.Scale, Symbol = m.Symbol, Reloc = m.Reloc, Label = m.Label, IsSpill = m.IsSpill, Device = m.Device,
-                    });
-                    break;
-                case MLabel l when ai.Targets is { Count: > 0 } jump && i.Op is MOp.Jmp or MOp.Jcc:
-                    MBlock to = blocks[jump[0]];
-                    n.Operands.Add(ReferenceEquals(to, l.Target) ? l : new MLabel(to));
-                    break;
-                default:
-                    n.Operands.Add(i.Operands[o]);
-                    break;
-            }
-        }
-        return n;
-    }
+    protected override MReg Out(int reg) => reg == (int)Gpr.Ebp ? MReg.EbpData : MReg.Of(reg);
 }
