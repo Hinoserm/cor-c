@@ -217,6 +217,41 @@ public static class X86FamilyTests
             "s0:4 s4:8 s12:4 s16:8 s24:4 | stack 28 g 0 f 0");
         Same("i386: a long comes back in EDX:EAX", string.Join(",", x.Result(l).Select(p => p.Register)), "0,2");
         Same("i386: a double comes back on the x87's stack", x.Result(d).Single().Kind, Corsac.Lang.Calls.PlaceKind.FloatStack);
+
+        // i386'S RULE IS ALSO RegisterArgs' (which a way in that pushes its
+        // registers' arguments and one that sets them still asks: StackEntry,
+        // ConstantEntry): every signature of up to six parameters of the four
+        // types, as a function and as a call of it by name, must get from
+        // both the same registers and the same count.
+        IrType[] kinds = { i, l, f, d };
+        int swept = 0;
+        for (int count = 0; count <= 6; count++)
+            for (int code = 0; code < 1 << (2 * count); code++)
+            {
+                IrType[] types = new IrType[count];
+                for (int k = 0; k < count; k++) types[k] = kinds[code >> (2 * k) & 3];
+                Function function = new("m_Swept_" + count + "_" + code, IrType.Void);
+                Instr call = new() { Op = Opcode.Call, Callee = function.Name };
+                foreach (IrType type in types)
+                {
+                    VReg p = function.NewReg(type);
+                    function.Params.Add(p);
+                    call.Operands.Add(RegOperand.Of(p));
+                }
+                Corsac.Lang.Calls.CallPlan plan = x.Arguments(types);
+                Same($"i386: {function.Name}'s register count as a function", RegisterArgs.Of(function), plan.Generals);
+                Same($"i386: {function.Name}'s register count as a call", RegisterArgs.Of(call), plan.Generals);
+                Same($"i386: {function.Name} is a call of the register form", RegisterArgs.Applies(call), true);
+                for (int k = 0; k < count; k++)
+                {
+                    int byRule = RegisterArgs.Register(function, k), atCall = RegisterArgs.Register(call, k);
+                    int byPlan = plan.Places[k].InRegister ? Array.IndexOf(RegisterArgs.Order, (Gpr)plan.Places[k].Register) : -1;
+                    Same($"i386: {function.Name}'s parameter {k}", byRule, byPlan);
+                    Same($"i386: {function.Name}'s argument {k}", atCall, byPlan);
+                }
+                swept++;
+            }
+        Same("i386: signatures swept", swept, 1 + 4 + 16 + 64 + 256 + 1024 + 4096);
     }
 
     /// <summary>
