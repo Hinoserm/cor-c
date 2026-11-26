@@ -530,12 +530,13 @@ public static class Tls
     /// never cleared sooner, as a thread parked in the window may be so
     /// through more than one collection.
     public const int Handed = 56 * WordSize.Bytes;
-    /// TWO MORE RAW WORDS OF THE KERNEL'S, as Kernel0 and Kernel1: never
-    /// read, written or scanned by the runtime as its own. Like theirs, the
-    /// main thread's copy lies in the statics (__corsac_tls0), which a
-    /// collection reads whole and conservatively (Gc.ScanStatics), so a
-    /// stack address held there is a word that pins nothing of the heap's
-    /// but whatever it happens to point into. Long mode's SYSCALL leaves the
+    /// TWO MORE RAW WORDS OF THE KERNEL'S, with Kernel0's and Kernel1's
+    /// contract: never read, written or scanned by the runtime as its own.
+    /// All four lie, in the main thread's block (__corsac_tls0), among the
+    /// statics, which a collection reads whole and conservatively
+    /// (Gc.ScanStatics). So a word there that points into no heap chunk --
+    /// a stack address, a processor's number -- keeps nothing alive. Long
+    /// mode's SYSCALL leaves the
     /// stack the program's, so its entry, after SWAPGS and before any register
     /// is free (RCX and R11 hold the return RIP and RFLAGS), parks the
     /// program's RSP in one and loads the kernel's from the other, gs-relative

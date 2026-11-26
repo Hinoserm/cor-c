@@ -34,6 +34,9 @@
 // after: 1,_
 // queue boxed enum into int[]: InvalidCastException
 // queue boxed char into ushort[]: InvalidCastException
+// queue boxed int into DayOfWeek[]: InvalidCastException
+// after: Friday
+// queue boxed long into int?[]: InvalidCastException
 // 4 3 2 True
 //
 // Expected output from .NET 10. Queue and Stack name the index differently
@@ -112,6 +115,12 @@ static class Program {
         Try("queue boxed enum into int[]", () => ((ICollection)day).CopyTo(new int[1], 0));
         Queue<object> letter = new Queue<object>(); letter.Enqueue('a');
         Try("queue boxed char into ushort[]", () => ((ICollection)letter).CopyTo(new ushort[1], 0));
+        Queue<object> two = new Queue<object>(); two.Enqueue(2);
+        DayOfWeek[] days = new DayOfWeek[] { DayOfWeek.Friday };
+        Try("queue boxed int into DayOfWeek[]", () => ((ICollection)two).CopyTo(days, 0));
+        Console.WriteLine("after: " + days[0]);
+        Queue<object> wide = new Queue<object>(); wide.Enqueue(5L);
+        Try("queue boxed long into int?[]", () => ((ICollection)wide).CopyTo(new int?[1], 0));
         IEnumerable<int> asQueue = q;
         IEnumerable<string> asStack = s;
         Console.WriteLine(asQueue.Count() + " " + asStack.Count() + " " + asQueue.Count(x => x > 4) + " " + asStack.Contains("b"));
