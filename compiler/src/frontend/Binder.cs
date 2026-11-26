@@ -14836,6 +14836,19 @@ public sealed partial class Binder
         => e.Dynamic && e.Prim == Prim.Any && !e.IsArray && !e.IsPointer ? Type.Any
             : e.Nullable && e.IsReference && !e.IsPointer ? e.AsNonNullable() : e;
 
+    /// <summary>Whether a class is a tuple's shape (TupleType): ValueTuple$ and its items.</summary>
+    private static bool IsTupleShape(TypeSymbol shape) => shape.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal);
+
+    /// <summary>A tuple shape's items: its instance fields.</summary>
+    private static int TupleItems(TypeSymbol shape) => shape.Fields.Count(f => !f.Static);
+
+    /// <summary>Whether any of a tuple's items, as this use wrote them, is made of the named type parameter.</summary>
+    private static bool TupleMentions(Type tuple, TypeSymbol shape, string name)
+    {
+        for (int i = 0; i < TupleItems(shape); i++) if (Mentions(TupleItem(tuple, shape, i), name)) return true;
+        return false;
+    }
+
     /// <summary>
     /// Item <paramref name="which"/> of a tuple as THIS use wrote it: `(int,
     /// Box?)` reads a Box? where the shared shape stores a Box.
@@ -16042,7 +16055,8 @@ public sealed partial class Binder
     /// </summary>
     private bool UnifyArgument(MethodSymbol m, Type want, Type got, Dictionary<string, Type> bound)
     {
-        if (m.TypeParams.Any(t => Mentions(want, t))) return Unify(m, want, got, bound);
+        if (m.TypeParams.Any(t => Mentions(want, t) || want.Symbol is { } shape && IsTupleShape(shape) && TupleMentions(want, shape, t)))
+            return Unify(m, want, got, bound);
         if (got.IsError || want.IsError) return true;
         if (want.IsReference && got.IsReference) return Convertible(got, want);
         return Convertible(got, want) && Convertible(want, got);
@@ -16139,6 +16153,23 @@ public sealed partial class Binder
                 is "IEnumerable" or "IReadOnlyCollection" or "IReadOnlyList")
         {
             return Unify(m, want.Args[0], Type.Char, bound);
+        }
+
+        // A TUPLE AGAINST A TUPLE, ITEM BY ITEM, as C# infers through a tuple
+        // type's elements (12.6.3.9's lower-bound inference into ValueTuple's
+        // arguments): `One<T>((T, int) p)` given an `(Instr, int)` is
+        // One<Instr>, and so is `Each<T>(IEnumerable<(T Call, int Ret)>)`
+        // given a `List<(Instr, int)>`, whose element reaches here through the
+        // list's template. A tuple is its shape's class (TupleType), one per
+        // shape, its items as this use wrote them (TupleItem): matched by
+        // count, names aside, as C#'s identity conversion between tuples is.
+        if (want.Symbol is { } wantShape && IsTupleShape(wantShape) && got.Symbol is { } gotShape && IsTupleShape(gotShape)
+            && TupleItems(wantShape) == TupleItems(gotShape) && TupleItems(wantShape) > 0
+            && m.TypeParams.Any(t => Mentions(want, t) || TupleMentions(want, wantShape, t)))
+        {
+            for (int i = 0; i < TupleItems(wantShape); i++)
+                if (!UnifyArgument(m, TupleItem(want, wantShape, i), TupleItem(got, gotShape, i), bound)) return false;
+            return true;
         }
 
         // AN UNMADE SPECIALISATION IS STILL AN APPLICATION OF ITS TEMPLATE.
@@ -27172,9 +27203,9 @@ public sealed partial class Binder
             // missing overload that is right there -- the real answer is that
             // its type argument is not a machine word.
             string why = byArity.Any(m => m.TypeParams.Count > 0)
-                ? "; a generic method is compiled once for every type argument, so the"
-                  + " argument must be a class or an interface -- something carrying a"
-                  + " vtable the one copy can dispatch through"
+                ? "; a generic candidate's type arguments could not be inferred from these, or"
+                  + " one is no machine word (a generic method is compiled once for every"
+                  + " type argument): name them, or give a class or an interface"
                 : "";
 
             Error(c, $"no overload of '{byArity[0].Name}' accepts ({string.Join(", ", args)}){why}");
