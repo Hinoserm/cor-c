@@ -1791,14 +1791,16 @@ public static partial class Os
     /// this one. The collector is readied first and set straight after
     /// (Gc.ReadyFork, Gc.Forked), and the child forgets the program's other
     /// threads (Runtime.ForkedChild): believing the copy had them, a child
-    /// waited for ever at the end of Main. A fork made outside this -- libc's
-    /// own, through a DllImport -- has none of it.
+    /// waited for ever at the end of Main. Then its signal handlers get a
+    /// thread to run on again (Runtime.ForkedSignals). A fork made outside
+    /// this -- libc's own, through a DllImport -- has none of it.
     public static int Fork()
     {
         bool held = Gc.ReadyFork();
         int pid = (int)Platform.Result(Sys.Syscall(LinuxCall.Fork, 0, 0, 0));
         Gc.Forked(pid == 0, held);
         if (pid == 0 && Runtime.ForkedChild != 0) Sys.Call(Runtime.ForkedChild, 0, 0, 0);
+        if (pid == 0 && Runtime.ForkedSignals != 0) Sys.Call(Runtime.ForkedSignals, 0, 0, 0);
         return pid;
     }
 

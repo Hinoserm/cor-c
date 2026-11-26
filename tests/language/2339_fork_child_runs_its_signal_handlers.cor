@@ -1,0 +1,70 @@
+// test: a fork's child runs the signal handlers it registers, and the parent's go on running
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child: handled SIGTERM 1
+// child: second 2
+// parent: child 0
+// parent: handled SIGTERM 1
+//
+// HANDLERS RUN ON A THREAD OF THEIR OWN (PosixSignalRegistration's
+// DeliverLoop), started by the first one registered -- and a fork copies
+// only the forking thread. The child had the word that says the thread is
+// started and not the thread: a handler it registered was never run, the
+// signal's bits set and nobody woken. A daemon that registers SIGCHLD and
+// then forks a worker for each interface (dhcpcd) had workers no SIGTERM
+// could end. The child is given a delivering thread of its own
+// (ForkedChild, by Os.Fork), and none of what was pending for the parent.
+//
+// The parent registers first, so its thread is running at the fork. The
+// child registers its own handler, sends itself SIGTERM twice, and must
+// see each run within five seconds; then the parent, whose own handler
+// must still run after the fork.
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+sealed class Counting : PosixSignalHandler
+{
+    public static int Ran;
+    public static PosixSignal Last;
+
+    public void Invoke(PosixSignalContext context)
+    {
+        Last = context.Signal;
+        context.Cancel = true;
+        Interlocked.Increment(ref Ran);
+    }
+}
+
+static class Program
+{
+    static bool Until(int count)
+    {
+        for (int waited = 0; waited < 5000 && Volatile.Read(ref Counting.Ran) < count; waited += 5) Thread.Sleep(5);
+        return Volatile.Read(ref Counting.Ran) >= count;
+    }
+
+    static int Main()
+    {
+        PosixSignalRegistration parents = PosixSignalRegistration.Create(PosixSignal.SIGTERM, new Counting());
+        int pid = UnixProcess.Fork();
+        if (pid == 0)
+        {
+            // The child's own registration: the handlers' table is the copy's, the thread must be new.
+            PosixSignalRegistration own = PosixSignalRegistration.Create(PosixSignal.SIGTERM, new Counting());
+            UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
+            bool first = Until(1);
+            Console.WriteLine("child: " + (first ? "handled " + Counting.Last + " " + Counting.Ran : "never handled"));
+            UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
+            Console.WriteLine("child: " + (Until(2) ? "second " + Counting.Ran : "second never handled"));
+            return first ? 0 : 3;
+        }
+        int status;
+        UnixProcess.WaitPid(pid, out status);
+        Console.WriteLine("parent: child " + UnixProcess.Result(status));
+        UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
+        Console.WriteLine("parent: " + (Until(1) ? "handled " + Counting.Last + " " + Counting.Ran : "never handled"));
+        return 0;
+    }
+}

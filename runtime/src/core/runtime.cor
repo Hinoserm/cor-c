@@ -3606,6 +3606,13 @@ public static partial class Runtime
     /// in a program that never started one (Platform.Fork).
     public static nuint ForkedChild;
 
+    /// What a fork's child runs after that, for the program's signal
+    /// handlers (PosixSignalRegistration.ForkedChild): left here by the
+    /// first handler registered, 0 in a program that never registered one.
+    /// After ForkedChild, which makes a thread startable again: this one
+    /// starts the child's own delivering thread.
+    public static nuint ForkedSignals;
+
     // ---- what runs when the process ends ---------------------------------
     //
     // The class library buffers console output and has to empty the buffer

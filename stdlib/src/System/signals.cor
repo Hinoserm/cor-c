@@ -77,10 +77,12 @@ public class PosixSignalRegistration : IDisposable
     // answered EINTR at every slice while it ran -- nor take them from the
     // program's (Deliver), nor wait for themselves (Settle).
     [ThreadStatic] static bool _inside;
-    // Whether the thread that delivers has been started: once, by the first
-    // Create (StartDelivering). A fork's child -- which this library only
-    // ever execs -- has the word and not the thread, and _running as the
-    // fork found it: no handler runs in it.
+    // Whether the thread that delivers has been started: once a process, by
+    // the first Create (StartDelivering). A FORK'S CHILD has the word and
+    // not the thread -- only the forking thread is copied -- so it is given
+    // its own (ForkedChild): a daemon's workers, forked after the manager
+    // registered a handler, registered theirs and never ran them. A child
+    // that only execs (Os.ForkToExec) runs nothing of this and needs none.
     static int _delivering;
 
     PosixSignal _signal;
@@ -98,6 +100,8 @@ public class PosixSignalRegistration : IDisposable
         }
         int n = (int)signal;
         _handlers[n] = handler;
+        // (Said before the thread is started: a fork from here on sets the child straight.)
+        Runtime.ForkedSignals = Sys.AddressOf(PosixSignalRegistration.ForkedChild);
         StartDelivering();
         Install(n, Sys.AddressOf(PosixSignalRegistration.Dispatch));
         return new PosixSignalRegistration(signal);
@@ -115,6 +119,33 @@ public class PosixSignalRegistration : IDisposable
         System.Threading.Thread delivering = new System.Threading.Thread(DeliverLoop);
         delivering.IsBackground = true;
         delivering.Start();
+    }
+
+    /// IN A FORK'S CHILD (Runtime.ForkedSignals, from Os.Fork, after the
+    /// runtime forgot the threads that were not copied): the handlers are
+    /// the parent's still, and so are the kernel's dispositions, but the
+    /// thread that ran them stayed behind. A signal that arrived for the
+    /// parent is not the child's (POSIX: none pending is inherited), nor a
+    /// delivery the parent was in the middle of; then a delivering thread
+    /// of the child's own, where any handler is set. A FORK MADE BY A
+    /// HANDLER is the one case the copied thread is the delivering one, in
+    /// the middle of its delivery: it goes on being it, lock and all.
+    static void ForkedChild()
+    {
+        System.Threading.Interlocked.Exchange(ref _pending, 0);
+        System.Threading.Interlocked.Exchange(ref _unseen, 0);
+        if (Inside()) return;
+        System.Threading.Interlocked.Exchange(ref _running, 0);
+        System.Threading.Interlocked.Exchange(ref _delivering, 0);
+        if (_handlers == null) return;
+        for (int n = 0; n < MaxSignal; n++)
+        {
+            if (_handlers[n] != null)
+            {
+                StartDelivering();
+                return;
+            }
+        }
     }
 
     /// Asleep on the pending word until a signal sets a bit in it, then the
