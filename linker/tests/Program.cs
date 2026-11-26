@@ -80,6 +80,7 @@ public static partial class Program
         Try("x86-64 static link runs under the kernel", LongModeLink);
         Try("32-bit and 64-bit objects do not link together", LongModeMixture);
         Try("x86-64 shared object and dynamic program run under ld-linux-x86-64", LongModeDynamic);
+        Try("x86-64 calls through a GOT slot are GOTPCRELX, loads REX_GOTPCRELX, and a call is never rewritten as a load", LongModeGotCalls);
 
         Console.WriteLine($"{_passes} passed, {_failures} failed" + (_skips > 0 ? $", {_skips} skipped" : ""));
         return _failures == 0 ? 0 : 1;

@@ -242,8 +242,13 @@ internal sealed partial class Encoder
                 return true;
             }
             // Not a call site: the stub is never a safepoint (nothing in it
-            // waits or collects), as i386's.
-            case MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas: CallL((MImm)i.Operands[0]); return true;
+            // waits or collects), as i386's. By name, or through its GOT slot
+            // in a position-independent object (`call [rip + stub@GOTPCREL]`,
+            // Selector.SequenceStub).
+            case MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas:
+                if (i.Operands[0] is MMem { Got: true } slot) OpD(4, 2, slot, 0xFF);
+                else CallL((MImm)i.Operands[0]);
+                return true;
             case MOp.Ret: _out.Add(0xC3); return true;
             case MOp.Xchg:
             {

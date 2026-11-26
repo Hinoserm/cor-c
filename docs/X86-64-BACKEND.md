@@ -328,6 +328,18 @@ holds eight-byte addresses, and the assembler's absolute 32-bit fields in
 long mode are `R_X86_64_32S`. An i386 image is refused a base, or an end,
 above four gigabytes.
 
+A kernel built with `--store-sequences` lays the four store stubs out once,
+between `__corsac_store_sequences` and `__corsac_store_sequences_end`, in the
+image that defines the runtime (`X64Backend.EmitStoreSequences`). Each stub is
+RIP-relative. A module built with `--store-sequences` (`--kernel`, `--shared`
+or `--pic`) makes none of its own. Each of its reference stores calls its
+kernel's stub through the stub's GOT slot, `call [rip + stub@GOTPCREL]` (FF 15,
+`R_X86_64_GOTPCREL` against the undefined stub). That is one instruction,
+which keeps every register as the stub does, with no PLT entry in between. So
+the processor stands inside the kernel's range, which the kernel's handshake
+never stops a thread inside, wherever the module is loaded. An i386 module
+reads the same slot into a register first (`MOp.CallKeepInd`).
+
 The assembler writes 64-bit code (`.bits 64`, `corc asm --target x86-64`):
 REX prefixes, r8-r15 in every width, RIP-relative `[rip + x]`, CR8, `movabs`,
 `dq`, and long mode's own instructions. An object with 64-bit code in it is

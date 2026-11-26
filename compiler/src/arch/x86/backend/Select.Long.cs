@@ -76,9 +76,11 @@ internal sealed partial class Selector
         // (Not in the stream routines themselves, as i386's: Selector.Run.)
         bool stream = f.Name != streamCopy && f.Name != streamFill;
         // (Position-independent: the barrier's slow path calls the runtime, not
-        // the object's stub; SelectCall. Not _positionIndependent, which is
-        // i386's GOT register's question: long mode reaches its pool RIP-relative.)
-        Selector s = new(f, errors, isExternal) { _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null, _barrierCallsRuntime = positionIndependent };
+        // the object's stub; SelectCall. The store sequences' stubs are another
+        // image's, called through their GOT slots: _sequencesThroughGot. Not
+        // _positionIndependent, which is i386's GOT register's question: long
+        // mode reaches its pool RIP-relative.)
+        Selector s = new(f, errors, isExternal) { _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null, _barrierCallsRuntime = positionIndependent, _sequencesThroughGot = positionIndependent };
         s.Select();
         return s._m;
     }
@@ -102,6 +104,18 @@ internal sealed partial class Selector
         }
         return t;
     }
+
+    /// <summary>
+    /// The target of a call to a store sequence's stub: the stub by name, in
+    /// the image whose runtime lays them out (X64Backend.EmitStoreSequences);
+    /// its GOT slot in a position-independent object, which makes none and
+    /// whose stores must be its kernel's sequences -- the range the kernel
+    /// stops no thread inside (Smp.InStoreSequence), wherever the module is
+    /// loaded. Never by PLT: the slot is read by the call itself, so nothing
+    /// of the module's own runs between the store's setup and the kernel's
+    /// range, and every register is kept as the stub keeps them.
+    /// </summary>
+    private MOperand SequenceStub(string stub) => _sequencesThroughGot ? MMem.RipGot(stub) : MImm.Sym(stub, 0);
 
     // ---- emission ----------------------------------------------------------
 
@@ -701,19 +715,18 @@ internal sealed partial class Selector
             case Corsac.Lang.X86.MachineIntrinsics.CardStore:
                 // A REFERENCE STORED IN ONE SEQUENCE (CardMarks.FuseStores):
                 // the slot in RAX, the value in RDX, every register kept, by
-                // the image's stub (Corsac.Lang.X64.X64Backend.RefStoreStub).
-                // Never position-independent: long mode's --store-sequences
-                // is refused with --pic or --shared (Driver), a kernel's image.
+                // the image's stub (Corsac.Lang.X64.X64Backend.RefStoreStub)
+                // -- the kernel's, from a module: SequenceStub.
                 MovL(Rax, RL(i.Operands[0]));
                 MovL(Rdx, RL(i.Operands[1]));
-                Emit(MOp.CallKeep, MImm.Sym(name == Corsac.Lang.X86.MachineIntrinsics.RefStore ? Corsac.Lang.X64.X64Backend.RefStoreStub : Corsac.Lang.X64.X64Backend.CardStoreStub, 0));
+                Emit(MOp.CallKeep, SequenceStub(name == Corsac.Lang.X86.MachineIntrinsics.RefStore ? Corsac.Lang.X64.X64Backend.RefStoreStub : Corsac.Lang.X64.X64Backend.CardStoreStub));
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.RefExchange:
                 // The exchange's stub: slot RAX, value RDX; the old reference
                 // in RAX, every other register kept.
                 MovL(Rax, RL(i.Operands[0]));
                 MovL(Rdx, RL(i.Operands[1]));
-                Emit(MOp.CallKeepRax, MImm.Sym(Corsac.Lang.X64.X64Backend.RefExchangeStub, 0));
+                Emit(MOp.CallKeepRax, SequenceStub(Corsac.Lang.X64.X64Backend.RefExchangeStub));
                 if (i.Dest is not null) MovL(V(i.Dest), Rax);
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.RefCompareExchange:
@@ -722,7 +735,7 @@ internal sealed partial class Selector
                 MovL(Rcx, RL(i.Operands[0]));
                 MovL(Rdx, RL(i.Operands[2]));
                 MovL(Rax, RL(i.Operands[1]));
-                Emit(MOp.CallKeepCas, MImm.Sym(Corsac.Lang.X64.X64Backend.RefCompareExchangeStub, 0));
+                Emit(MOp.CallKeepCas, SequenceStub(Corsac.Lang.X64.X64Backend.RefCompareExchangeStub));
                 if (i.Dest is not null) MovL(V(i.Dest), Rax);
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.PerCpuRead:

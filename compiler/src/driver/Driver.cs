@@ -995,16 +995,12 @@ public static class Driver
         // stays only for a store that cannot be made one
         // (Lowering.CardMarkBefore), in the same images: one scheme an image.
         // A thread block is a processor's in a ring-0 image only.
-        // LONG MODE HAS THEM TOO (X64Backend.EmitStoreSequences), in the
-        // image that defines the runtime -- not in a position-independent
-        // one, whose stubs would be another image's and are not made: there
-        // the flag would do nothing, and a build that asked for them would
-        // believe it had them. A kernel's module is such an image (--kernel
-        // makes it --shared), so a long-mode kernel built with sequences has
-        // no modules yet: how a module reaches its kernel's stubs is still
-        // to be settled with the kernel.
-        if (longMode && args.Contains("--store-sequences") && (args.Contains("--pic") || args.Contains("--shared")))
-            return Fail("--store-sequences in long mode is for an image that is not position-independent: a kernel's image, not its modules (--kernel, --shared or --pic)");
+        // LONG MODE HAS THEM TOO (X64Backend.EmitStoreSequences), laid out
+        // in the image that defines the runtime. A position-independent one
+        // -- a kernel's module (--kernel makes it --shared), --pic -- makes
+        // none and calls its kernel's through their GOT slots, as an i386
+        // module does: the range its kernel stops no thread inside is the
+        // kernel's, wherever the module is loaded (Selector.SequenceStub).
         Corsac.Lang.Lower.Lowering.StoreSequences = args.Contains("--store-sequences");
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
         Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && freestanding;

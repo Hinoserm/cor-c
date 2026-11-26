@@ -455,6 +455,10 @@ public sealed class X64Backend : IBackend
     /// nine general ones and all sixteen XMM -- saved round it, since the
     /// stub keeps every register but the one it answers in, and RSP 16-aligned
     /// at the call. K8 instructions only: CMPXCHG, XCHG, MOVDQU.
+    ///
+    /// Not in a position-independent object: a kernel's module makes none,
+    /// and calls its kernel's through their GOT slots (Selector.SequenceStub),
+    /// for the range no thread is stopped inside is the kernel's.
     /// </summary>
     private void EmitStoreSequences(Module module, Section text, ObjectFile obj, HashSet<string> defined)
     {

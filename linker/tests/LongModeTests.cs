@@ -185,6 +185,69 @@ public static partial class Program
         Check(Exec(ldExe) == 84, "and that program exits 84 too");
     }
 
+    /// <summary>
+    /// _start: call [rip + f@GOTPCREL]; mov edi, eax; mov eax, 60; syscall --
+    /// exit(f()), f reached through its GOT slot as a kernel module calls its
+    /// kernel's store sequences (FF 15 d32).
+    /// </summary>
+    private static ObjectFile GotCaller64()
+    {
+        ObjectFile o = new();
+        Section text = new(".text", SectionKind.Code) { Align = 16 };
+        text.Bytes.AddRange(new byte[] { 0xff, 0x15, 0, 0, 0, 0, 0x89, 0xc7, 0xb8, 60, 0, 0, 0, 0x0f, 0x05 });
+        text.Relocs.Add(new Relocation(2, "f", -4, RelocKind.GotPcRel));
+        o.Sections.Add(text);
+        o.Symbols.Add(new Symbol { Name = "_start", Section = text, Offset = 0, Size = 15, IsFunction = true });
+        o.Symbols.Add(new Symbol { Name = "f", Section = null });
+        new TargetContract(0, longMode: true).Attach(o);
+        return o;
+    }
+
+    /// <summary>
+    /// A GOT SLOT'S DISPLACEMENT TYPED BY ITS INSTRUCTION (Elf64Object.GotTypeAt):
+    /// a call through it is R_X86_64_GOTPCRELX, a REX load from it
+    /// R_X86_64_REX_GOTPCRELX, as the psABI has them. GNU ld relaxes each by its
+    /// type and the program it links still exits 42. This linker sees a call
+    /// and makes the slot even where the library defines f: only a load
+    /// becomes a lea. A call's FF rewritten as a load's 8D would be no call at all.
+    /// </summary>
+    private static void LongModeGotCalls()
+    {
+        string caller = Write("gotcaller64.o", ElfWriter.WriteObject(GotCaller64()));
+        string loader = Write("gotlib64.o", ElfWriter.WriteObject(Library64()));
+        (int code, string output) = Run("readelf", "-rW", caller);
+        Check(code == 0 && output.Contains("R_X86_64_GOTPCRELX") && !output.Contains("REX_GOTPCRELX"), "a call through the GOT is R_X86_64_GOTPCRELX", output);
+        (code, output) = Run("readelf", "-rW", loader);
+        Check(code == 0 && output.Contains("R_X86_64_REX_GOTPCRELX"), "a REX load from the GOT is R_X86_64_REX_GOTPCRELX", output);
+
+        // GNU ld, f in the same link: the call relaxed by its own type.
+        string callee = Write("gotcallee64.o", ElfWriter.WriteObject(Callee64()));
+        string ldExe = Path.Combine(_dir, "got42-64-ld");
+        (code, output) = Run("ld", "-m", "elf_x86_64", "-o", ldExe, caller, callee);
+        Check(code == 0, "GNU ld links the call through the GOT", output);
+        Check(Exec(ldExe) == 42, "and the program it links exits 42");
+
+        // This linker against a library that defines f: the call keeps its
+        // slot, which the loader binds (GLOB_DAT), and exits 84.
+        string lib = Write("libf64-got.so", Linker.LinkShared(new[] { ("library64", Library64()) }, "libf64-got.so"));
+        string exe = Write("got84-64", Linker.Link(new[] { ("gotcaller64", GotCaller64()) }, "_start", new[] { lib }));
+        (code, output) = Run("readelf", "-rW", exe);
+        Check(code == 0 && output.Contains("R_X86_64_GLOB_DAT"), "the call's slot is bound by the loader", output);
+        Check(Exec(exe) == 84, "the program calls f through its slot and exits 84");
+
+        // The library calling its own f through the slot: defined here, and
+        // still a call -- the slot is made, the bytes stay FF 15.
+        ObjectFile own = Library64();
+        Section text = own.Sections[0];
+        int at = text.Bytes.Count;
+        text.Bytes.AddRange(new byte[] { 0xff, 0x15, 0, 0, 0, 0, 0xc3 });
+        text.Relocs.Add(new Relocation(at + 2, "f", -4, RelocKind.GotPcRel));
+        own.Symbols.Add(new Symbol { Name = "g", Section = text, Offset = at, Size = 7, IsFunction = true });
+        string ownLib = Write("libf64-own.so", Linker.LinkShared(new[] { ("library64", own) }, "libf64-own.so"));
+        (code, output) = Run("objdump", "-d", "--no-show-raw-insn", ownLib);
+        Check(code == 0 && output.Contains("call   *0x"), "a call to a symbol the library defines stays a call through its slot", output);
+    }
+
     private static void LongModeMixture()
     {
         ObjectFile i386 = Callee();

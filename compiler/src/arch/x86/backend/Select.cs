@@ -95,6 +95,15 @@ internal sealed partial class Selector
     /// <summary>Whether the barrier's slow path calls the runtime rather than the object's stub (MachineIntrinsics.Barrier, CardMark): in a position-independent object, either mode.</summary>
     private bool _barrierCallsRuntime;
 
+    /// <summary>
+    /// Long mode's position-independent object, whose store sequences are
+    /// another image's -- a kernel module's, its kernel's (X64Backend.RefStoreStub):
+    /// each stub is called through its GOT slot, `call [rip + stub@GOTPCREL]`,
+    /// one instruction that keeps every register. i386's reads the slot into
+    /// a register first (_positionIndependent, MOp.CallKeepInd).
+    /// </summary>
+    private bool _sequencesThroughGot;
+
     /// <summary>A Windows image: the thread block is in a TLS slot of the TEB, not behind GS.</summary>
     private bool _windowsTls;
 

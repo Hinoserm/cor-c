@@ -43,6 +43,34 @@ internal static class Elf64Object
         _ => throw new ElfFormatException($"{kind} has no x86-64 relocation in a static object"),
     };
 
+    /// <summary>
+    /// A GOT slot's displacement, typed by the instruction it is in, as the
+    /// x86-64 psABI asks, since a linker may rewrite the instruction by its
+    /// type (the GOTPCRELX relaxations, B.2). `call` or `jmp` through the
+    /// slot (FF /2, FF /4: a module's call to its kernel's store sequence,
+    /// Selector.SequenceStub) is R_X86_64_GOTPCRELX. A load with REX
+    /// (`mov r64, [rip + sym@GOTPCREL]`) is R_X86_64_REX_GOTPCRELX. Anything
+    /// else is plain R_X86_64_GOTPCREL, which no linker rewrites. The ModRM
+    /// is RIP-relative in each (mod 00, r/m 101) and the field ends the
+    /// instruction (TypeOf's GotPcRel is the load's, the form the backend
+    /// writes most).
+    /// </summary>
+    private static uint GotTypeAt(Section s, int offset)
+    {
+        // The opcode and the ModRM before the field, and the REX before them
+        // where the instruction can have one (a call at a section's start
+        // has none). Read where the content is, chunks or file.
+        Span<byte> before = stackalloc byte[3];
+        int has = Math.Min(offset, 3);
+        if (has < 2 || !s.ReadAt(offset - has, before[(3 - has)..])) return GotPcRel;
+        byte opcode = before[1], modrm = before[2];
+        if ((modrm & 0xC7) != 0x05) return GotPcRel;
+        int reg = (modrm >> 3) & 7;
+        if (opcode == 0xFF && reg is 2 or 4) return GotPcRelX;
+        if (opcode == 0x8B && has == 3 && (before[0] & 0xF0) == 0x40) return RexGotPcRelX;
+        return GotPcRel;
+    }
+
     public static RelocKind? KindOf(uint type) => type switch
     {
         R64 => RelocKind.Abs64,
@@ -135,7 +163,8 @@ internal static class Elf64Object
                     symbols.Add((strtab.Add(r.Symbol), SymbolEntry.MakeInfo(Elf.StbGlobal, Elf.SttNoType), Elf.ShnUndef, 0, 0));
                     symbolIndex[r.Symbol] = sym;
                 }
-                relas[i].Add(((ulong)r.Offset, ((ulong)sym << 32) | TypeOf(r.Kind), r.Addend));
+                uint type = r.Kind == RelocKind.GotPcRel ? GotTypeAt(s, r.Offset) : TypeOf(r.Kind);
+                relas[i].Add(((ulong)r.Offset, ((ulong)sym << 32) | type, r.Addend));
             }
         }
 
