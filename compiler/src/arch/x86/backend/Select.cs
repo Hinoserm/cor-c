@@ -1474,6 +1474,12 @@ internal sealed partial class Selector
                         n += asmTakenL - 1;
                         continue;
                     }
+                    // A rotate by a constant, written as its two shifts (TryRotate).
+                    if (TryRotate(b.Instrs, n, out int rotated))
+                    {
+                        n += rotated - 1;
+                        continue;
+                    }
                     if (IsCompare(i.Op) && i.Dest is not null && n + 1 < b.Instrs.Count && FusesInto(i, b.Instrs[n + 1]))
                     {
                         SelectFusedBranch(i, b.Instrs[n + 1]);
@@ -1611,6 +1617,14 @@ internal sealed partial class Selector
         => next.Op == Opcode.Branch && next.Operands[0] is RegOperand r && r.Reg == cmp.Dest
            && _useCount.GetValueOrDefault(r.Reg.Id) == 1;
 
+    /// <summary>
+    /// A ROTATE BY A CONSTANT, written as its two shifts and their OR --
+    /// `(x >> r) | (x << (32 - r))`, each a value of one use -- is one ROR:
+    /// of thirty-two bits in an I32, or in an I64 that holds a 32-bit value
+    /// (masked before and after, or known to have a zero upper half); and
+    /// in long mode of a whole word, the counts making sixty-four. Both
+    /// modes; an arithmetic right shift is no rotate's.
+    /// </summary>
     private bool TryRotate(List<Instr> instructions, int at, out int consumed)
     {
         consumed = 0;
@@ -1655,8 +1669,10 @@ internal sealed partial class Selector
             source = shared.Reg;
             consumed = 4;
         }
+        // (Long mode's word rotates whole: the same three instructions of
+        // an I64, their counts making sixty-four.)
         else if (at + 2 < instructions.Count && ShiftPair(instructions[at], instructions[at + 1], false)
-            && instructions[at].Dest?.Type == IrType.I32
+            && (instructions[at].Dest?.Type == IrType.I32 || X86Mode.Long && instructions[at].Dest?.Type == IrType.I64)
             && instructions[at].Operands[0] is RegOperand first32
             && Input(instructions[at + 1], first32.Reg)
             && Combine(instructions[at + 2], instructions[at].Dest, instructions[at + 1].Dest))
@@ -1667,8 +1683,11 @@ internal sealed partial class Selector
             consumed = 3;
         }
         else return false;
+        // Thirty-two bits rotate, but the three-instruction form of a long
+        // mode word: the masked forms above are a 32-bit value's in an I64.
+        int bits = consumed == 3 && result.Dest?.Type == IrType.I64 ? 64 : 32;
         if (right.Operands[1] is not ImmOperand rightCount || left.Operands[1] is not ImmOperand leftCount
-            || rightCount.Value < 1 || rightCount.Value > 31 || leftCount.Value != 32 - rightCount.Value)
+            || rightCount.Value < 1 || rightCount.Value > bits - 1 || leftCount.Value != bits - rightCount.Value)
             return false;
         for (int n = at; n < at + consumed - 1; n++)
             if (!SingleUse(instructions[n]) || instructions[n].Dest == source
@@ -1676,6 +1695,17 @@ internal sealed partial class Selector
         if (source.Type != result.Dest?.Type) return false;
         NoteConstant(result);
         _line = result.Line;
+        if (X86Mode.Long)
+        {
+            // One register: a 32-bit rotate of it clears its upper half, as
+            // the masks said (an I64 holding a 32-bit value), and a word's
+            // rotates the whole.
+            int width = bits / 8;
+            MReg to = V(result.Dest!);
+            MovW(to, V(source), width);
+            EmitW(MOp.Ror, width, to, Imm(rightCount.Value));
+            return true;
+        }
         Mov(Lo(result.Dest!), Lo(source));
         Emit(MOp.Ror, Lo(result.Dest!), Imm(rightCount.Value));
         if (result.Dest!.Type == IrType.I64) Mov(Hi(result.Dest), Imm(0));

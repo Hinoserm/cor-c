@@ -114,27 +114,34 @@ public sealed class MFunction
     /// <summary>
     /// A FRAMELESS FUNCTION THAT CALLS, BUT ONLY WHAT NEVER RETURNS (a bounds
     /// check's IndexOutOfRange, a throw moved out of it -- each call followed
-    /// by INT3; FramePointerFree.Run decides): its frame is made on the way to
-    /// such a call alone (Encoder.ColdFrame) -- `push ebp ; mov ebp, esp`
-    /// where it saves no register and keeps no slot, else (ReservedFrame)
-    /// `mov [esp + X], ebp ; lea ebp, [esp + X]` -- and is then a frame as any
-    /// prologue's, the return address just above the saved EBP: what the
-    /// callee's frame links to, what a trace and the collector walk. The way
-    /// that returns pays nothing for a frame it never needs.
+    /// by the selector's unreachable, i386's INT3 or long mode's UD2;
+    /// FramePointerFree.Run decides), both modes: its frame is made on the
+    /// way to such a call alone (Encoder.ColdFrame, ColdFrameL) -- `push ebp
+    /// ; mov ebp, esp` where it saves no register and keeps no slot, else
+    /// (ReservedFrame) `mov [esp + X], ebp ; lea ebp, [esp + X]` -- and is
+    /// then a frame as any prologue's, the return address just above the
+    /// saved base register: what the callee's frame links to, what a trace
+    /// and the collector walk. The way that returns pays nothing for a frame
+    /// it never needs. In long mode the plain form's push is also what makes
+    /// the stack a multiple of sixteen at the call.
     /// </summary>
     public bool ColdFrames { get; set; }
 
     /// <summary>
     /// A COLD-FRAMED FUNCTION THAT SAVES REGISTERS OR KEEPS SLOTS (ColdFrames):
-    /// laid out as a framed function is, the word its saved EBP would hold
-    /// kept and not written -- `sub esp, N + 4` then the saves on the way in,
-    /// the pops then `add esp, N + 4` on the way out -- so on the way to a
-    /// call that never returns `mov [esp + X], ebp ; lea ebp, [esp + X]` (X
-    /// the frame and the saves) makes the very frame a prologue would have:
-    /// every slot and save where the collector's map of the call says. Only
-    /// with at most two such calls (eight bytes each, the plain form's three)
-    /// and X within a byte's displacement; else the function is framed.
-    /// EBP's word alone is reserved by `push eax` and dropped by `pop ecx`.
+    /// laid out as a framed function is, the word its saved base register
+    /// would hold kept and not written -- `sub esp, N + word` then the saves
+    /// on the way in, the pops then `add esp, N + word` on the way out -- so
+    /// on the way to a call that never returns `mov [esp + X], ebp ; lea
+    /// ebp, [esp + X]` (X the frame and the saves) makes the very frame a
+    /// prologue would have: every slot and save where the collector's map of
+    /// the call says. Only with at most two such calls (eight bytes each on
+    /// i386, ten in long mode; the plain form's three and four) and X within
+    /// a byte's displacement; else the function is framed. The base
+    /// register's word alone is reserved by `push eax` and dropped by `pop
+    /// ecx`. LONG MODE pushes one word more below the saves where the slots
+    /// and saves are an odd number of words (Encoder.ReservedPad): the
+    /// stack a multiple of sixteen at the call.
     /// </summary>
     public bool ReservedFrame { get; set; }
 

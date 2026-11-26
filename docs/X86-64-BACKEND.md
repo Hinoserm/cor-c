@@ -170,9 +170,19 @@ A fault in such a leaf is found by its first bytes, which are never a
 framed function's `55 48 89 E5` (`Runtime.FrameAt`): the leaf stands for
 the call it was in its caller, the registers it pushed put back
 (`Runtime.LeafSaved`), and the trace still begins with the leaf's own row
-(`Runtime.NullFault`). A frame made only on the way to a call that never
-returns (i386's `ColdFrames`) is not long mode's yet: its call wants the
-stack sixteen-aligned.
+(`Runtime.NullFault`).
+
+A function whose only calls never return -- a bounds check's, a throw moved
+out of it -- has no frame either but on the way to those calls
+(`MFunction.ColdFrames`), as on i386: `push rbp; mov rbp, rsp` just before
+the call, the push also what makes the stack a multiple of sixteen there.
+Where it saves registers or keeps slots the frame pointer's word is
+reserved on the way in (`ReservedFrame`: `sub rsp, n + 8`, then the saves
+pushed where a framed function stores them) and written only at the call,
+`mov [rsp + X], rbp; lea rbp, [rsp + X]`; where the slots and saves are an
+odd number of words one word more is pushed below them
+(`Encoder.ReservedPad`), so the call still finds a multiple of sixteen.
+`Runtime.FrameAt` reads both forms.
 
 `compiler/src/arch/x64/backend` holds the object's writer and driver
 alone (`X64Backend.cs`).

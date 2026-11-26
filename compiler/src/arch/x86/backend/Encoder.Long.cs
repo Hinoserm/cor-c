@@ -20,7 +20,7 @@ namespace Corsac.Lang.X86;
 /// </summary>
 internal sealed partial class Encoder
 {
-    /// <summary>Long mode: the bytes the prologue takes below the saved base, frame and saved registers, sixteen-aligned.</summary>
+    /// <summary>Long mode: what the prologue takes off the stack pointer for this function (FrameBytes): a framed function's slots and saves, sixteen-aligned; a function's without a frame, its slots.</summary>
     private int _frameBytes;
 
     /// <summary>
@@ -44,8 +44,9 @@ internal sealed partial class Encoder
     /// words, so that the stack is a multiple of sixteen at the calls it
     /// makes its frame for: the return address left it eight short, the
     /// base register's word made that up, and the rest must be whole
-    /// sixteens. None on i386, and none where the function is not decided
-    /// to have one (asked before it is, as one would be).
+    /// sixteens. None on i386. (Answered for any function, as if its frame
+    /// were reserved: FramePointerFree.Run asks before it decides, and
+    /// counts it only where it is.)
     /// </summary>
     public static int ReservedPad(MFunction m)
         => X86Mode.Long && (FramelessBytes(m) + 8 * m.SavedRegs.Count) % 16 != 0 ? 8 : 0;

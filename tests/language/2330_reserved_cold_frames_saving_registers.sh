@@ -67,13 +67,12 @@ for name in Checked CheckedWider; do
     x1=$(echo "$made" | sed -n 1p | grep -oE '0x[0-9a-f]+')
     x2=$(echo "$made" | sed -n 2p | grep -oE 'lea rbp,\[rsp\+0x[0-9a-f]+\]' | grep -oE '0x[0-9a-f]+')
     if [ -n "$x1" ] && [ "$x1" = "$x2" ] && echo "$made" | sed -n 3p | grep -q 'call'; then pass "$name makes its frame at one place on the way to its call"; else fail "$name makes its frame at one place on the way to its call"; echo "$made"; fi
-    # From the return address down: the word, the slots, the saves (X bytes
-    # of them and of padding): 8 + X is what the way in took, and with the
-    # return address a multiple of sixteen.
+    # From the return address down: the frame pointer's word, then X bytes
+    # of slots, saves and padding. The stack was eight short of a sixteen
+    # on the way in, the word made that up: X must be whole sixteens.
     if [ -n "$x1" ] && [ $(( (x1 + 16) % 16 )) -eq 0 ]; then pass "$name calls with the stack a multiple of sixteen"; else fail "$name calls with the stack a multiple of sixteen ($x1)"; fi
     if echo "$code" | grep -qE '^(leave|push rbp)$'; then fail "$name has no frame on the way that returns"; else pass "$name has no frame on the way that returns"; fi
 done
 
-[ -z "${WORK:-}" ] && rm -rf "$work"
 echo
 if [ $failures -eq 0 ]; then echo "all passed"; exit 0; else echo "$failures failed"; exit 1; fi

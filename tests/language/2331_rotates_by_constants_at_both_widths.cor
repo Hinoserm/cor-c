@@ -1,0 +1,60 @@
+// test: rotates by a constant written as two shifts, thirty-two bits and a whole sixty-four-bit word, right and left; an arithmetic shift is none
+// expect-exit: 0
+// expect-output:
+// 0 0 0 0
+// 2147483648 33554432 524288 2
+// 1073741824 16777216 262144 1
+// 152709948 4028917932 3015741858 610839792
+// 4294967295 4294967295 4294967295 4294967295
+// 4015447927 3753728893 4152292717 3176889823
+// 0 0 0 0 0 0
+// 9223372036854775808 144115188075855872 8589934592 4294967296 2147483648 2
+// 4611686018427387904 72057594037927936 4294967296 2147483648 1073741824 1
+// 9264364801463019255 15997426388367005595 1393753987517680335 9920249030613615975 14183496552161583795 163971058432973790
+// 18446744073709551615 18446744073709551615 18446744073709551615 18446744073709551615 18446744073709551615 18446744073709551615
+// 17246217529106331654 1998854405802556896 10808041090504687071 14627392582107119343 16537068327908335479 13644637895296671771
+// 655884233731895160 12379813738877118345 17685063433767583854 18370198130093125578
+// -71417082090924133 -2449317685342546021
+//
+// `(x >> r) | (x << (bits - r))` of an unsigned value is one ROR where the
+// selector sees it whole: thirty-two bits in both modes, and in long mode a
+// sixty-four-bit word's too (on i386 that one stays two double shifts).
+// Every count here is a constant in a function of its own, so each is the
+// pattern; the values cover the bits that wrap. The last line is a signed
+// value shifted right arithmetically and ORed with its left shift, which
+// is no rotate: its sign fills. Output as .NET 10 prints it.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] static uint A1(uint x) => (x >> 1) | (x << 31);
+    [MethodImpl(MethodImplOptions.NoInlining)] static uint A7(uint x) => (x >> 7) | (x << 25);
+    [MethodImpl(MethodImplOptions.NoInlining)] static uint A13(uint x) => (x << 19) | (x >> 13);
+    [MethodImpl(MethodImplOptions.NoInlining)] static uint A31(uint x) => (x >> 31) | (x << 1);
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong B1(ulong x) => (x >> 1) | (x << 63);
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong B7(ulong x) => (x >> 7) | (x << 57);
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong B31(ulong x) => (x >> 31) | (x << 33);
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong B32(ulong x) => (x >> 32) | (x << 32);
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong B33(ulong x) => (x << 31) | (x >> 33);
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong B63(ulong x) => (x >> 63) | (x << 1);
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong L3(ulong x) => (x << 3) | (x >> 61);
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong L40(ulong x) => (x << 40) | (x >> 24);
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static long Signed(long x) => (x >> 7) | (x << 57);
+
+    static int Main()
+    {
+        uint[] small = { 0, 1, 0x80000000, 0x12345678, 0xFFFFFFFF, 0xDEADBEEF };
+        ulong[] wide = { 0, 1, 0x8000000000000000, 0x0123456789ABCDEF, 0xFFFFFFFFFFFFFFFF, 0xDEADBEEFCAFEF00D };
+        foreach (uint x in small) Console.WriteLine(A1(x) + " " + A7(x) + " " + A13(x) + " " + A31(x));
+        foreach (ulong x in wide) Console.WriteLine(B1(x) + " " + B7(x) + " " + B31(x) + " " + B32(x) + " " + B33(x) + " " + B63(x));
+        // (Two values each: one alone is folded into the function.)
+        Console.WriteLine(L3(wide[3]) + " " + L40(wide[3]) + " " + L3(wide[5]) + " " + L40(wide[5]));
+        Console.WriteLine(Signed(unchecked((long)0x8123456789ABCDEF)) + " " + Signed(0x0123456789ABCDEF));
+        return 0;
+    }
+}
