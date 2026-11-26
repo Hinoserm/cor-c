@@ -18475,8 +18475,15 @@ static class GcRoots
         {
             Gc.ScanRootsAttributed(Sys.Stack(), top, 1, true);
         }
-        // And its region arena, as every other thread's is with its stack.
-        if (self != 0) Gc.ScanRegion(self);
+        // And its region arena, as every other thread's is with its stack,
+        // and the object its last slow allocation handed out (Tls.Handed),
+        // as every answer reads another's: the collecting allocation is this
+        // thread's next one, not yet handed out.
+        if (self != 0)
+        {
+            Gc.ScanRegion(self);
+            Gc.ScanRoots(self + Tls.Handed, self + Tls.Handed + WordSize.Bytes);
+        }
         Gc.ScanStatics(Sys.DataStart(), Sys.DataEnd());
 
         nuint i = 0;

@@ -692,9 +692,27 @@ public sealed partial class Lowering
     public const int TlsState = 28;
     /// <summary>This thread's [ThreadStatic] cells: an object?[] (Tls.ThreadStatics).</summary>
     public const int TlsThreadStatics = 168;
-    /// <summary>The block's size: runtime Tls.Bytes, its 57 slots times four
-    /// (ThreadBlock0, the block of a thread no platform gives one).</summary>
+    /// <summary>The block's size on i386, runtime Tls.Bytes: its 57 slots
+    /// times four. The floor of ThreadBlockBytes, which takes the runtime's
+    /// own constant where the runtime is compiled.</summary>
     public const int TlsBytes = 228;
+
+    /// <summary>THE SIZE OF ThreadBlock0, the block of a thread no platform
+    /// gives one: the runtime's Tls.Bytes as it is bound for this target,
+    /// where this compilation has it, and never less than TlsBytes scaled by
+    /// the word. Read from the runtime, so that a slot added there needs no
+    /// change here -- by hand the two drifted once, and the last slot was
+    /// read past the block.</summary>
+    int ThreadBlockBytes()
+    {
+        int bytes = TlsBytes / 4 * _t.WordSize;
+        if (_b.Types.TryGetValue("Tls", out TypeSymbol? tls)
+            && _b.Constants.TryGetValue((tls, "Bytes"), out long runtime) && runtime > bytes && runtime < 1 << 16)
+        {
+            bytes = (int)runtime;
+        }
+        return bytes;
+    }
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";
@@ -877,7 +895,7 @@ public sealed partial class Lowering
             // is one thread block for the process and it is the library's,
             // and a program carrying a second one would have a handler chain
             // and an allocation buffer nothing else could see.
-            _m.Data.Add(new DataItem(ThreadBlock0, new byte[TlsBytes / 4 * _t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
+            _m.Data.Add(new DataItem(ThreadBlock0, new byte[ThreadBlockBytes()]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
             _m.Data.Add(new DataItem(ThreadBlockSelf, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
             // Windows: the TLS slot's number, which every read of the block
             // names (Selector.TlsBaseSymbol) and the runtime fills from TlsAlloc.

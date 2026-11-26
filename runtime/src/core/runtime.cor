@@ -506,12 +506,21 @@ public static class Tls
     /// The object this thread's last allocation from the heap's slow path
     /// handed out (Gc.AllocSlow, Gc.AllocClass), written under the heap lock
     /// as it is let go, and read as a root by every answer for the thread
-    /// (GcThreads.Work). Between that and the typed reference the caller
-    /// keeps it in, the object is a plain word of the runtime's, which a
-    /// thread answering for itself with its stack maps (Gc.ScanOwnStack) does
-    /// not keep -- and a kernel's preemption parks a thread there and answers
-    /// for it so. Overwritten by the next one: a thread keeps at most one
-    /// object alive this way, as long as it makes no other.
+    /// (GcThreads.Work) and by its own collection (GcRoots.ScanAll). Between
+    /// that and the typed reference the caller keeps it in, the object is a
+    /// plain word of the runtime's, which a thread answering for itself with
+    /// its stack maps (Gc.ScanOwnStack) does not keep -- and the heap lock's
+    /// release is a preemption point (Runtime.PreemptHook), where a kernel
+    /// parks the thread and it answers for itself so. The sampler's call
+    /// (Runtime.Sample) writes it too, unlocked, with whatever block it is
+    /// shown, a region's among them. THE FAST PATHS NEED NONE: between the
+    /// pop or bump and their return they make no call -- an interrupt there
+    /// leaves the registers in a frame no map describes, read whole -- and
+    /// a preemption with Tls.InAlloc set is refused. Overwritten by the next
+    /// one and cleared at the thread's end (Runtime.EndThread): a thread
+    /// keeps at most one object alive this way, until it makes another --
+    /// never cleared sooner, as a thread parked in the window may be so
+    /// through more than one collection.
     public const int Handed = 56 * WordSize.Bytes;
     public const int Bytes = 57 * WordSize.Bytes;
 }
@@ -1609,6 +1618,9 @@ public static partial class Runtime
         // at (Scheduler.ThreadEnding).
         Scheduler.ThreadEnding();
         ThreadStatics.Release(Sys.ThreadBlock());
+        // Nothing in hand past the thread's end: a block a kernel gives the
+        // next thread would carry it (Tls.Handed).
+        Sys.WriteAddress(Sys.ThreadBlock() + Tls.Handed, 0);
         GcThreads.Deregister(Sys.ThreadBlock());
         Gc.ReleaseRegion(Sys.ThreadBlock());
     }
