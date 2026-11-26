@@ -406,7 +406,12 @@ public sealed class X86Backend : IBackend
         // BODIES LOADED AS THEY ARE COMPILED (FunctionLoader: the link's
         // regeneration) are not there to judge: a function of this module is
         // judged when a call to it is first asked about (DeferredFacts).
-        _fpuDeferred = FunctionLoader is null ? null : new DeferredFacts(module, FunctionLoader, SafepointPolls, _fpuDefined);
+        // Only where NONE is there: a module that holds its bodies (a unit
+        // whose late passes run at the link) was judged whole just above,
+        // and its functions are being rewritten by the workers from here on
+        // -- nothing reads them again for this.
+        _fpuDeferred = FunctionLoader is null || module.Functions.Any(f => f.Blocks.Count != 0)
+            ? null : new DeferredFacts(module, FunctionLoader, SafepointPolls, _fpuDefined);
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
             Function f = module.Functions[functionIndex];
@@ -1007,6 +1012,7 @@ public sealed class X86Backend : IBackend
     public string Assembly(Module module)
     {
         _fpuFree = FpuFree.Compute(module, SafepointPolls, out _fpuDefined);
+        _fpuDeferred = null;
         StringBuilder sb = new();
         List<string> errors = new();
         sb.Append("; module ").Append(module.Name).Append('\n');
@@ -1075,16 +1081,19 @@ public sealed class X86Backend : IBackend
     /// same fixed point over those (FpuFree.Settle), which is the whole
     /// module's answer for them -- the set is closed under their calls. The
     /// answers are kept; a module with no packed state at a call asks
-    /// nothing and loads nothing twice.
+    /// nothing and loads nothing twice. What it does load a second time is
+    /// loaded as the link loads it, its rules run again and its reports
+    /// made again: the price of a module that came without its bodies, paid
+    /// only for the functions packed code calls.
     ///
     /// The loads run on a thread of their own (the loader keeps its
     /// analyses' state by thread, and the asker is in the middle of a
-    /// function's selection), one asker at a time.
+    /// function's selection), one asker at a time. Never made for a module
+    /// that holds its bodies (Generate).
     /// </summary>
     internal sealed class DeferredFacts
     {
         private readonly Dictionary<string, int> _index = new(StringComparer.Ordinal);
-        private readonly Module _module;
         private readonly Func<int, Function> _load;
         private readonly bool _polls;
         private readonly HashSet<string> _defined;
@@ -1094,7 +1103,6 @@ public sealed class X86Backend : IBackend
         public DeferredFacts(Module module, Func<int, Function> load, bool polls, HashSet<string> defined)
         {
             for (int k = 0; k < module.Functions.Count; k++) _index.TryAdd(module.Functions[k].Name, k);
-            _module = module;
             _load = load;
             _polls = polls;
             _defined = defined;
@@ -1105,16 +1113,17 @@ public sealed class X86Backend : IBackend
             lock (this)
             {
                 if (_free.TryGetValue(name, out bool known)) return known;
-                Corsac.UnitScope.Run(() => Judge(name)).Wait();
+                // A thread of its own, not the pool's: a task waited on from
+                // a pool thread may be run by that very thread, and the
+                // loader forgets its thread's analyses as it starts.
+                Exception? failed = null;
+                Thread judge = new(() => { try { Judge(name); } catch (Exception e) { failed = e; } }, 16 * 1024 * 1024);
+                judge.Start();
+                judge.Join();
+                if (failed is not null) throw new InvalidOperationException("judging " + name + " for FpuFree: " + failed.Message, failed);
                 return _free[name];
             }
         }
-
-        // (A module that holds its bodies -- a unit whose late passes run at
-        // the link -- was judged whole by them already, FpuFree.Compute:
-        // what is asked here is then a function it found not free, answered
-        // from the same body with nothing loaded.)
-        private Function Body(int at) => _module.Functions[at].Blocks.Count != 0 ? _module.Functions[at] : _load(at);
 
         private void Judge(string asked)
         {
@@ -1128,7 +1137,7 @@ public sealed class X86Backend : IBackend
                 string name = work.Pop();
                 reached.Add(name);
                 if (!_said.TryGetValue(name, out List<string>? callees))
-                    _said[name] = callees = _index.TryGetValue(name, out int at) ? FpuFree.Summarise(Body(at), _polls) : null;
+                    _said[name] = callees = _index.TryGetValue(name, out int at) ? FpuFree.Summarise(_load(at), _polls) : null;
                 if (callees is null) continue;
                 foreach (string callee in callees)
                     if (_defined.Contains(callee) && !_free.ContainsKey(callee) && seen.Add(callee)) work.Push(callee);
@@ -1154,6 +1163,9 @@ public sealed class X86Backend : IBackend
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill, _x87);
+        // Asked by the selection alone: let go, so that a pool's idle thread
+        // holds no module by them.
+        FpuFree.Use(null, null);
         if (errors.Count > before)
         {
             return null;

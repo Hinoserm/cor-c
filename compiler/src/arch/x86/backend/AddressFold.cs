@@ -435,7 +435,7 @@ internal static class AddressFold
         // `mov t, sym` whose t is read nowhere but as the base of plain memory
         // operands after it in this block: each becomes [sym + disp], with its
         // index if it has one -- i386 forms an absolute address for free. A
-        // static read through its address (Sys.Peek(Sys.AddressOf(ref s)),
+        // static read through its address (Sys.ReadAddress(Sys.AddressOf(ref s)),
         // the allocator's class tables read as words at every inlined `new`)
         // was `mov t, sym ; mov t, [t]`: 8,100 of them in a kernel.
         if (absolute)

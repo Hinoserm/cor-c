@@ -5650,7 +5650,7 @@ public static class Monitor
             return;
         }
         // THE WHOLE WORD: an owner is a thread block's address, above 4 GB in
-        // long mode, and PeekWord reads 32 bits of it -- every lock taken on a
+        // long mode, and a 32-bit read took half of it -- every lock taken on a
         // 64-bit thread was "not held" by it on the way out.
         if ((Sys.ReadAddress(word) & ~Asleep) != me)
         {

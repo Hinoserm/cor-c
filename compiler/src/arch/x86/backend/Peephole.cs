@@ -263,7 +263,7 @@ internal static partial class Peephole
                     // compare that read memory does not stand -- the flag a
                     // device sets while its status is read, tested on both
                     // sides of the read.
-                    if (i.Op != MOp.Lea && i.Operands.Any(o => o is MMem { Device: true } or MMem { Segment: not 0 }) && ReadsMemory(last)) last = null;
+                    if (i.Op != MOp.Lea && ReadsMemory(last) && i.Operands.Any(o => o is MMem { Device: true } or MMem { Segment: not 0 })) last = null;
                     else if (i.Operands[0] is MMem) { if (ReadsMemory(last)) last = null; }
                     else if (i.Operands[0] is MReg w && CompareReads(last, w.Id)) last = null;
                     continue;

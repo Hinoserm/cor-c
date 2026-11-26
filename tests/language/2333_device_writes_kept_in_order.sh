@@ -73,7 +73,8 @@ for target in x86 x86-64; do
     if [ "$compares" -ge 2 ]; then pass "$target: Flagged compares the flag in memory on both sides of the read"; else fail "$target: Flagged compares the flag in memory on both sides of the read ($compares)"; echo "$flagged"; fi
     local=$(body "$image" Local) || fail "$target: Local is in the image"
     slotted=$(echo "$local" | grep -cE '^mov DWORD PTR \[[er](sp|bp)[^]]*\],')
-    if [ "$slotted" -ge 2 ] && echo "$local" | grep -qE ',DWORD PTR \[[er](sp|bp)'; then pass "$target: Local writes its slot twice and reads it"; else fail "$target: Local writes its slot twice and reads it ($slotted stores)"; echo "$local"; fi
+    # (Three stores of the slot: the local's own first value, then the two writes.)
+    if [ "$slotted" -ge 3 ] && echo "$local" | grep -qE ',DWORD PTR \[[er](sp|bp)'; then pass "$target: Local writes its slot twice more and reads it"; else fail "$target: Local writes its slot twice more and reads it ($slotted stores)"; echo "$local"; fi
 done
 
 echo

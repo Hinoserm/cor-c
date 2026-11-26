@@ -3,12 +3,12 @@ static class Program
 {
     static int Main()
     {
-        long at = Runtime.Alloc(32);
-        Sys.PokeWord(at, 7);
+        nuint at = Runtime.Alloc(32);
+        Sys.Write32(at, 7);
         Runtime.Free(at);
         // Checked, the payload is the pattern; otherwise it is whatever the
         // allocator left there, never 7 read back as if nothing happened.
-        Sys.Print(Sys.PeekWord(at) == 0xFEEEFEEE ? "poisoned" : "reused");
+        Sys.Print(Sys.Read32(at) == 0xFEEEFEEE ? "poisoned" : "reused");
         Sys.PrintLine();
         Runtime.Free(at);
         Sys.Print("survived");

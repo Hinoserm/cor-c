@@ -194,12 +194,15 @@ public static class UnwrittenStatics
                     {
                         if (i.Operands[k] is not SymOperand s || !zero.TryGetValue(s.Name, out DataItem? d)) continue;
                         mentions = true;
-                        if (k == 0 && i.Op == Opcode.Load && Within(d, s, i))
+                        // (A device's read or write of it, Instr.Device, names it
+                        // like any use that is no plain load or store: what a
+                        // device may write is not known to stay zero.)
+                        if (k == 0 && i.Op == Opcode.Load && !i.Device && Within(d, s, i))
                         {
                             (loads ??= new(StringComparer.Ordinal)).Add(s.Name);
                             continue;
                         }
-                        if (k == 0 && i.Op == Opcode.Store && Within(d, s, i))
+                        if (k == 0 && i.Op == Opcode.Store && !i.Device && Within(d, s, i))
                         {
                             stores |= !IrInfo.IsImm(i.StoredValue, 0);
                             continue;
