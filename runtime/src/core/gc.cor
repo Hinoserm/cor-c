@@ -15688,7 +15688,8 @@ public static class Gc
         if (Sys.ReadAddress(ctl + GcLock.Collector) == tb)
         {
             if (Sys.ReadAddress(tb + Tls.PreemptCount) != 0) return 0;
-            Sys.AtomicSwap32(ctl + GcLock.BarrierLow, 1);
+            // (Its own asking, answered on the spot: nobody to wake.)
+            Sys.AtomicSwap32(ctl + GcLock.BarrierLow, LowStirred);
             KeepBarrierStocked();
             return Sys.Read32(ctl + GcLock.BarrierSpent) == 0 && SegmentsLeft() != 0 ? 1 : 0;
         }
@@ -15703,7 +15704,9 @@ public static class Gc
             // before a report is lost (-1, as a refusal).
             if (Sys.Read32(ctl + GcLock.BarrierSpent) != 0) return -1;
             if (Runtime.Marking != 1) return 0;
-            if (Sys.Cas32(ctl + GcLock.BarrierLow, 0, 1) == 0) GcThreads.Stir();
+            // At every turn of the wait: the pool is low, and this thread
+            // may wake the collector for it (AskForStock).
+            AskForStock(true);
             // The platform's hook gives the processor to what is ready, the
             // collector among them, or says this thread may not; with none
             // (Linux, whose threads are preempted) a yield.
@@ -15729,6 +15732,41 @@ public static class Gc
         return 1;
     }
 
+    /// THE COLLECTOR ASKED FOR MORE SEGMENTS (GcLock.BarrierLow), and woken
+    /// for it once, by a thread that may wake it (`stir`): one that takes a
+    /// segment or waits for one outside any spin lock and any interrupt.
+    /// One that may not -- a wake is no call for a spin lock's holder or an
+    /// interrupt -- leaves the wake OWED (LowOwed), and the first thread
+    /// that may, finding it owed, gives it (LowStirred). The collector's
+    /// wait reads the stirs before it looks at the flag (GcThreads.Round),
+    /// so a stir given after the flag was set is never slept through.
+    ///
+    /// WITH ONE VALUE FOR BOTH, a flag set by a spin lock's holder was taken
+    /// by every later thread for a wake already given: the threads waiting
+    /// for a segment turned on a pool nobody was stocking while the
+    /// collector slept in its round, waiting for one of them to answer --
+    /// a backend of the compiler's own link spun so until its hour of
+    /// processor time was up.
+    static void AskForStock(bool stir)
+    {
+        nuint low = GcLock.Words() + GcLock.BarrierLow;
+        while (true)
+        {
+            int was = (int)Sys.Read32(low);
+            if (was == LowStirred || !stir && was != 0) return;
+            if (Sys.Cas32(low, was, stir ? LowStirred : LowOwed) == was)
+            {
+                if (stir) GcThreads.Stir();
+                return;
+            }
+        }
+    }
+
+    // GcLock.BarrierLow: the pool found low and the collector's wake owed,
+    // and found low and the collector woken. 0, nobody asking.
+    const int LowOwed = 1;
+    const int LowStirred = 2;
+
     /// Whether the thread may wait for a segment: not the collector, whose
     /// wait would be for itself, and not one holding a spin lock or in an
     /// interrupt (Tls.PreemptCount), which the collector may be waiting on.
@@ -15749,11 +15787,12 @@ public static class Gc
     /// reserve, for a thread that may wait: StockReserve). Nothing held: a
     /// compare-and-swap of the index, which only the cycle's start sets back.
     /// Taking one of the last `_segsLow` asks the collector for more, once
-    /// until it has (KeepBarrierStocked): woken (`stir`) by a thread that may
-    /// wait, and otherwise left to find the flag at its next turn -- a wake
-    /// is no call for a spin lock's holder or an interrupt. Its next turn
-    /// may wait for another stir, and the threads that may not wait live on
-    /// the reserve (StockReserve) meanwhile; the first that may, stirs.
+    /// until it has (AskForStock, KeepBarrierStocked): woken (`stir`) by a
+    /// thread that may wait, and otherwise left to find the flag at its next
+    /// turn -- a wake is no call for a spin lock's holder or an interrupt.
+    /// Its next turn may wait for another stir, and the threads that may not
+    /// wait live on the reserve (StockReserve) meanwhile; the first that
+    /// may, stirs.
     static nuint TakeSegment(nuint keep, bool stir)
     {
         nuint ctl = GcLock.Words();
@@ -15769,10 +15808,7 @@ public static class Gc
 
             if (Sys.Cas(ctl + GcLock.BarrierNext, next, next + 1) == next)
             {
-                if (count - next - 1 < _segsLow && Sys.Cas32(ctl + GcLock.BarrierLow, 0, 1) == 0 && stir)
-                {
-                    GcThreads.Stir();
-                }
+                if (count - next - 1 < _segsLow) AskForStock(stir);
                 return Sys.ReadAddress(table + next * WordSize.Bytes);
             }
         }
@@ -18628,7 +18664,9 @@ public static class GcLock
     // (Gc.ReadyFork, GcThreads.HoldForFork): the hold's number while it
     // does, 0 when none.
     public const int ForkHold = 17 * WordSize.Bytes;
-    // A thread found the barrier's pool low, for the collector to map more.
+    // A thread found the barrier's pool low, for the collector to map more:
+    // 1 with the collector's wake still owed, 2 once it is given
+    // (Gc.AskForStock).
     public const int BarrierLow = 18 * WordSize.Bytes;
     // The pool cannot be stocked further this cycle: its budget spent, or
     // the platform out of memory (Gc.StockBarrier).

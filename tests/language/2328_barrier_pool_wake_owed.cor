@@ -1,0 +1,125 @@
+// test: barrier pool wake owed
+// expect-exit: 0
+// expect-output:
+// stored 5600000
+//
+// Fourteen threads store references into old objects as fast as they can --
+// every store reported by the write barrier while a collection takes its
+// snapshot -- and each lap hangs a continuation on a task not yet done, a
+// reference stored inside the task's spin lock.
+//
+// THE COLLECTOR'S WAKE FOR MORE BARRIER SEGMENTS WAS LOST HERE. A thread that
+// takes one of the pool's last segments asks the collector for more and wakes
+// it; one inside a spin lock may not wake anybody and only left the flag, and
+// every later thread took the flag for a wake already given. The threads
+// waiting for a segment then turned on an empty pool while the collector
+// slept in its round, waiting for one of them to answer: a hang, all of it
+// in sched_yield. With more threads than processors -- a thread slow to
+// answer the round is what gives the pool time to run dry -- this program
+// hung in four runs of six on two processors; the compiler's own link, a
+// backend with sixteen workers, hung the same way.
+//
+// The wake is owed now, and given by the first thread that may (Gc.AskForStock).
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+class Cell
+{
+    public Cell? Next;
+    public int Value;
+}
+
+class Poke
+{
+    public static void After(Task t) { }
+}
+
+class Writer : Action
+{
+    public long Stored;
+    int _seed;
+    int _laps;
+
+    public Writer(int seed, int laps)
+    {
+        _seed = seed;
+        _laps = laps;
+    }
+
+    public void Invoke()
+    {
+        TaskCompletionSource gate = new TaskCompletionSource();
+        Action<Task> after = Poke.After;
+        for (int lap = 0; lap < _laps; lap++)
+        {
+            int k = (_seed * 7919 + lap * 31) & Program.Mask;
+            Cell c = new Cell();
+            c.Value = lap;
+            // A store into an old object: the barrier reports it while a
+            // cycle's snapshot is being taken.
+            c.Next = Program.Old[(k + 1) & Program.Mask];
+            Program.Old[k].Next = c;
+            Stored = Stored + 1;
+            // A continuation hung on a task not yet done: stored in the
+            // task under its spin lock.
+            gate.Task.ContinueWith(after, TaskContinuationOptions.ExecuteSynchronously);
+            if ((lap & 63) == 63)
+            {
+                gate.SetResult();
+                gate = new TaskCompletionSource();
+            }
+            if ((lap & 1023) == 0)
+            {
+                lock (Program.Gate)
+                {
+                    Program.Shared = c;
+                }
+            }
+        }
+        gate.SetResult();
+    }
+}
+
+static class Program
+{
+    public const int Mask = 65535;
+    public static Cell[] Old = new Cell[Mask + 1];
+    public static object Gate = new object();
+    public static Cell? Shared;
+
+    static int Main()
+    {
+        Gc.SetLimit(96 * 1024 * 1024);
+        for (int i = 0; i <= Mask; i++) Old[i] = new Cell();
+        int workers = 14;
+        Writer[] bodies = new Writer[workers];
+        Thread[] threads = new Thread[workers];
+        for (int i = 0; i < workers; i++)
+        {
+            bodies[i] = new Writer(i + 1, 400000);
+            threads[i] = Threads.Go(bodies[i]);
+        }
+        long stored = 0;
+        for (int i = 0; i < workers; i++)
+        {
+            threads[i].Join();
+            stored = stored + bodies[i].Stored;
+        }
+        Sys.Print("stored ");
+        Sys.PrintInt(stored);
+        Sys.PrintLine();
+        return 0;
+    }
+}
+
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
+    }
+}
