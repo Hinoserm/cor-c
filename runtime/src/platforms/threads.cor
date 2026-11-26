@@ -3097,9 +3097,15 @@ public static partial class Runtime
     }
 
     /// The span under which a scan stays scalar: leaving the MMX registers
-    /// (EMMS) costs what a few dozen units compared one at a time do. (Long
-    /// mode has no EMMS to pay for and may do with less; it keeps i386's
-    /// span until that is measured.)
+    /// (EMMS) costs what a few dozen units compared one at a time do.
+    /// LONG MODE has no EMMS to pay for, and was measured on 11-26 (a search
+    /// with no match, two million scans a span, best of five, one idle core
+    /// of a Ryzen 9 9950X): SSE2's scan took 116% of the scalar one's time
+    /// at 12 units, 100% at 18, 65% at 24, 53% at 32 -- worth it from about
+    /// 18 there. The K8, which long mode is tuned for, runs each 128-bit
+    /// SSE2 operation as two 64-bit halves, so its crossing is later, and
+    /// one runtime image runs on both: the span stays 32 until a K8 is
+    /// measured, which may take it down to 24.
     const int PackedUnits = 32;
 
     /// The MMX registers given back to the x87: FEMMS where 3DNow! has it --
