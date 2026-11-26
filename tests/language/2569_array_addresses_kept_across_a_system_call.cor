@@ -14,8 +14,10 @@
 // (Schedule). VmRead is kept out of line, as in the program it came from
 // (linuxcheck), where its body was the stretch. process_vm_readv of pid
 // 0x7fffffff is ESRCH; the reads and writes on fd -1 fail, as they may.
-// The addresses are words (an iovec is two), the calls' numbers each mode's
-// own, so long mode runs the same stretch.
+// The addresses are words (an iovec is two) and the calls' numbers each
+// mode's own, so long mode runs it too: with registers to spare there, it
+// checks the six arguments' registers (R10 the fourth, R9 the sixth), not
+// the shortage this was written for.
 using System;
 using System.Runtime.CompilerServices;
 
@@ -47,7 +49,7 @@ static class Program
         vecs[2] = wordAt;
         vecs[3] = 4;
         nint local = (nint)Sys.ArrayData(vecs);
-        long got = VmCall(pid, local, local + 2 * sizeof(nint));
+        long got = VmCall(pid, local, local + 2 * IntPtr.Size);
         Call(Write, doneFd, (long)Sys.ArrayData(go), 1);
         return got == 4 ? mine[0] : (int)got;
     }

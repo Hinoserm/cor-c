@@ -410,8 +410,10 @@ public sealed class X86Backend : IBackend
         // whose late passes run at the link) was judged whole just above,
         // and its functions are being rewritten by the workers from here on
         // -- nothing reads them again for this. That verdict stands through
-        // the rewriting: a body the late passes bring in is a callee's, and
-        // a function is free only where every callee of it was.
+        // the rewriting: the late passes (the escape and region rules,
+        // inlining, the allocator's fast paths) bring in callees' bodies
+        // and fold and move what is there, and a function is free only
+        // where every callee of it was; none makes x87 or MMX code of its own.
         _fpuDeferred = FunctionLoader is null || module.Functions.Any(f => f.Blocks.Count != 0)
             ? null : new DeferredFacts(module, FunctionLoader, SafepointPolls, _fpuDefined);
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
@@ -1162,7 +1164,6 @@ public sealed class X86Backend : IBackend
     /// <summary>Select and allocate one function; null, with errors reported, if it cannot be compiled.</summary>
     private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
-        FpuFree.Use(_fpuFree, _fpuDefined, _fpuDeferred is { } deferred ? deferred.Free : null);
         int before = errors.Count;
         if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
         // The frees before a trap, one copy for every trap that has them (SharedTrapFrees).
@@ -1170,6 +1171,7 @@ public sealed class X86Backend : IBackend
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m;
+        FpuFree.Use(_fpuFree, _fpuDefined, _fpuDeferred is { } deferred ? deferred.Free : null);
         try
         {
             m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill, _x87);

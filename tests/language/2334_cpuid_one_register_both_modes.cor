@@ -10,8 +10,8 @@
 // Sys.CpuidEax and Sys.CpuidEdx ask a leaf (subleaf 0) and answer one
 // register straight out of the instruction, nothing stored: what a runtime
 // asks with before it has anywhere to put four. Each against the same
-// leaf's Sys.Cpuid, which stores all four. Long mode had no form of them
-// ("the machine intrinsic __x86.i.cpuideax has no x86-64 form"). CPUID
+// leaf's Sys.Cpuid, which stores all four. Long mode refused them
+// ("Sys.CpuidEax is i386's; long mode asks Sys.Cpuid"). CPUID
 // writes EBX too, a register both modes' callers keep: the values around
 // each call must come back, so Kept holds four across one. A read nobody
 // uses still compiles (the instruction made, nothing moved out of it).

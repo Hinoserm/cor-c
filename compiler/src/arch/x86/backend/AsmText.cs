@@ -377,7 +377,7 @@ internal static class AsmText
                 yield return $"mov fs:[0], {Op(i.Operands[0], 4, false)}";
                 yield break;
             case MOp.SetGs:
-                yield return $"mov gs, {Op(i.Operands[0], 2, false)}";
+                yield return $"mov gs, {Op(i.Operands[0], X86Mode.Long ? 4 : 2, false)}";
                 yield break;
             case MOp.Rdmsr: yield return "rdmsr"; yield break;
             case MOp.Wrmsr: yield return "wrmsr"; yield break;
@@ -530,6 +530,13 @@ internal static class AsmText
                 yield return "call .+5";
                 yield return "add dword [esp], 5";
                 yield return "retf";
+                yield break;
+            case MOp.GetGs when X86Mode.Long:
+                // Long mode's is one move: the upper half comes out nought.
+                yield return $"mov {Op(i.Operands[0], 4, false)}, gs";
+                yield break;
+            case MOp.ReadCs when X86Mode.Long:
+                yield return $"mov {Op(i.Operands[0], 4, false)}, cs";
                 yield break;
             case MOp.GetGs:
                 yield return $"xor {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
