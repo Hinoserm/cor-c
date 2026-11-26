@@ -29,6 +29,16 @@
 #   // expect-readelf-<target>: text
 #                                readelf -hl of the image shows this text
 #   // run: no                   compile and read, do not run
+#   // boot: qemu                booted on a machine, not run as a process:
+#                                compiled without host.cor (the image has
+#                                no Linux under it), linked as its flags say
+#                                (--flat, with its startup's multiboot
+#                                header), and given to QEMU -- qemu-system-
+#                                x86_64 or -i386 -kernel, 128 MiB, the first
+#                                serial port on standard output, which is
+#                                the output compared, and isa-debug-exit at
+#                                0xf4, which makes expect-exit N the
+#                                machine's status (N << 1) | 1
 #   // expect-compile-error: text
 #                                the compile refuses the program, saying
 #                                text; with apart: yes, its object compiles
@@ -212,6 +222,8 @@ for source in "$here"/[0-9]*.cor; do
     for extra in $(header "$source" sources); do sources="$sources $root/$extra"; done
     run="$(header "$source" run)"
     want_exit="$(header "$source" expect-exit)"; want_exit="${want_exit:-0}"
+    boot="$(header "$source" boot)"
+    host="$here/host.cor"; [ "$boot" = qemu ] && host=""
     awk '/^\/\/ expect-output:/{on=1;next} on&&/^\/\/ [a-z0-9-]+:/{exit} on&&/^\/\/ /{print substr($0,4);next} on{exit}' "$source" > "$work/$name.want"
 
     only="$(header "$source" targets)"
@@ -242,14 +254,14 @@ for source in "$here"/[0-9]*.cor; do
         if [ -n "$want_error" ]; then
             wrong=""
             # shellcheck disable=SC2086
-            if "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
+            if "$corc" compile --target "$target" --freestanding $flags $with $sources $host "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
                 wrong="compiled; expected the error: $want_error"
             elif ! grep -qF -- "$want_error" "$work/$name.$target.log"; then
                 wrong="refused, but not with: $want_error"
             elif [ "$(header "$source" apart)" = yes ]; then
                 object="$work/$name.$target.apart.o"
                 # shellcheck disable=SC2086
-                if ! "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
+                if ! "$corc" compile --target "$target" --freestanding $flags $with $sources $host "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
                     wrong="did not compile to an object"
                 elif "$corc" link --closed "$object" -o "$exe.apart" >> "$work/$name.$target.apart.log" 2>&1; then
                     wrong="its object linked; expected the error: $want_error"
@@ -265,7 +277,7 @@ for source in "$here"/[0-9]*.cor; do
             continue
         fi
         # shellcheck disable=SC2086
-        if ! "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
+        if ! "$corc" compile --target "$target" --freestanding $flags $with $sources $host "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
             sed 's/^/    /' "$work/$name.$target.log" | head -n 20
             failed=$((failed + 1)); failed_names="$failed_names $label"; echo "FAIL $label (did not compile)"; continue
         fi
@@ -340,7 +352,17 @@ for source in "$here"/[0-9]*.cor; do
             wrong="readelf does not show '$readelf_want'"
         fi
 
-        if [ -z "$wrong" ] && [ "$run" != no ]; then
+        if [ -z "$wrong" ] && [ "$boot" = qemu ]; then
+            machine=qemu-system-x86_64; [ "$target" = x86 ] && machine=qemu-system-i386
+            timeout 60 "$machine" -kernel "$exe" -m 128 -display none -serial stdio -monitor none \
+                -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot < /dev/null > "$work/$name.$target.out" 2> "$work/$name.$target.qemu.log"
+            status=$?
+            if [ "$status" != $(( (want_exit << 1) | 1 )) ]; then
+                wrong="machine status $status, not $(( (want_exit << 1) | 1 )) (exit $want_exit): $(head -c 200 "$work/$name.$target.qemu.log" | tr '\n' ' ')"
+            elif ! cmp -s "$work/$name.$target.out" "$work/$name.want"; then
+                wrong="output differs: $(diff "$work/$name.want" "$work/$name.$target.out" | head -n 4 | tr '\n' ' ')"
+            fi
+        elif [ -z "$wrong" ] && [ "$run" != no ]; then
             timeout 20 "$exe" > "$work/$name.$target.out" 2>&1
             status=$?
             if [ "$status" != "$want_exit" ]; then
@@ -359,7 +381,7 @@ for source in "$here"/[0-9]*.cor; do
         if [ -z "$wrong" ] && [ "$(header "$source" apart)" = yes ]; then
             object="$work/$name.$target.apart.o"
             # shellcheck disable=SC2086
-            if ! "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
+            if ! "$corc" compile --target "$target" --freestanding $flags $with $sources $host "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
                 wrong="did not compile to an object"
             elif ! "$corc" link --closed "$object" -o "$exe.apart" >> "$work/$name.$target.apart.log" 2>&1; then
                 wrong="its object did not link: $(grep -m 2 -i 'error\|undefined' "$work/$name.$target.apart.log" | tr '\n' ' ')"

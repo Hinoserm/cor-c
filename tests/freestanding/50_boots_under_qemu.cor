@@ -1,0 +1,83 @@
+// test: an image booted on a machine by QEMU: multiboot's loader, long mode or protected mode, a heap, the collector, a console, an exit
+// boot: qemu
+// with-asm: 50_boots_under_qemu
+// flags-x86-64: --base 0xffffffff80100000 --asm-entry corc_start --entry _start --flat
+// flags-x86: --base 0x100000 --asm-entry corc_start --entry _start --flat
+// expect-exit: 21
+// expect-output:
+// booted
+// list 200000 sum 19999900000
+// collected 0
+// kept 9999900000
+//
+// THE BARE-METAL RUNTIME ON A MACHINE, NOT AS A PROCESS: QEMU's multiboot
+// loader puts the flat image at 1 MiB and enters its startup
+// (50_boots_under_qemu.*.asm), which in long mode switches from the loader's
+// protected mode and maps the first GiB at the higher half. The program then
+// does what a kernel's first steps do: says where its heap is (Platform.
+// SetHeap: 16 MiB to 64 MiB of the machine), prints through a console of its
+// own on the first serial port (Platform.Console; QEMU's -serial stdio is
+// what the runner reads), allocates two hundred thousand objects, lets the
+// collector take half of them, and ends through QEMU's isa-debug-exit port
+// (Platform.Exit): the machine's status is (21 << 1) | 1. Nothing of the
+// Linux test host (host.cor) is in it.
+
+using System.Collections.Generic;
+
+sealed class Serial : IConsole
+{
+    // COM1: the transmitter's holding register empty (line status bit 5) before each byte.
+    public void Write(nuint address, nuint count)
+    {
+        for (nuint i = 0; i < count; i++)
+        {
+            while ((Sys.PortIn8(0x3FD) & 0x20) == 0) { }
+            Sys.PortOut8(0x3F8, Sys.Read8(address + i));
+        }
+    }
+}
+
+sealed class Box
+{
+    public long Value;
+    public Box(long value) { Value = value; }
+}
+
+static class Program
+{
+    static void Line(string text)
+    {
+        byte[] bytes = new byte[text.Length + 1];
+        for (int i = 0; i < text.Length; i++) bytes[i] = (byte)text[i];
+        bytes[text.Length] = (byte)'\n';
+        Platform.WriteBytes(1, Sys.ArrayData(bytes), (nuint)bytes.Length);
+    }
+
+    static int Main()
+    {
+#if TARGET_64BIT
+        Platform.SetHeap((nuint)0xffffffff81000000UL, (nuint)0xffffffff84000000UL);
+#else
+        Platform.SetHeap(0x01000000, 0x04000000);
+#endif
+        Platform.Console = new Serial();
+        Line("booted");
+
+        List<Box> boxes = new List<Box>();
+        for (int i = 0; i < 200000; i++) boxes.Add(new Box(i));
+        long sum = 0;
+        foreach (Box b in boxes) sum += b.Value;
+        Line("list " + boxes.Count + " sum " + sum);
+
+        // Half of them let go, and the collector run: what is kept is whole.
+        List<Box> kept = new List<Box>();
+        for (int i = 0; i < boxes.Count; i += 2) kept.Add(boxes[i]);
+        boxes = new List<Box>();
+        System.GC.Collect();
+        Line("collected " + boxes.Count);
+        long left = 0;
+        foreach (Box b in kept) left += b.Value;
+        Line("kept " + left);
+        return 21;
+    }
+}
