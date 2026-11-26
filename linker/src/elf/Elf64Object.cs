@@ -50,7 +50,11 @@ internal static class Elf64Object
     /// slot (FF /2, FF /4: a module's call to its kernel's store sequence,
     /// Selector.SequenceStub) is R_X86_64_GOTPCRELX. A 64-bit load (REX.W 8B,
     /// `mov r64, [rip + sym@GOTPCREL]`, the form the selector writes and the
-    /// one Dynamic.RelaxableGotLoad relaxes) is R_X86_64_REX_GOTPCRELX. Anything
+    /// one Dynamic.RelaxableGotLoad relaxes) is R_X86_64_REX_GOTPCRELX: the
+    /// byte before the opcode taken for its REX, as that check takes it, so a
+    /// REX-less 32-bit load after an instruction ending in 48-4F would be
+    /// typed so too -- harmless (a 32-bit load relaxed is a lea as well), and
+    /// one the selector does not write. Anything
     /// else is plain R_X86_64_GOTPCREL, which no linker rewrites. The ModRM
     /// is RIP-relative in each (mod 00, r/m 101) and the field ends the
     /// instruction (TypeOf's GotPcRel is the load's, the form the backend

@@ -771,15 +771,19 @@ every method keeps one. It costs a few stores per `try` and nothing per
 call, which is the right trade for a 486.
 
 **The thread block.** Everything the runtime keeps per thread is one
-64-byte block (`Tls` in `runtime/src/core/runtime.cor`, mirrored by constants in the
-lowering), reached by `Sys.ThreadBlock()`: on Linux `mov r, gs:[0]` with
+block of 59 word slots, 236 bytes on i386 and 472 in long mode (`Tls` in
+`runtime/src/core/runtime.cor`, which names every slot, mirrored by
+constants in the lowering, whose main-thread block takes its size from
+`Tls.Bytes`), reached by `Sys.ThreadBlock()`: on Linux `mov r, gs:[0]` with
 GS set through `set_thread_area` at thread start; freestanding, a static
 the entry stub fills, so bare metal needs no GS until the kernel wants
-one. Offsets: 0 self, 4 the handler chain head, 8 the stack's top (what
-the collector scans to), 12 the stack pointer where the thread stopped,
-16/20 the allocation buffer's pointer and limit, 24 the thread id, 28 a
-running/stopped state, 32/36 the buffer's base and saved limit, 40-63
-scratch. The main thread's block is `__corsac_tls0` in `.bss`; a started
+one. The first slots, as i386 offsets: 0 self, 4 the handler chain head,
+8 the stack's top (what the collector scans to), 12 the stack pointer
+where the thread stopped, 16/20 the allocation buffer's pointer and limit,
+24 the thread id, 28 a running/stopped state, 32/36 the buffer's base and
+saved limit, 40 on scratch; the rest -- type initialisation, the
+collector's, the kernel's four raw words -- are in `Tls`. The main
+thread's block is `__corsac_tls0` in `.bss`; a started
 thread's is the bottom page of its own stack. There are no other
 per-thread statics, which is what lets a second thread throw, catch and
 allocate.

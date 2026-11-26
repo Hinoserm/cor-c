@@ -13982,8 +13982,9 @@ public class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, IColle
 ///     of them.
 ///   - A reference-type element refused is InvalidCastException, with what
 ///     was copied before it left in place, as .NET's cast of each element
-///     leaves it. A boxed primitive into a primitive array of another type
-///     is one, widening or not, since .NET's unboxing never widens.
+///     leaves it. Into an array of a value type the element is unboxed as
+///     .NET unboxes it: exactly that type (or its Nullable), never widened
+///     or turned from an enum, and null only into a Nullable's array.
 /// The names are each collection's own, as .NET's differ: Stack<T> calls the
 /// place arrayIndex and names the array in the mismatch, Queue<T> calls it
 /// index and names nothing there. Where .NET decides from the two element
@@ -14004,16 +14005,25 @@ static class CollectionCopy {
             catch (InvalidCastException) { throw Mismatch(arrayName); }
             return;
         }
-        // A REFERENCE-TYPE ELEMENT IS CAST, AND UNBOXING NEVER WIDENS: a boxed
-        // int into a long[] is .NET's InvalidCastException, where SetValue
-        // would widen it. An element of another type read back is that
-        // widening: the old one goes back, as .NET never wrote the new.
+        // A REFERENCE-TYPE ELEMENT IS CAST. Into an array of references
+        // (any of them is an object[]) SetValue's own cast is .NET's.
+        if (array is object[]) {
+            array.SetValue(value, at);
+            return;
+        }
+        // Into an array of a value type it is unboxed, and .NET's unboxing
+        // takes exactly the element's type (or its Nullable): no widening, no
+        // enum to integer, and null only into a Nullable's array. SetValue
+        // widens and makes null the default, so what is read back says it.
+        // A null that reads back as a value, or a value read back as another
+        // type, is refused: the old element goes back, as .NET never wrote
+        // the new, and the cast is InvalidCastException.
         object? old = array.GetValue(at);
         try { array.SetValue(value, at); }
         catch (ArgumentException) { throw NotCast(); }
-        if (value == null) { return; }
         object? held = array.GetValue(at);
-        if (held != null && held.GetType() != value.GetType() && !ReferenceEquals(held, value)) {
+        bool same = value == null ? held == null : held != null && held.GetType() == value.GetType();
+        if (!same) {
             array.SetValue(old, at);
             throw NotCast();
         }

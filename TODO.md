@@ -393,7 +393,8 @@ tasks below track that work; moving files alone does not reduce the working set.
   and so does the non-generic `ICollection.CopyTo` of Queue<T> and Stack<T>
   (`CollectionCopy` in Core.cor), which makes the mismatch an
   ArgumentException. Here each element goes through SetValue, so these
-  differ (each checked against .NET 10):
+  differ (each checked against .NET 10; the first three for a collection
+  of a value type, a Queue<int>, the last for one of a reference type):
   - same-size integers reinterpreted (`int` into `uint[]`, `long` into
     `ulong[]`, `char` into `ushort[]`): copied by .NET, refused here;
   - an enum and its underlying type, either way (`DayOfWeek` into `int[]`,
@@ -405,10 +406,12 @@ tasks below track that work; moving files alone does not reduce the working set.
     refused by .NET before the first copy, an InvalidCastException at the
     first element here.
   What matches already: a value type that cannot be held at all, an
-  interface or `object` target, a cast refused partway (kept as copied), and
-  a boxed value in a reference-type collection put into a primitive array
-  of another type (refused, as .NET's unboxing never widens). Needed: the element type of an array's
-  descriptor, .NET's assignability relation, and Array.Copy and
+  interface or `object` target, a cast refused partway (kept as copied),
+  and a reference-type collection's elements into an array of a value type,
+  unboxed as .NET unboxes them: exactly the element type or its Nullable,
+  never widened or turned from an enum, null only into a Nullable's array
+  (each checked against .NET 10, test 2745). Needed: the element type of an
+  array's descriptor, .NET's assignability relation, and Array.Copy and
   CollectionCopy deciding from it before the first element.
 - [x] Anonymous methods (C# 12.19): `delegate (int x) { ... }` is a block
   lambda with its types written; `delegate { ... }` converts to a delegate of

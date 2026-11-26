@@ -28,6 +28,12 @@
 // after: _,_
 // queue boxed long into int[]: InvalidCastException
 // stack boxed int into long[]: InvalidCastException
+// queue 1 and null into int[]: InvalidCastException
+// after: 1,8
+// queue 1 and null into int?[]: copied
+// after: 1,_
+// queue boxed enum into int[]: InvalidCastException
+// queue boxed char into ushort[]: InvalidCastException
 // 4 3 2 True
 //
 // Expected output from .NET 10. Queue and Stack name the index differently
@@ -95,6 +101,17 @@ static class Program {
         Try("queue boxed long into int[]", () => ((ICollection)boxedLong).CopyTo(new int[1], 0));
         Stack<object> boxedInt = new Stack<object>(); boxedInt.Push(5);
         Try("stack boxed int into long[]", () => ((ICollection)boxedInt).CopyTo(new long[1], 0));
+        Queue<object?> unboxed = new Queue<object?>(); unboxed.Enqueue(1); unboxed.Enqueue(null);
+        int[] sevens = new int[] { 7, 8 };
+        Try("queue 1 and null into int[]", () => ((ICollection)unboxed).CopyTo(sevens, 0));
+        Console.WriteLine("after: " + sevens[0] + "," + sevens[1]);
+        int?[] maybes = new int?[] { 7, 8 };
+        Try("queue 1 and null into int?[]", () => ((ICollection)unboxed).CopyTo(maybes, 0));
+        Console.WriteLine("after: " + maybes[0] + "," + (maybes[1] == null ? "_" : maybes[1].ToString()));
+        Queue<object> day = new Queue<object>(); day.Enqueue(DayOfWeek.Monday);
+        Try("queue boxed enum into int[]", () => ((ICollection)day).CopyTo(new int[1], 0));
+        Queue<object> letter = new Queue<object>(); letter.Enqueue('a');
+        Try("queue boxed char into ushort[]", () => ((ICollection)letter).CopyTo(new ushort[1], 0));
         IEnumerable<int> asQueue = q;
         IEnumerable<string> asStack = s;
         Console.WriteLine(asQueue.Count() + " " + asStack.Count() + " " + asQueue.Count(x => x > 4) + " " + asStack.Contains("b"));
