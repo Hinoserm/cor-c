@@ -522,10 +522,10 @@ public sealed class X86Backend : IBackend
             if (entryFrame is { } stackEntryFrame) frames.Add(stackEntryFrame);
 
             if (StackMaps)
-                maps.Function(bodyName, start, m.Frame.Size, FamilyObject.SavedMask(m), m.FramePointerFree, encoder.CallSites, m.Safepoints,
+                maps.Function<MInstr>(bodyName, start, m.Frame.Size, FamilyObject.SavedMask(m), m.FramePointerFree, encoder.CallSites, m.Safepoints,
                     m.Frame.SlotRanges(), m.SlotLiveness);
 
-            Corsac.Lang.Backends.ObjectData.JumpTables(obj, PositionIndependent ? relocatedConstants : rodata, defined, bodyName,
+            Corsac.Lang.Backends.ObjectData.JumpTables<MBlock>(obj, PositionIndependent ? relocatedConstants : rodata, defined, bodyName,
                 encoder.Tables, block => block.Offset, 4, RelocKind.Abs32);
             encoder.ReleaseFunction();
             if (ReleaseBodies) Corsac.Lang.Backends.ObjectData.Release(f);

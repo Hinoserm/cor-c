@@ -1065,7 +1065,9 @@ internal sealed partial class Selector
     /// starts inside (0 outside every one): after a save (PackedSaveX87,
     /// PackedSaveFxsr) and before its give-back, on every path there -- a
     /// block some path reaches outside is outside, and a handler's landing,
-    /// which no edge reaches, is too, so only its give-back runs there. The
+    /// which no edge reaches, takes the state where its label is taken (a
+    /// catch or a finally's copy inside a block is inside it; PackedDirty
+    /// counts on that for a pad outside every block). The
     /// saves and give-backs are calls, which no packed group spans, so the
     /// blocks the optimiser splits or joins keep their places.
     /// </summary>

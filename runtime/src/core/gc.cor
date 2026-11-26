@@ -5646,12 +5646,23 @@ public static class Gc
 
     /// A chunk given back, with every walk that might be about to step onto
     /// it moved past first. The heap lock is held and nothing is marking.
-    static void ReleaseChunk(nuint chunk)
+    ///
+    /// EVERY RELEASE COMES THROUGH HERE -- a free of a dedicated chunk
+    /// (`guard`, `spare`: HeapChunks.Release's) and the sweep's own -- so no
+    /// walk is left naming a chunk that is gone, whoever gives it back. (A
+    /// free waits out a sweep today: Free and ReleaseQuarantined do nothing
+    /// while one runs. The walks are moved past all the same: a chunk the
+    /// sweep that runs beside the program (SweepWhileTheyRun, the heap lock a
+    /// chunk at a time) was to visit next, given back between its steps,
+    /// could be mapped again as a new dedicated chunk, its block not yet
+    /// marked, which the sweep's next step would find dead and give back
+    /// under the thread just handed it.)
+    static void ReleaseChunk(nuint chunk, bool guard = false, bool spare = false)
     {
         if (_sweepAt == chunk) _sweepAt = HeapChunks.Next(chunk);
         if (_recycleNext == chunk) _recycleNext = HeapChunks.Next(chunk);
         if (_recycle == chunk) _recycle = 0;
-        HeapChunks.Release(chunk);
+        HeapChunks.Release(chunk, guard, spare);
     }
 
     /// Every pooled page given back, for a caller outside the collector (the
@@ -9602,10 +9613,8 @@ public static class Gc
                 Runtime.WriteLiteral(2, "gc:   freed by:\n");
                 Runtime.SayTrace(2, Sys.FramePointer());
             }
-            // Not a chunk the recycling walk may still step onto.
-            if (whole == _recycleNext) _recycleNext = HeapChunks.Next(whole);
-            if (whole == _recycle) _recycle = 0;
-            HeapChunks.Release(whole, GuardReleases, true);
+            // Not a chunk the sweep or the recycling walk may still step onto (ReleaseChunk).
+            ReleaseChunk(whole, GuardReleases, true);
             GcLock.Exit();
             return;
         }
@@ -10109,9 +10118,7 @@ public static class Gc
         }
         if (owning != 0 && !IsCurrentChunk(owning) && block == HeapChunks.First(owning) && block + size == HeapChunks.Limit(owning))
         {
-            if (owning == _recycleNext) _recycleNext = HeapChunks.Next(owning);
-            if (owning == _recycle) _recycle = 0;
-            HeapChunks.Release(owning, GuardReleases, true);
+            ReleaseChunk(owning, GuardReleases, true);
             return;
         }
         if (GcThreads.BufferHolding(block) != 0 && GcThreads.Others())
@@ -15709,8 +15716,10 @@ public static class Gc
             // it sets Collector before Marking and clears it after (a cycle
             // just ended answered 0 above) -- but Marking set by hand is (a
             // test's, freestanding 09). No more is coming (-1): the reserve,
-            // and past it a report counted lost.
-            if (Sys.ReadAddress(ctl + GcLock.Collector) == 0) return -1;
+            // and past it a report counted lost. (Marking asked again: the
+            // two are separate reads, and a cycle that ended between them is
+            // the 0 above.)
+            if (Sys.ReadAddress(ctl + GcLock.Collector) == 0) return Runtime.Marking == 1 ? -1 : 0;
             // At every turn of the wait: the pool is low, and this thread
             // may wake the collector for it (AskForStock).
             AskForStock(true);
@@ -16630,7 +16639,8 @@ public static class Gc
                 // collector's: walked for the count only when it is asked for.
                 if (CountingCollected) CollectedBytes = CollectedBytes + UnfreedBytes(chunk);
                 if (AllocSamples.Tracking) CollectedIn(chunk);
-                HeapChunks.Release(chunk);
+                // (_sweepAt is past it already; the recycling walk may not be.)
+                ReleaseChunk(chunk);
                 return after != 0;
             }
 

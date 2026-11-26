@@ -64,9 +64,9 @@ fill:
     rdmsr
     or eax, 0x100
     wrmsr
-    ; CR0: paging and protection, the FPU present (EM clear, MP set).
+    ; CR0: paging and protection, the FPU present (EM and TS clear, MP set).
     mov eax, cr0
-    and eax, 0xfffffffb
+    and eax, 0xfffffff3
     or eax, 0x80000003
     mov cr0, eax
     lgdt [gdtr - KERNEL]

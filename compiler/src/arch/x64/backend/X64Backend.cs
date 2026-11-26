@@ -245,12 +245,12 @@ public sealed class X64Backend : IBackend
                 new List<(int, int)>(encoder.Lines)));
 
             if (StackMaps)
-                maps.Function(f.Name, start, m.Frame.Size, FamilyObject.SavedMask(m), m.FramePointerFree, encoder.CallSites, m.Safepoints,
+                maps.Function<MInstr>(f.Name, start, m.Frame.Size, FamilyObject.SavedMask(m), m.FramePointerFree, encoder.CallSites, m.Safepoints,
                     m.Frame.SlotRanges(), m.SlotLiveness);
 
             // Jump tables: eight-byte absolute addresses of the blocks, which
             // the loader relocates in a shared object.
-            Corsac.Lang.Backends.ObjectData.JumpTables(obj, PositionIndependent ? relocatedConstants : rodata, defined, f.Name,
+            Corsac.Lang.Backends.ObjectData.JumpTables<MBlock>(obj, PositionIndependent ? relocatedConstants : rodata, defined, f.Name,
                 encoder.Tables, block => block.Offset, 8, RelocKind.Abs64);
             encoder.ReleaseFunction();
             // (Only where nothing reads a body after Generate: Driver sets
