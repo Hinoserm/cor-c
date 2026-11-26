@@ -21,7 +21,7 @@ using System.Collections.ObjectModel;
 // storage order; a caller who writes `foreach` over a stack expects to see
 // what Pop would hand back, in that sequence.
 
-public class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
+public class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T>, ICollection {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -101,6 +101,18 @@ public class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         for (int i = 0; i < count; i++) { items[i] = default(T)!; }
         count = 0;
         version = version + 1;
+    }
+
+    // THE NON-GENERIC ICollection, as .NET's Stack<T> is one: top first, as
+    // the enumeration and ToArray, into any array that can hold the elements
+    // -- copied bottom first and turned over, as .NET's (CollectionCopy, Core.cor).
+    bool ICollection.IsSynchronized => false;
+    object ICollection.SyncRoot => this;
+    void ICollection.CopyTo(Array array, int index) {
+        CollectionCopy.Check(array, index, count, "arrayIndex");
+        bool valueType = typeof(T).IsValueType;
+        for (int i = 0; i < count; i++) { CollectionCopy.Put(array, index + i, items[i], "array", valueType); }
+        CollectionCopy.Reverse(array, index, count);
     }
 
     /// The element `depth` places below the top. Not a .NET member.

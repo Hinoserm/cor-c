@@ -403,6 +403,20 @@ tasks below track that work; moving files alone does not reduce the working set.
   - generic bodies bound against the template's parameters.
   Until then such a copy only named in a body is declared while binding, so the
   refusal stays a message (Binder.MayCollide).
+- [ ] An array's element type at run time: `Type.GetElementType` and
+  `Type.IsAssignableFrom` do not exist. .NET's Array.Copy and the
+  non-generic `ICollection.CopyTo` refuse a copy between unrelated element
+  types before any element is copied, an ArrayTypeMismatchException (a
+  collection's ArgumentException). Two examples are a `string` into an
+  `int[]` and a `string` into a `Uri[]`. A cast that may succeed (a
+  downcast, an interface, `object`) is tried element by element instead, an
+  InvalidCastException at the one refused. Here every refusal is found at the
+  element. Value types are exact (Queue<T> and Stack<T>, `CollectionCopy` in
+  Core.cor), since each element is exactly T. A reference type T refused at
+  the first element is the cast's InvalidCastException, where .NET would
+  have refused the types. Needed: the element type of an array's descriptor,
+  the assignability relation .NET's CanAssignArrayType uses, and
+  Array.Copy and CollectionCopy deciding from it before the first element.
 - [x] `dynamic` and `object` as type arguments are one type (C# 10.2.2's
   identity conversion): Keeper<dynamic> is Keeper<object>, one copy with one
   set of statics, and a member typed T read through a `dynamic` use is

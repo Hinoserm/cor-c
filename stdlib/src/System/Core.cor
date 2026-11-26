@@ -13970,9 +13970,67 @@ public class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, IColle
 // specialising a generic discovers more generics to specialise, which is
 // exactly the shape a queue is for.
 
-public class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
+/// ICollection.CopyTo(Array, int) of the generic collections that are the
+/// non-generic ICollection as well (Queue<T>, Stack<T>), as .NET's Array.Copy
+/// under them: its refusals in its order -- no array, more than one rank, a
+/// place before or past the array, too little room -- then the elements one
+/// at a time. An element type the array's cannot hold at all is the
+/// collection's ArgumentException, as .NET turns its ArrayTypeMismatchException
+/// into one: a primitive that does not widen (SetValue's ArgumentException,
+/// which Array.Copy here makes that mismatch), or any element of a value type
+/// refused, every element being exactly that type. One element of a
+/// reference type that a cast refuses is the InvalidCastException itself,
+/// with what was copied before it left in place, as .NET leaves it. .NET
+/// refuses unrelated reference types before the first copy, from the two
+/// element types. The runtime has no Type.GetElementType or IsAssignableFrom
+/// to tell, so here a Stack<string> into an int[] is the cast's
+/// InvalidCastException. The names are each collection's own, as .NET's differ:
+/// Stack<T> calls the place arrayIndex and names the array in the mismatch,
+/// Queue<T> calls it index and names nothing there.
+static class CollectionCopy {
+    public static void Check(Array array, int index, int count, string indexName) {
+        if (array == null) { throw new ArgumentNullException("array"); }
+        if (array.Rank != 1) { throw new ArgumentException("Only single dimensional arrays are supported for the requested action.", "array"); }
+        if (index < 0 || index > array.Length) { throw new ArgumentOutOfRangeException(indexName, index, "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
+        if (array.Length - index < count) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
+    }
+
+    public static void Put(Array array, int at, object? value, string? arrayName, bool valueType) {
+        try { array.SetValue(value, at); }
+        catch (ArgumentException) { throw Mismatch(arrayName); }
+        catch (InvalidCastException) when (valueType) { throw Mismatch(arrayName); }
+    }
+
+    /// `length` elements from `index` the other way round: Stack<T> copies
+    /// bottom first, as its array holds them, and then turns the run over,
+    /// as .NET's does (a copy refused partway is left bottom first).
+    public static void Reverse(Array array, int index, int length) {
+        for (int i = index, j = index + length - 1; i < j; i++, j--) {
+            object? held = array.GetValue(i);
+            array.SetValue(array.GetValue(j), i);
+            array.SetValue(held, j);
+        }
+    }
+
+    private static ArgumentException Mismatch(string? arrayName) {
+        const string text = "Target array type is not compatible with the type of items in the collection.";
+        return arrayName == null ? new ArgumentException(text) : new ArgumentException(text, arrayName);
+    }
+}
+
+public class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T>, ICollection {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    // THE NON-GENERIC ICollection, as .NET's Queue<T> is one: head first,
+    // into any array that can hold the elements (CollectionCopy).
+    bool ICollection.IsSynchronized => false;
+    object ICollection.SyncRoot => this;
+    void ICollection.CopyTo(Array array, int index) {
+        CollectionCopy.Check(array, index, count, "index");
+        bool valueType = typeof(T).IsValueType;
+        for (int i = 0; i < count; i++) { CollectionCopy.Put(array, index + i, this[i], null, valueType); }
+    }
 
     private T[] items;
     private int head;
@@ -17047,15 +17105,16 @@ public static class Enumerable {
         using (IEnumerator<TSource> walk = source.GetEnumerator()) { return walk.MoveNext(); }
     }
 
-    /// A SEQUENCE'S COUNT WHERE .NET READS ONE without walking it: an
-    /// ICollection<T>'s, and a Queue's or a Stack's, which are .NET's
-    /// non-generic ICollection and this library's read-only collections.
-    /// Any other read-only collection is walked, as .NET walks one: its
-    /// Count is the type's own to say, and a user's may do anything.
+    /// A SEQUENCE'S COUNT WHERE .NET READS ONE without walking it
+    /// (Enumerable.TryGetNonEnumeratedCount): an ICollection<T>'s, or the
+    /// non-generic ICollection's -- a Queue<T>'s and a Stack<T>'s among them,
+    /// as .NET's are both. Any other read-only collection is walked, as .NET
+    /// walks one: its Count is the type's own to say, and a user's may do
+    /// anything. By interface and never by class, so this file names no type
+    /// of Collections.cor, which a freestanding build leaves out.
     internal static int? Sized<T>(IEnumerable<T> source) {
         if (source is ICollection<T> collection) { return collection.Count; }
-        if (source is Queue<T> queue) { return queue.Count; }
-        if (source is Stack<T> stack) { return stack.Count; }
+        if (source is ICollection objects) { return objects.Count; }
         return null;
     }
 
