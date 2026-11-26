@@ -25,6 +25,8 @@ internal static class Conventions
         public override string Name => "System V x86-64";
         public override int StackAlignment => 16;
         public override int StackArgumentsAt => 16;
+        // A variadic callee reads in AL how many vector registers carry arguments (the psABI, 3.5.7).
+        public override bool NativeCountsVectorArguments => true;
 
         public override CallPlan Arguments(IReadOnlyList<IrType> types, bool registers = true)
         {
@@ -68,13 +70,16 @@ internal static class Conventions
     /// marked [StackArguments], a function entered some other way. A word
     /// comes back in EAX, two in EDX:EAX, a float on the x87's stack. This
     /// backend's own calls keep the stack at four; a call into C aligns it
-    /// to sixteen itself (Selector.SelectCall).
+    /// to sixteen itself (NativeStackAlignment, Selector.CallSequence).
     /// </summary>
     private sealed class I386Convention : Convention
     {
         public override string Name => "i386";
         public override int StackAlignment => 4;
         public override int StackArgumentsAt => 8;
+        // C's i386 System V on Linux keeps sixteen at a call: the psABI's later
+        // revision, and what GCC's code has long assumed (its SSE spills by MOVDQA).
+        public override int NativeStackAlignment => 16;
 
         public override CallPlan Arguments(IReadOnlyList<IrType> types, bool registers = true)
         {

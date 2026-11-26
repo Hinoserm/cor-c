@@ -1,4 +1,5 @@
 #nullable enable
+using Corsac.Lang.Calls;
 using Corsac.Lang.Ir;
 
 namespace Corsac.Lang.X86;
@@ -79,27 +80,21 @@ internal static class RegisterArgs
     /// <summary>Whether a call is of the register form (Conventions.I386's `registers`): one to a function this convention is for, by name or through an address -- not into C, an intrinsic, or a [StackArguments] method.</summary>
     public static bool Applies(Instr call) => First(call) >= 0;
 
-    /// <summary>How many of its arguments a function takes in registers: its first three words, or as many as it has.</summary>
-    public static int Of(Function f)
+    /// <summary>
+    /// Where a function's parameters come in, as the convention says
+    /// (Conventions.I386): its register form for one that takes it (Takes),
+    /// the stack-only form otherwise. The rule is the convention's alone;
+    /// what is asked here reads it.
+    /// </summary>
+    public static CallPlan PlanOf(Function f)
     {
-        if (!Takes(f)) return 0;
-        int words = 0;
-        foreach (VReg p in f.Params) if (p.Type == IrType.I32 && ++words == Most) break;
-        return words;
+        IrType[] types = new IrType[f.Params.Count];
+        for (int k = 0; k < types.Length; k++) types[k] = f.Params[k].Type;
+        return Conventions.I386.Arguments(types, Takes(f));
     }
 
-    /// <summary>
-    /// Which register a function's parameter comes in -- 0, 1 or 2, the
-    /// place in Order -- or -1, on the stack: the first three that are
-    /// words, whatever stands between them.
-    /// </summary>
-    public static int Register(Function f, int parameter)
-    {
-        if (!Takes(f) || f.Params[parameter].Type != IrType.I32) return -1;
-        int before = 0;
-        for (int k = 0; k < parameter; k++) if (f.Params[k].Type == IrType.I32 && ++before == Most) return -1;
-        return before;
-    }
+    /// <summary>How many of its arguments a function takes in registers: its first three words, or as many as it has.</summary>
+    public static int Of(Function f) => Takes(f) ? PlanOf(f).Generals : 0;
 
     /// <summary>
     /// Whether the function's own body takes its arguments in registers (Of
@@ -150,16 +145,11 @@ internal static class RegisterArgs
     public static (byte[] Code, int Field) StackEntry(Function f)
     {
         List<byte> code = new() { 0x55, 0x89, 0xE5 };
-        // Where each argument that came on the stack lies: from [ebp+8] up,
-        // in the order of the parameters.
-        int[] at = new int[f.Params.Count];
-        int offset = 8;
-        for (int k = 0; k < f.Params.Count; k++)
-        {
-            if (Register(f, k) >= 0) continue;
-            at[k] = offset;
-            offset += Bytes(f.Params[k].Type);
-        }
+        // Where each argument is (the convention's plan): a register, or
+        // the stack from the first stack argument's place above this frame
+        // (StackArgumentsAt: [ebp+8]) up.
+        CallPlan plan = PlanOf(f);
+        int above = Conventions.I386.StackArgumentsAt;
         void PushFrame(int displacement)
         {
             // push dword [ebp + d]: FF /6, a byte's displacement or four.
@@ -168,10 +158,10 @@ internal static class RegisterArgs
         }
         for (int k = f.Params.Count - 1; k >= 0; k--)
         {
-            int register = Register(f, k);
-            if (register >= 0) { code.Add((byte)(0x50 + (int)Order[register])); continue; }
-            if (Bytes(f.Params[k].Type) == 8) PushFrame(at[k] + 4);
-            PushFrame(at[k]);
+            ArgPlace place = plan.Places[k];
+            if (place.Kind == PlaceKind.General) { code.Add((byte)(0x50 + place.Register)); continue; }
+            // (A word, or two of eight bytes, the high one first: as C pushes them.)
+            for (int word = place.Bytes - 4; word >= 0; word -= 4) PushFrame(above + place.Offset + word);
         }
         code.Add(0xE8);
         int field = code.Count;
@@ -180,9 +170,6 @@ internal static class RegisterArgs
         code.Add(0xC3);
         return (code.ToArray(), field);
     }
-
-    /// <summary>The bytes an argument of a type is on the stack.</summary>
-    private static int Bytes(IrType type) => type is IrType.I64 or IrType.F64 ? 8 : 4;
 
     /// <summary>Where a call's arguments begin among its operands, or -1 for one this convention is not for (into C, an intrinsic, a [StackArguments] method by name).</summary>
     private static int First(Instr call)
@@ -202,9 +189,9 @@ internal static class RegisterArgs
     {
         int first = First(call);
         if (first < 0) return 0;
-        int words = 0;
-        for (int k = first; k < call.Operands.Count; k++) if (call.Operands[k].Type == IrType.I32 && ++words == Most) break;
-        return words;
+        IrType[] types = new IrType[call.Operands.Count - first];
+        for (int k = 0; k < types.Length; k++) types[k] = call.Operands[first + k].Type;
+        return Conventions.I386.Arguments(types).Generals;
     }
 
     /// <summary>
@@ -229,27 +216,18 @@ internal static class RegisterArgs
     public static (byte[] Code, int Field) ConstantEntry(Function f, (int Parameter, long Value)[] given, bool jump)
     {
         List<byte> code = new();
+        CallPlan plan = PlanOf(f);
         foreach ((int parameter, long value) in given)
         {
-            int register = Register(f, parameter);
-            if (register < 0) throw new InvalidOperationException($"{f.Name}: a way in sets parameter {parameter}, which comes in no register");
-            int reg = (int)Order[register];
+            ArgPlace place = plan.Places[parameter];
+            if (place.Kind != PlaceKind.General) throw new InvalidOperationException($"{f.Name}: a way in sets parameter {parameter}, which comes in no register");
+            int reg = place.Register;
             if (value == 0) { code.Add(0x31); code.Add((byte)(0xC0 | reg << 3 | reg)); }
             else { code.Add((byte)(0xB8 + reg)); code.AddRange(BitConverter.GetBytes(unchecked((int)value))); }
         }
         int field = -1;
         if (jump) { code.Add(0xE9); field = code.Count; code.AddRange(new byte[4]); }
         return (code.ToArray(), field);
-    }
-
-    /// <summary>Which register a call's operand goes in (the place in Order), or -1: pushed. As Register(Function, int) has its parameters.</summary>
-    public static int Register(Instr call, int operand)
-    {
-        int first = First(call);
-        if (first < 0 || operand < first || call.Operands[operand].Type != IrType.I32) return -1;
-        int before = 0;
-        for (int k = first; k < operand; k++) if (call.Operands[k].Type == IrType.I32 && ++before == Most) return -1;
-        return before;
     }
 
     /// <summary>
@@ -299,14 +277,13 @@ internal static class RegisterArgs
         if (passesStack != takesStack && operands.Length > 0) return false;
         int both = Math.Min(operands.Length, parameters.Length);
         if (!operands[..both].SequenceEqual(parameters[..both])) return false;
-        // The parameters past the call's operands: each a word among the
-        // function's first three, or it lies on the stack.
-        int words = 0;
-        for (int k = 0; k < parameters.Length; k++)
-        {
-            bool register = !takesStack && parameters[k] == 'w' && words++ < Most;
-            if (k >= both && !register) return false;
-        }
+        // The parameters past the call's operands: each in a register by the
+        // convention's plan of the function, or it lies on the stack.
+        IrType[] types = new IrType[parameters.Length];
+        for (int k = 0; k < types.Length; k++) types[k] = parameters[k] switch { 'w' => IrType.I32, 'q' => IrType.I64, _ => IrType.F32 };
+        CallPlan plan = Conventions.I386.Arguments(types, !takesStack);
+        for (int k = both; k < parameters.Length; k++)
+            if (!plan.Places[k].InRegister) return false;
         return true;
     }
 

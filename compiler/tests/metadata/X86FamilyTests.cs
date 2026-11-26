@@ -218,11 +218,13 @@ public static class X86FamilyTests
         Same("i386: a long comes back in EDX:EAX", string.Join(",", x.Result(l).Select(p => p.Register)), "0,2");
         Same("i386: a double comes back on the x87's stack", x.Result(d).Single().Kind, Corsac.Lang.Calls.PlaceKind.FloatStack);
 
-        // i386'S RULE IS ALSO RegisterArgs' (which a way in that pushes its
-        // registers' arguments and one that sets them still asks: StackEntry,
-        // ConstantEntry): every signature of up to six parameters of the four
-        // types, as a function and as a call of it by name, must get from
-        // both the same registers and the same count.
+        // i386'S RULE, said once (the convention's) and read by RegisterArgs
+        // (a function's and a call's count, the ways in that push or set the
+        // registers' arguments: StackEntry, ConstantEntry): every signature
+        // of up to six parameters of the four types, as a function and as a
+        // call of it by name, against the rule written out here on its own
+        // -- the first three words, in EAX, EDX, ECX, whatever stands between
+        // them; everything else on the stack in order, a word or two.
         IrType[] kinds = { i, l, f, d };
         int swept = 0;
         for (int count = 0; count <= 6; count++)
@@ -239,19 +241,44 @@ public static class X86FamilyTests
                     call.Operands.Add(RegOperand.Of(p));
                 }
                 Corsac.Lang.Calls.CallPlan plan = x.Arguments(types);
-                Same($"i386: {function.Name}'s register count as a function", RegisterArgs.Of(function), plan.Generals);
-                Same($"i386: {function.Name}'s register count as a call", RegisterArgs.Of(call), plan.Generals);
-                Same($"i386: {function.Name} is a call of the register form", RegisterArgs.Applies(call), true);
+                int words = 0, stack = 0;
                 for (int k = 0; k < count; k++)
                 {
-                    int byRule = RegisterArgs.Register(function, k), atCall = RegisterArgs.Register(call, k);
-                    int byPlan = plan.Places[k].InRegister ? Array.IndexOf(RegisterArgs.Order, (Gpr)plan.Places[k].Register) : -1;
-                    Same($"i386: {function.Name}'s parameter {k}", byRule, byPlan);
-                    Same($"i386: {function.Name}'s argument {k}", atCall, byPlan);
+                    Corsac.Lang.Calls.ArgPlace place = plan.Places[k];
+                    if (types[k] == i && words < 3)
+                    {
+                        Same($"i386: {function.Name}'s parameter {k} in a register", place.Kind == Corsac.Lang.Calls.PlaceKind.General
+                            && place.Register == (int)new[] { Gpr.Eax, Gpr.Edx, Gpr.Ecx }[words++], true);
+                        continue;
+                    }
+                    int bytes = types[k] == l || types[k] == d ? 8 : 4;
+                    Same($"i386: {function.Name}'s parameter {k} on the stack", place, Corsac.Lang.Calls.ArgPlace.OnStack(stack, bytes));
+                    stack += bytes;
                 }
+                Same($"i386: {function.Name}'s stack bytes", plan.StackBytes, stack);
+                Same($"i386: {function.Name}'s register count as a function", RegisterArgs.Of(function), words);
+                Same($"i386: {function.Name}'s register count as a call", RegisterArgs.Of(call), words);
+                Same($"i386: {function.Name} is a call of the register form", RegisterArgs.Applies(call), true);
+                Same($"i386: {function.Name} agrees with its own call", RegisterArgs.Agree(RegisterArgs.Shape(call), RegisterArgs.Shape(function)), true);
                 swept++;
             }
         Same("i386: signatures swept", swept, 1 + 4 + 16 + 64 + 256 + 1024 + 4096);
+
+        // THE WAYS IN, byte for byte, from the plan of (long, int, double,
+        // int, float, int, int, long): the stack entry pushes each argument
+        // again the last first -- a register's by PUSH r32, a stack one's
+        // from [ebp + 8 + its offset], eight bytes as two words, the high
+        // first -- then calls the body; the constant entry sets EAX (the
+        // second parameter) to zero and EDX (the fourth) to 5, and jumps.
+        Function stub = new("m_Stub_8", IrType.Void);
+        foreach (IrType type in new[] { l, i, d, i, f, i, i, l }) stub.Params.Add(stub.NewReg(type));
+        (byte[] entry, int entryField) = RegisterArgs.StackEntry(stub);
+        Same("i386: the stack entry's bytes", BitConverter.ToString(entry),
+            "55-89-E5-FF-75-24-FF-75-20-FF-75-1C-51-FF-75-18-52-FF-75-14-FF-75-10-50-FF-75-0C-FF-75-08-E8-00-00-00-00-C9-C3");
+        Same("i386: the stack entry's call field", entryField, 31);
+        (byte[] way, int wayField) = RegisterArgs.ConstantEntry(stub, new[] { (1, 0L), (3, 5L) }, jump: true);
+        Same("i386: the constant entry's bytes", BitConverter.ToString(way), "31-C0-BA-05-00-00-00-E9-00-00-00-00");
+        Same("i386: the constant entry's jump field", wayField, 8);
     }
 
     /// <summary>

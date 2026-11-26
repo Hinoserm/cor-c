@@ -55,6 +55,16 @@ internal abstract class Convention
     /// <summary>What the stack pointer is a multiple of at a call, in bytes.</summary>
     public abstract int StackAlignment { get; }
 
+    /// <summary>
+    /// What the stack pointer must be a multiple of at a call into C: the
+    /// platform's C convention's, which may ask more than this compiler's
+    /// own calls keep (i386 System V's sixteen against i386's four).
+    /// </summary>
+    public virtual int NativeStackAlignment => StackAlignment;
+
+    /// <summary>Whether a call into C says in a register how many vector registers carry its arguments, for a variadic callee (x86-64 System V's AL).</summary>
+    public virtual bool NativeCountsVectorArguments => false;
+
     /// <summary>The first stack argument's distance above the callee's frame base, once its prologue has run: past the saved base and the return address.</summary>
     public abstract int StackArgumentsAt { get; }
 

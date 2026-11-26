@@ -4460,10 +4460,8 @@ internal sealed partial class Selector
     /// <summary>
     /// A CALL, both modes: the landing pad's pseudo-call and a machine
     /// intrinsic are no calls at all; any other is its arguments placed as
-    /// the convention says and the call made -- the mode's own sequence
-    /// (CallSequence, CallSequenceL: what pushes, moves and cleans up is
-    /// each mode's instructions) -- and then the result taken from where
-    /// the convention brings it back (TakeResult).
+    /// the convention says and the call made (CallSequence), and then the
+    /// result taken from where the convention brings it back (TakeResult).
     /// </summary>
     private void SelectCall(Instr i)
     {
@@ -4489,100 +4487,130 @@ internal sealed partial class Selector
         }
 
         int first = i.Op == Opcode.CallIndirect ? 1 : 0;
-        if (longMode) CallSequenceL(i, first); else CallSequence(i, first);
+        CallSequence(i, first);
         if (i.Dest is not null) TakeResult(i.Dest);
     }
 
-    /// <summary>i386's call sequence (SelectCall): the stack arguments pushed last first, the registers' moved, the call, the stack put back.</summary>
+    /// <summary>
+    /// A CALL'S SEQUENCE, both modes, from the convention's plan (PlanOf):
+    /// the stack made ready for what the callee may assume, the stack
+    /// arguments pushed the last first, the target read, the register
+    /// arguments made and then moved to their homes, the call, the stack
+    /// put back. What is the mode's own is said where it is: how an
+    /// argument is pushed (PushArgument), i386's register form and the
+    /// words a stub entry sets itself (RegisterArgs), and how the call says
+    /// what it reads.
+    /// </summary>
     private void CallSequence(Instr i, int first)
     {
-        // A CALL INTO C. GCC's code for i386 System V may assume the stack
-        // sixteen-byte aligned at a call (it keeps SSE spills there), and
-        // this backend's own calls keep only four. So ESP is kept, aligned
-        // down, and padded so the arguments end on the boundary; the
-        // arguments themselves are all reached through EBP or registers,
-        // never through ESP, so moving it under them is safe.
+        bool longMode = X86Mode.Long;
+        int w = X86Mode.Word;
+        Convention convention = Conventions.Current;
         bool native = NativeCall.Is(i);
-        // WHERE EACH ARGUMENT GOES is the convention's word (PlanOf: here
-        // Conventions.I386): its register form for a call to a function that takes its
-        // first three words so (RegisterArgs.Applies), its stack-only one
-        // for a call into C and the rest.
-        CallPlan plan = PlanOf(i, first, !native && RegisterArgs.Applies(i));
-        MReg? savedEsp = null;
-        MReg? nativeTarget = null;
-        if (native)
+        // WHERE EACH ARGUMENT GOES is the convention's word (PlanOf), as at
+        // the callee's entry (LoadParams): System V's one form; i386's
+        // register form for a call to a function that takes its first words
+        // so (RegisterArgs.Applies), its stack-only one for a call into C
+        // and the rest.
+        CallPlan plan = PlanOf(i, first, longMode || !native && RegisterArgs.Applies(i));
+
+        // THE STACK AT WHAT THE CALLEE MAY ASSUME. This backend's frames keep
+        // the convention's own alignment, so a pad beneath the arguments
+        // brings a call to it (System V's sixteen: none, or a word). A call
+        // into C that asks more than the frames keep -- i386 System V's
+        // sixteen, where GCC keeps SSE spills, against this backend's four
+        // -- has the stack pointer kept, aligned down and then padded; the
+        // arguments themselves are all reached through the frame base or
+        // registers, never through the stack pointer, so moving it under
+        // them is safe.
+        int alignment = native ? convention.NativeStackAlignment : convention.StackAlignment;
+        int pad = (alignment - plan.StackBytes % alignment) % alignment;
+        MReg? savedSp = null;
+        if (alignment > convention.StackAlignment)
         {
-            int argumentBytes = plan.StackBytes;
-            if (i.Op == Opcode.CallIndirect)
-            {
-                nativeTarget = R(i.Operands[0]);
-            }
-            savedEsp = _m.NewReg();
-            Mov(savedEsp, Esp);
-            Emit(MOp.And, Esp, Imm(-16));
-            int pad = (16 - argumentBytes % 16) % 16;
-            if (pad != 0)
-            {
-                Emit(MOp.Sub, Esp, Imm(pad));
-            }
+            savedSp = _m.NewReg();
+            MovW(savedSp, Esp, w);
+            EmitW(MOp.And, w, Esp, Imm(-alignment));
+        }
+        if (pad != 0) EmitW(MOp.Sub, w, Esp, Imm(pad));
+
+        // THE STACK ARGUMENTS, the last first.
+        int pushed = 0;
+        for (int k = i.Operands.Count - 1; k >= first; k--)
+            if (!plan.Places[k - first].InRegister) pushed += PushArgument(i.Operands[k]);
+
+        // A call through an address as one by name: a virtual or an
+        // interface slot, a delegate's target, a word (Sys.Call). The
+        // address is the register it is in: the allocation keeps it out of
+        // the registers the arguments are moved into (they are written
+        // while it is live), may leave it in memory (Roles.Foldable), and a
+        // target loaded only to be called is called where it lies
+        // (AddressFold's step 5).
+        MReg? target = i.Op == Opcode.CallIndirect ? longMode ? RL(i.Operands[0]) : R(i.Operands[0]) : null;
+
+        // THE REGISTER ARGUMENTS, each made first and only then moved to its
+        // home: making one may need a temporary, and none of the homes may
+        // be taken while it is made. Not i386's words a function's way in
+        // with its numbers sets itself (RegisterArgs.Given).
+        int given = longMode ? 0 : RegisterArgs.Given(i);
+        List<(MOperand Value, ArgPlace Place, int Width)> moves = new();
+        for (int k = first; k < i.Operands.Count; k++)
+        {
+            ArgPlace place = plan.Places[k - first];
+            if (!place.InRegister || (given >> k & 1) != 0) continue;
+            Operand o = i.Operands[k];
+            if (place.Kind == PlaceKind.Float) moves.Add((F(o), place, Width(o.Type)));
+            else moves.Add((longMode ? RL(o) : RM(o), place, w));
+        }
+        // (i386's call names the registers it reads; long mode's counts them, IntArgs and FloatArgs.)
+        List<MOperand> reads = new(moves.Count + 1);
+        foreach ((MOperand value, ArgPlace place, int width) in moves)
+        {
+            MReg home = place.Kind == PlaceKind.Float ? MReg.Xmm(place.Register) : MReg.Of(place.Register);
+            EmitW(place.Kind == PlaceKind.Float ? MOp.MovF : MOp.Mov, width, home, value);
+            reads.Add(home);
         }
 
-        int bytes = 0;
-        // ITS FIRST THREE WORDS IN REGISTERS, where the callee takes them
-        // so (RegisterArgs): what is pushed first -- every other argument,
-        // the last first -- then each word moved into its own, the call
-        // naming them as what it reads. A call through an address as one
-        // by name: a virtual or an interface slot, a delegate's target, a
-        // word (Sys.Call) -- the address in a register of its own or read
-        // from memory by the call itself (AddressFold), never one of these.
-        int inRegisters = plan.Generals;
-        if (inRegisters > 0)
+        // A CALL INTO C where the convention has a variadic callee read how
+        // many vector registers carry arguments (System V's AL): every other
+        // function ignores it, so a native call always says.
+        if (native && convention.NativeCountsVectorArguments) MovW(Eax, Imm(plan.Floats), 4);
+
+        if (target is null && !native && i.Callee == Corsac.Lang.Lto.RuntimeAbi.Poll && i.Operands.Count == 0)
         {
-            for (int k = i.Operands.Count - 1; k >= first; k--)
-            {
-                if (!plan.Places[k - first].InRegister) bytes += PushArg(i.Operands[k]);
-            }
-            // (Not the ones the call's own name says are set where it goes
-            // in: RegisterArgs.Given, a function's way in with its numbers.)
-            int given = RegisterArgs.Given(i);
-            List<MOperand> call = new(1 + inRegisters) { i.Op == Opcode.Call ? SymbolAddress(i.Callee!, 0) : R(i.Operands[0]) };
-            for (int k = first; k < i.Operands.Count; k++)
-            {
-                if (!plan.Places[k - first].InRegister || (given >> k & 1) != 0) continue;
-                MReg into = MReg.Of(plan.Places[k - first].Register);
-                Mov(into, RM(i.Operands[k]));
-                call.Add(into);
-            }
-            Emit(i.Op == Opcode.Call ? new MInstr(MOp.Call, call.ToArray()) { CallReloc = RelocKind.Rel32 } : new MInstr(MOp.CallInd, call.ToArray()));
+            // THE BACK EDGE'S POLL keeps the general registers (MOp.CallSafe).
+            Emit(new MInstr(MOp.CallSafe, SymbolAddress(i.Callee!, 0)));
         }
         else
         {
-            for (int k = i.Operands.Count - 1; k >= first; k--)
-            {
-                bytes += PushArg(i.Operands[k]);
-            }
-            if (i.Op == Opcode.Call && !native && i.Callee == Corsac.Lang.Lto.RuntimeAbi.Poll && i.Operands.Count == 0 && bytes == 0)
-            {
-                // THE BACK EDGE'S POLL keeps the registers (MOp.CallSafe).
-                Emit(new MInstr(MOp.CallSafe, SymbolAddress(i.Callee!, 0)) { CallReloc = RelocKind.Rel32 });
-            }
-            else if (i.Op == Opcode.Call)
-            {
-                Emit(new MInstr(MOp.Call, SymbolAddress(NativeCall.Symbol(i.Callee!), 0)) { CallReloc = RelocKind.Rel32, Native = native });
-            }
+            MOperand callee = target is not null ? target : SymbolAddress(NativeCall.Symbol(i.Callee!), 0);
+            MOp op = target is null ? MOp.Call : MOp.CallInd;
+            if (longMode) Emit(new MInstr(op, callee) { IntArgs = plan.Generals, FloatArgs = plan.Floats, NativeAl = native });
             else
             {
-                Emit(new MInstr(MOp.CallInd, nativeTarget ?? R(i.Operands[0])) { Native = native });
+                reads.Insert(0, callee);
+                Emit(new MInstr(op, reads.ToArray()) { Native = native });
             }
         }
-        if (savedEsp is not null)
+
+        if (savedSp is not null) MovW(Esp, savedSp, w);
+        else if (pushed + pad > 0) EmitW(MOp.Add, w, Esp, Imm(pushed + pad));
+    }
+
+    /// <summary>One stack argument pushed, the mode's way; the bytes it took.</summary>
+    private int PushArgument(Operand o)
+    {
+        if (!X86Mode.Long) return PushArg(o);
+        if (o.Type.IsFloat())
         {
-            Mov(Esp, savedEsp);
+            EmitW(MOp.Sub, 8, Rsp, Imm(8));
+            EmitW(MOp.MovF, Width(o.Type), new MMem(Rsp, 0), F(o));
         }
-        else if (bytes > 0)
+        else
         {
-            Emit(MOp.Add, Esp, Imm(bytes));
+            Emit(MOp.Push, RML(o, 8));
         }
+        return 8;
     }
 
     /// <summary>

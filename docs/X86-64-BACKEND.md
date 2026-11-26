@@ -116,15 +116,18 @@ register, a symbol RIP-relative or through its GOT slot). An instruction's
 width left unsaid is the mode's word (`MInstr.Width`), so a method that
 serves both names every width it emits.
 
+Calls are the family's: one `SelectCall` and one `CallSequence` read
+where each argument and the result go from the convention
+(`Conventions.SystemV`'s word here), as `LoadParams`, `SelectRet` and
+`TakeResult` do; what is the mode's own in a call is how a stack argument
+is pushed and how the call says the registers it reads. Division by a
+constant is the family's too (`DivideByConstant`, its numbers
+`DivisionMagic`'s), at either width.
+
 What is long mode's own, in `x86/backend/Select.Long.cs` (its methods of
-i386's names carry an `L`): the System V call's sequence (`CallSequenceL`,
-under the family's one `SelectCall`;
-where its arguments and its result go is `Conventions.SystemV`'s word, and
-the entry's parameters and the return are the family's `LoadParams`,
-`SelectRet` and `TakeResult`, which read it), unwinding and SYSCALL, the
-makers of its operands (`RL`, `RML`, `AddressL`, `LoadConstant`,
-`GotAddress`), division by a constant at either width
-(`SelectDivByConstant`), an unsigned integer to a float and a float to an
+i386's names carry an `L`): unwinding and SYSCALL, the makers of its
+operands (`RL`, `RML`, `AddressL`, `LoadConstant`, `GotAddress`), an
+unsigned integer to a float and a float to an
 integer (64-bit conversions among them), a small copy or clear written as
 moves, the per-CPU words, and its machine intrinsics. `SelectInstrL` holds
 only their cases and hands every other opcode to the family's
