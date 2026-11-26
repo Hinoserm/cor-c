@@ -1091,21 +1091,7 @@ public sealed class X86Backend : IBackend
         }
         try
         {
-            AddressFold.Run(m, absolute: true, compareMemory: true);
-            if (Target.X86Profile.Has(X86Feature.Cmov)) IfConvert.Run(m);
-            XmmLocalSplit.Run(m);
-            Allocator.Run(m);
-            Layout.Run(m);
-            LoopRotate.Run(m);
-            Peephole.Run(m);
-            Peephole.UnusedSaves(m);
-            AlignedSlots.Run(m);
-            FrameCompact.Run(m);
-            FramePointerFree.Run(m);
-            // Last, over the code as it will be encoded: which IR frame slot
-            // words each call's map names (FrameSlotLiveness), and the
-            // zeroing of those a call may find unwritten.
-            if (StackMaps) m.SlotLiveness = FrameSlotLiveness.Measured(m);
+            FamilyPasses.Run(m, StackMaps, Target.X86Profile.Has(X86Feature.Cmov));
         }
         catch (InvalidOperationException e)
         {

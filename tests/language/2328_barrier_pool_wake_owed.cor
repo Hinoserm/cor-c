@@ -19,7 +19,7 @@
 // A STRESS TEST, not a certain reproduction: the hang needs a thread slow to
 // answer the round, which gives the pool time to run down. With more threads
 // than processors this program hung in four runs of six on two processors
-// before the fix, and seldom with a processor for every thread; the
+// before the fix, and in none of twelve given eight processors or more; the
 // compiler's own link, a backend with sixteen workers, hung the same way.
 // It cannot fail but by hanging.
 //

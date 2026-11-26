@@ -5,19 +5,21 @@ using Corsac.Lang.RegAlloc;
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// i386 REGISTER ALLOCATION: the function's unused values pruned, then
-/// lowered into the one allocator's form (X86Target) and allocated there
-/// (Corsac.Lang.RegAlloc.Allocator), which knows no instruction set. The
-/// pruning is the family's, long mode's too (X64.Allocator), as is which
+/// THE FAMILY'S REGISTER ALLOCATION, both modes: the function's unused
+/// values pruned, then lowered into the one allocator's form by the mode's
+/// target (X86Target, LongTarget; what they share is FamilyTarget) and
+/// allocated there (Corsac.Lang.RegAlloc.Allocator), which knows no
+/// instruction set -- holes, short reloads carried along a run, a register
+/// kept over the reads before a spill point, a loop's lap cost. Which
 /// registers an instruction names and which of its operands may be memory
-/// or an immediate (Roles.RegsOf, Foldable, FoldableImm).
+/// or an immediate is Roles' (RegsOf, Foldable, FoldableImm).
 /// </summary>
 internal static class Allocator
 {
     public static void Run(MFunction m)
     {
         PruneUnusedValues(m);
-        X86Target target = new(m);
+        FamilyTarget target = X86Mode.Long ? new LongTarget(m) : new X86Target(m);
         Corsac.Lang.RegAlloc.Allocator.Run(target.Lower());
     }
 
@@ -34,7 +36,7 @@ internal static class Allocator
     /// Arithmetic whose flags nothing reads goes with its result, at the
     /// width of a whole register write (four bytes, and long mode's eight).
     /// </summary>
-    internal static void PruneUnusedValues(MFunction m)
+    private static void PruneUnusedValues(MFunction m)
     {
         bool changed;
         List<(MReg Reg, Role Role, int Operand, bool InMem)> regs = new();

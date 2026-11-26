@@ -496,20 +496,7 @@ public sealed class X64Backend : IBackend
             || b.Instrs.Any(i => i.Op is MOp.Syscall or MOp.SoftInt or MOp.SaveRegs));
         try
         {
-            AddressFold.Run(m, absolute: false, compareMemory: true);
-            IfConvert.Run(m);
-            XmmLocalSplit.Run(m);
-            Allocator.Run(m);
-            Layout.Run(m);
-            LoopRotate.Run(m);
-            Peephole.Run(m);
-            Peephole.UnusedSaves(m);
-            FrameCompact.Run(m);
-            FramePointerFree.Run(m);
-            // Last, over the code as it will be encoded: which IR frame slot
-            // words each call's map names (FrameSlotLiveness), and the
-            // zeroing of those a call may find unwritten.
-            if (StackMaps) m.SlotLiveness = FrameSlotLiveness.Measured(m);
+            FamilyPasses.Run(m, StackMaps, conditionalMoves: true);
         }
         catch (InvalidOperationException e)
         {

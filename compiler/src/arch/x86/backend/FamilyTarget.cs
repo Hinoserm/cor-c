@@ -6,18 +6,20 @@ using Corsac.Lang.RegAlloc;
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// WHAT BOTH MODES' ALLOCATOR TARGETS DO ALIKE (X86Target, X64Target): the
+/// WHAT BOTH MODES' ALLOCATOR TARGETS DO ALIKE (X86Target, LongTarget): the
 /// function rebuilt from what the allocator decided. Each instruction is made
 /// again whole (MInstr.Rebuilt) with every register it names in its place --
 /// a register, its spill slot as a memory operand, its constant as an
 /// immediate -- its memory operands whole too (MMem.WithRegisters); a
 /// spilled value's loads go before it and its stores after; the copies and
 /// jumps the allocator made are made; a call's live values go into its stack
-/// map; and the moves on an edge go into a block of the edge's own. What a
-/// mode does its own way it is asked: the move of a class's value (Move), a
-/// constant made again (Remade), which registers are no allocation's
-/// (Fixed), the register a place is (Out), and what the function saves
-/// (Saved).
+/// map; and the moves on an edge go into a block of the edge's own. And the
+/// function lowered for the allocator in the first place (Lower,
+/// LowerInstr), its argument homes, its leaf test and its register files'
+/// making. What a mode does its own way it is asked: its registers, which
+/// constant a move carries (ConstantMoved), where a slot may be written
+/// (MayWriteMemory), registers written that no table names (AlsoWritten),
+/// and what the function saves (Saved).
 /// </summary>
 internal abstract class FamilyTarget
 {
@@ -33,13 +35,13 @@ internal abstract class FamilyTarget
 
     /// <summary>
     /// WHETHER THE FUNCTION MAY RUN WITHOUT A FRAME POINTER, its base
-    /// register one more for the allocator (each mode's leaf file): where
+    /// register one more for the allocator (Files' leaf file): where
     /// nothing needs the frame -- no call, a store sequence's stub's included
     /// (a callee's prologue pushes the base register as the link to this
     /// frame; the collector and every unwinder walk that chain), no landing
     /// pad, nothing that names the base register but as the frame's base
     /// (Sys.FramePointer, i386's six-argument system call), nothing that
-    /// reads a caller's register off it (CallerReg), no asm block that needs
+    /// reads a caller's register off it (i386's CallerReg), no asm block that needs
     /// the frame, and nothing that moves the stack pointer after the
     /// prologue, off which the frame is addressed instead
     /// (FramePointerFree). Long mode keeps the frame too where the function
@@ -56,7 +58,11 @@ internal abstract class FamilyTarget
             foreach (MInstr i in b.Instrs)
             {
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
-                    or MOp.CallKeepRax or MOp.CallKeepCas or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.CallerReg) return false;
+                    or MOp.CallKeepRax or MOp.CallKeepCas or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf) return false;
+                // i386 reads a caller's register off the frame pointer
+                // (Encoder's CallerReg); long mode from its save slot or the
+                // register itself, with or without one.
+                if (i.Op == MOp.CallerReg && !X86Mode.Long) return false;
                 if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
@@ -186,8 +192,14 @@ internal abstract class FamilyTarget
     /// <summary>The mode's registers as the allocator has them, for this function.</summary>
     public abstract RegisterFile Registers { get; }
 
-    /// <summary>The class of a register: the general ones 0, the XMM ones 1 -- a machine register by its number, a virtual one by the function's record.</summary>
-    public int ClassOf(int reg) => reg < MReg.FirstVirtual ? (reg >= MReg.XmmBase ? 1 : 0) : _m.XmmRegs.Contains(reg) ? 1 : 0;
+    /// <summary>
+    /// The class of a register: the general ones 0, the XMM ones 1 -- a
+    /// machine register by its number, a virtual one by the function's
+    /// record. The base register holding a value (MReg.EbpData, the first
+    /// virtual number and no virtual register's) is a general one.
+    /// </summary>
+    public int ClassOf(int reg) => reg < MReg.FirstVirtual ? (reg >= MReg.XmmBase ? 1 : 0)
+        : reg != MReg.EbpDataId && _m.XmmRegs.Contains(reg) ? 1 : 0;
 
     public bool Immediate(object constant) => constant is MImm;
 
@@ -323,7 +335,6 @@ internal abstract class FamilyTarget
         => i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false }
            && i.Operands[1] is MMem { Base: null, Index: null, Symbol: { } s } m && s.StartsWith(X86Backend.FloatPoolPrefix, StringComparison.Ordinal)
             ? new FloatPoolLoad(m, i.Width) : null;
-
 
     // One list each for the whole function's lowering.
     private readonly List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> _regs = new();

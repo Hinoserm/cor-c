@@ -341,7 +341,7 @@ internal static partial class Peephole
                 {
                     // EBP AS A VALUE -- copied, added to -- reaches the frame
                     // by arithmetic no operand shows: nothing is moved then.
-                    // (The allocator's homes, X86Target.Homes, rely instead on
+                    // (The allocator's homes, FamilyTarget.Homes, rely instead on
                     // Sys.FramePointer's contract -- read through, never written
                     // above the return address -- and do not stand down for EBP
                     // as a value, as this pass does; it moves a store.)
@@ -513,7 +513,7 @@ internal static partial class Peephole
                     // walks the frames -- is read through for the saved frame
                     // pointers and return addresses alone, never to a local:
                     // its contract (Prelude), which the allocator's homes rest
-                    // on as well, X86Target.Homes. The collector reads every
+                    // on as well, FamilyTarget.Homes. The collector reads every
                     // word of the stack as it stands, and the home still
                     // holds what the pair held.)
                     if (i.Operands[k] is not MMem mem) continue;

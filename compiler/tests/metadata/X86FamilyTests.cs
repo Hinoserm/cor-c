@@ -105,10 +105,10 @@ public static class X86FamilyTests
                     MInstr plain = new(op) { Width = 0 };
                     Listed(op + " reads", Implicit.Uses(plain), uses);
                     Listed(op + " writes", Implicit.Defs(plain), defs);
-                    // The mask asked a register at a time (Contains), against
-                    // the ids written here: not the set against itself.
-                    Same(op, "reads", Mask(uses), Asked(Implicit.Uses(plain)));
-                    Same(op, "writes", Mask(defs), Asked(Implicit.Defs(plain)));
+                    // And asked a register at a time (Contains), by the ids
+                    // written here.
+                    Holds(op, "reads", Implicit.Uses(plain), uses);
+                    Holds(op, "writes", Implicit.Defs(plain), defs);
                     asked++;
                 }
             }
@@ -214,9 +214,12 @@ public static class X86FamilyTests
                 b.Instrs.Add(new MInstr(MOp.MovF, hx, MMem.Frame(4 * word)) { Width = 8 });
                 b.Instrs.Add(new MInstr(MOp.Mov, twice, MMem.Frame(8 * word)) { Width = word });
                 b.Instrs.Add(new MInstr(MOp.Mov, twice, MMem.Frame(8 * word)) { Width = word });
+                MReg hf = m.NewFloat();
+                b.Instrs.Add(new MInstr(MOp.MovF, hf, MMem.Frame(10 * word)) { Width = 4 });
+                b.Instrs.Add(new MInstr(MOp.MovF, x, y) { Width = 4 });
                 b.Instrs.Add(new MInstr(MOp.Epilogue) { Width = 0 });
                 b.Instrs.Add(new MInstr(MOp.Ret));
-                Corsac.Lang.RegAlloc.AFunction f = longMode ? new Corsac.Lang.X64.X64Target(m).Lower() : new X86Target(m).Lower();
+                Corsac.Lang.RegAlloc.AFunction f = longMode ? new LongTarget(m).Lower() : new X86Target(m).Lower();
                 List<Corsac.Lang.RegAlloc.AInstr> lowered = f.Blocks[0].Instrs;
                 int at = 1;
                 foreach (int width in widths)
@@ -262,8 +265,86 @@ public static class X86FamilyTests
                 Expect(home.HomeSlot == 2 * word, $"{mode}: a stack-passed word loaded once is its value's home");
                 Expect(floatHome.HomeSlot == 4 * word, $"{mode}: a stack-passed double loaded once into the XMM class is its value's home");
                 Expect(first.HomeSlot is null && second.HomeSlot is null, $"{mode}: a word loaded twice is no home");
+                Expect(lowered[at++].HomeSlot == 10 * word, $"{mode}: a stack-passed float loaded once at four bytes is its value's home");
+                Expect(lowered[at++].MayMemoryWrite == 3u, $"{mode}: a 4-byte XMM move may be written in a slot, an XMM register's by its class");
+
+                // THE REGISTERS (FamilyTarget.Files): this function calls, so
+                // the frame's base is no register of it.
+                int sp = (int)Gpr.Esp, bp = (int)Gpr.Ebp;
+                int[] callerSaved = longMode ? LongAbi.CallerSaved : new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx };
+                int[] calleeSaved = longMode
+                    ? new[] { (int)Gpr.Rbx, (int)Gpr.R12, (int)Gpr.R13, (int)Gpr.R14, (int)Gpr.R15 }
+                    : new[] { (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi };
+                int[]? bytes = longMode ? null : new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx };
+                int xmms = longMode ? 16 : 8;
+                void File(string which, Corsac.Lang.RegAlloc.RegisterFile file, int[] preference, int[] saved, int[] untracked, int[]? byteCapable)
+                {
+                    Expect(file.PhysCount == MReg.XmmBase + xmms && file.FirstVirtual == MReg.FirstVirtual, $"{mode}, {which}: the machine's registers end where its XMM ones do");
+                    Expect(file.Untracked.SequenceEqual(untracked), $"{mode}, {which}: untracked [{string.Join(", ", file.Untracked)}]");
+                    Expect(file.Classes.Length == 2, $"{mode}, {which}: a general class and an XMM one");
+                    Expect(file.Classes[0].Preference.SequenceEqual(preference), $"{mode}, {which}: general registers tried in the order [{string.Join(", ", file.Classes[0].Preference)}]");
+                    Expect(file.Classes[0].CalleeSaved.SequenceEqual(saved), $"{mode}, {which}: callee-saved [{string.Join(", ", file.Classes[0].CalleeSaved)}]");
+                    Expect(byteCapable is null ? file.Classes[0].ByteCapable is null : file.Classes[0].ByteCapable is { } capable && capable.SequenceEqual(byteCapable),
+                        $"{mode}, {which}: the registers with byte forms");
+                    Expect(file.Classes[1].Preference.SequenceEqual(Enumerable.Range(MReg.XmmBase, xmms)) && file.Classes[1].CalleeSaved.Length == 0
+                        && !file.Classes[1].HoldsReferences, $"{mode}, {which}: every XMM register caller-saved, none a reference's");
+                }
+                File("a function that calls", f.Registers, callerSaved.Concat(calleeSaved).ToArray(), calleeSaved, new[] { sp, bp }, bytes);
+
+                // A leaf has the base register besides, callee-saved; i386's
+                // leaf that reads a caller's register (off the frame pointer)
+                // is none, long mode's (from its save slot) is.
+                foreach (bool callerRegister in new[] { false, true })
+                {
+                    MFunction leaf = new(new Function("leaf", IrType.I32));
+                    MBlock lb = leaf.NewBlock("entry");
+                    MReg v = leaf.NewReg();
+                    Expect(v.Id != MReg.EbpDataId, $"{mode}: no virtual register has the number the base register is known by while it holds a value");
+                    lb.Instrs.Add(new MInstr(MOp.Prologue));
+                    lb.Instrs.Add(callerRegister ? new MInstr(MOp.CallerReg, v, new MImm(0)) : new MInstr(MOp.Mov, v, new MImm(1)) { Width = word });
+                    lb.Instrs.Add(new MInstr(MOp.Epilogue) { Width = 0 });
+                    lb.Instrs.Add(new MInstr(MOp.Ret));
+                    Corsac.Lang.RegAlloc.RegisterFile got = (longMode ? new LongTarget(leaf).Lower() : new X86Target(leaf).Lower()).Registers;
+                    if (callerRegister && !longMode) File("a leaf reading a caller's register", got, callerSaved.Concat(calleeSaved).ToArray(), calleeSaved, new[] { sp, bp }, bytes);
+                    else File("a leaf", got, callerSaved.Concat(calleeSaved).Append(bp).ToArray(), calleeSaved.Append(bp).ToArray(), new[] { sp }, bytes);
+                }
+
+                // A thunk C enters keeps the callee-saved registers as its caller left them.
+                MFunction thunk = new(new Function("thunk", IrType.I32) { KeepsCallerRegisters = true });
+                thunk.NewBlock("entry").Instrs.AddRange(new[] { new MInstr(MOp.Prologue), new MInstr(MOp.Epilogue) { Width = 0 }, new MInstr(MOp.Ret) });
+                File("a thunk", (longMode ? new LongTarget(thunk).Lower() : new X86Target(thunk).Lower()).Registers, callerSaved, new int[0], new[] { sp, bp },
+                    longMode ? null : new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx });
+
+                // VALUES NOTHING READS ARE GONE BEFORE THE ALLOCATOR SEES THEM
+                // (Allocator.PruneUnusedValues), in both modes: a constant, and
+                // arithmetic at the word's width whose flags the next
+                // instruction writes over. A machine XMM register's write stays.
+                MFunction pruned = new(new Function("pruned", IrType.I32));
+                MBlock pb = pruned.NewBlock("entry");
+                MReg kept = pruned.NewReg(), dead = pruned.NewReg(), sum = pruned.NewReg(), fx = pruned.NewFloat();
+                pb.Instrs.AddRange(new[]
+                {
+                    new MInstr(MOp.Prologue),
+                    new MInstr(MOp.Mov, kept, new MImm(7)) { Width = word },
+                    new MInstr(MOp.Mov, dead, new MImm(5)) { Width = word },
+                    new MInstr(MOp.Mov, sum, kept) { Width = word },
+                    new MInstr(MOp.Add, sum, kept) { Width = word },
+                    new MInstr(MOp.Test, kept, kept) { Width = word },
+                    new MInstr(MOp.MovF, fx, MMem.Frame(-8)) { Width = 8 },
+                    new MInstr(MOp.MovF, MReg.Of(MReg.XmmBase), fx) { Width = 8 },
+                    new MInstr(MOp.Mov, MReg.Of(Gpr.Eax), kept) { Width = word },
+                    new MInstr(MOp.Epilogue) { Width = word, IntArgs = 1 },
+                    new MInstr(MOp.Ret),
+                });
+                pruned.Frame.Allocate(8, 8);
+                Allocator.Run(pruned);
+                List<MInstr> left = pruned.Blocks.SelectMany(block => block.Instrs).ToList();
+                Expect(!left.Any(i => i.Operands.Any(o => o is MImm { Value: 5 })), $"{mode}: a constant nothing reads is gone");
+                Expect(!left.Any(i => i.Op == MOp.Add), $"{mode}: arithmetic nothing reads, its flags written over, is gone");
+                Expect(left.Any(i => i.Operands.Any(o => o is MImm { Value: 7 })) || left.Any(i => i.Op == MOp.Test), $"{mode}: a value read stays");
+                Expect(left.Any(i => i.Op == MOp.MovF && i.Operands[0] is MReg { Id: MReg.XmmBase }), $"{mode}: a machine XMM register's write stays, whoever reads it");
             }
-            Console.WriteLine("x86 family: an instruction is told the allocator alike in both modes but where a mode's registers differ -- self-moves, whole copies, a call's writes, slots written, wide constants, what is made again, the argument homes");
+            Console.WriteLine("x86 family: an instruction is told the allocator alike in both modes but where a mode's registers differ -- self-moves, whole copies, a call's writes, slots written, wide constants, what is made again, the argument homes, the register files, a leaf's, the values pruned");
         }
         finally
         {
@@ -302,7 +383,7 @@ public static class X86FamilyTests
                     new MInstr(MOp.Epilogue),
                     new MInstr(MOp.Ret),
                 });
-                Corsac.Lang.X64.Allocator.Run(m);
+                Allocator.Run(m);
                 Peephole.Run(m);
                 bool marked = false, loads = false;
                 foreach (MBlock block in m.Blocks)
@@ -427,30 +508,17 @@ public static class X86FamilyTests
         }
     }
 
-    private static long Mask(IEnumerable<int> ids)
+    private static void Holds(MOp op, string what, RegSet set, int[] expected)
     {
-        long mask = 0;
-        foreach (int id in ids) mask |= 1L << id;
-        return mask;
-    }
-
-    private static long Asked(RegSet set)
-    {
-        long mask = 0;
-        for (int reg = 0; reg < 64; reg++) if (set.Contains(reg)) mask |= 1L << reg;
-        if (mask != set.Mask) throw new InvalidOperationException($"x86 family: a set answers {mask:X} asked by register and holds the mask {set.Mask:X}");
-        return mask;
+        for (int reg = 0; reg < 64; reg++)
+            if (set.Contains(reg) != expected.Contains(reg))
+                throw new InvalidOperationException($"x86 family: {op} {what} register {reg}: the set says {set.Contains(reg)}");
+        if (set.Contains(64) || set.Contains(-1)) throw new InvalidOperationException($"x86 family: {op} {what} a register no mask has");
     }
 
     private static void Listed(string what, RegSet set, params int[] expected)
     {
         if (!set.Ids.SequenceEqual(expected))
             throw new InvalidOperationException($"x86 family: {what} [{string.Join(", ", set.Ids)}], not [{string.Join(", ", expected)}]");
-    }
-
-    private static void Same(MOp op, string what, long listed, long masked)
-    {
-        if (listed != masked)
-            throw new InvalidOperationException($"x86 family: {op} {what} {listed:X} as a list and {masked:X} as a mask");
     }
 }

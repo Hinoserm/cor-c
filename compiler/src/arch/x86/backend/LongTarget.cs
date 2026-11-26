@@ -1,22 +1,17 @@
 #nullable enable
 using Corsac.Lang.RegAlloc;
-using Role = Corsac.Lang.RegAlloc.Role;
 
-using Corsac.Lang.X86;
-
-namespace Corsac.Lang.X64;
+namespace Corsac.Lang.X86;
 
 /// <summary>
-/// x86-64 AS THE ONE ALLOCATOR SEES IT (Corsac.Lang.RegAlloc): two classes,
-/// the fourteen general registers -- the caller-saved nine first, then RBX
-/// and R12 to R15 -- and the sixteen XMM registers, every one caller-saved
-/// under the System V ABI; RSP and RBP never touched. Each instruction
-/// lowered once into the registers it names (Roles.RegsOf), which
-/// operands may be memory (Roles.Foldable) or a constant, its jumps; and
-/// the function rebuilt from what was decided (FamilyTarget.Rebuild), a spilled
-/// value moved by its class's move (MOV, MOVSD) through an eight-byte slot.
+/// LONG MODE AS THE ONE ALLOCATOR SEES IT (Corsac.Lang.RegAlloc), what is
+/// its own beside the family's (FamilyTarget): two classes, the fourteen
+/// general registers -- the caller-saved nine first, then RBX and R12 to
+/// R15 -- and the sixteen XMM registers, every one caller-saved under the
+/// System V ABI; RSP and RBP never touched. A spilled value goes through
+/// an eight-byte slot.
 /// </summary>
-internal sealed class X64Target : FamilyTarget, ITarget
+internal sealed class LongTarget : FamilyTarget, ITarget
 {
     /// <summary>
     /// Long mode's registers: the caller-saved nine first, then RBX and R12
@@ -26,9 +21,9 @@ internal sealed class X64Target : FamilyTarget, ITarget
     /// finds its frame by the prologue's mark (Encoder.PrologueL).
     /// </summary>
     private static readonly (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) Of = Files(
-        LongAbi.CallerSaved, Allocator.CalleeSaved.Select(g => (int)g).ToArray(), null, 16);
+        LongAbi.CallerSaved, LongAbi.CalleeSaved.Select(g => (int)g).ToArray(), null, 16);
 
-    public X64Target(MFunction m) : base(m)
+    public LongTarget(MFunction m) : base(m)
     {
     }
 
@@ -61,7 +56,7 @@ internal sealed class X64Target : FamilyTarget, ITarget
     /// </summary>
     protected override void Saved(AFunction f, IPlacement p)
     {
-        foreach (Gpr g in Allocator.CalleeSaved)
+        foreach (Gpr g in LongAbi.CalleeSaved)
             if (_m.SavesEverything || p.Touched.Contains((int)g)) _m.SavedRegs.Add(g);
         _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Rbp);
     }

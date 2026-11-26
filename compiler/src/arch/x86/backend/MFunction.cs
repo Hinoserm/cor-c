@@ -29,7 +29,8 @@ public sealed class MFunction
     public Function Source { get; }
     public List<MBlock> Blocks { get; } = new();
     public Frame Frame { get; }
-    public int NextVReg { get; set; } = X86Mode.Long ? MReg.FirstVirtual : MReg.FirstVirtual + 1;
+    /// <summary>The next virtual register's number. Past the first: that one is the base register holding a value, in both modes (MReg.EbpData).</summary>
+    public int NextVReg { get; set; } = MReg.FirstVirtual + 1;
 
     /// <summary>Whether a card mark calls the object's stub (X86Backend.CardStub).</summary>
     public bool UsesCardStub { get; set; }
@@ -151,7 +152,7 @@ public sealed class MFunction
 
     public MReg NewReg() => new(NextVReg++);
 
-    // ---- long mode's (Select.Long.cs, X64Target and the encoder's long forms) -----------
+    // ---- long mode's (Select.Long.cs, LongTarget and the encoder's long forms) -----------
 
     /// <summary>
     /// A new virtual register of the XMM class: in XmmRegs, the one record

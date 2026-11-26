@@ -48,7 +48,7 @@ public sealed class InlineAsmCode
     /// <summary>
     /// Whether it needs the method's frame as it is: a local in a slot, or
     /// the stack pointer or the frame's base named or moved (a push, an address off either). Without,
-    /// its method may still go without a frame pointer (X86Target.Leaf).
+    /// its method may still go without a frame pointer (FamilyTarget.Leaf).
     /// </summary>
     public bool NeedsFrame => Analysis.UsesStack || Plan.InMemory.Contains(true);
 

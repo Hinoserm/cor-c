@@ -1319,7 +1319,7 @@ internal sealed partial class Encoder
             {
                 // After `push ebp; mov ebp, esp; sub esp, Size` the prologue
                 // pushes SavedRegs in order: the k-th at EBP - Size - 4(k+1).
-                // Never in a leaf, which has no frame (X86Target.Leaf).
+                // Never in a leaf, which has no frame (FamilyTarget.Leaf).
                 if (_m.Frameless) throw new InvalidOperationException($"{_m.Source.Name}: Sys.CallerRegister in a function without a frame");
                 Gpr kept = ((MImm)i.Operands[1]).Value switch { 0 => Gpr.Ebx, 1 => Gpr.Esi, _ => Gpr.Edi };
                 int to = Gp(i.Operands[0]), saved = _m.SavedRegs.IndexOf(kept);

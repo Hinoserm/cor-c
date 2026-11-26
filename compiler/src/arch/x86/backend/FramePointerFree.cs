@@ -28,6 +28,11 @@ internal static class FramePointerFree
 {
     public static void Run(MFunction m)
     {
+        if (X86Mode.Long)
+        {
+            RunLong(m);
+            return;
+        }
         if (!m.Frameless && OnlyColdCalls(m))
         {
             m.Frameless = true;
@@ -60,6 +65,23 @@ internal static class FramePointerFree
     }
 
     /// <summary>
+    /// LONG MODE'S: a leaf the allocator gave RBP a value in
+    /// (MFunction.FramePointerFree). The frame is addressed off RSP -- which
+    /// nothing moves between the prologue and the epilogue, RSP + K being
+    /// where RBP would point, K the frame the prologue makes
+    /// (Encoder.FrameBytes) -- and the value is in RBP. The prologue still
+    /// sets RBP before anything is written to it, and marks the function so
+    /// a fault finds its frame (Encoder.PrologueL). No function is without
+    /// a frame there yet, and none makes its frame only on the way to a call.
+    /// </summary>
+    private static void RunLong(MFunction m)
+    {
+        if (!m.FramePointerFree) return;
+        int k = Encoder.FrameBytes(m);
+        Readdress(m, disp => disp + k, true);
+    }
+
+    /// <summary>
     /// EVERY OPERAND MOVED OFF THE FRAME'S BASE, for both modes: one based on
     /// the base register becomes one off the stack pointer at `address` of
     /// its displacement, and the value the base register holds
@@ -70,7 +92,7 @@ internal static class FramePointerFree
     /// -- or writes it: the allocator's leaf test and OnlyColdCalls let no
     /// such function here.
     /// </summary>
-    internal static void Readdress(MFunction m, Func<int, int> address, bool calls)
+    private static void Readdress(MFunction m, Func<int, int> address, bool calls)
     {
         List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
         foreach (MBlock b in m.Blocks)

@@ -80,14 +80,17 @@ public sealed class MReg : MOperand
     /// makes it EBP: every pass between takes an operand based on EBP for the
     /// frame, and an id no machine register has for one it knows nothing of.
     /// No virtual register is left by then; the first virtual number, which
-    /// no register is given (MFunction.NextVReg starts past it).
+    /// no register is given in either mode (MFunction.NextVReg starts past
+    /// it: long mode's began AT it once, and its first virtual register --
+    /// an XMM one, where a function's first value is a float -- had the
+    /// number a leaf's RBP is known by after allocation).
     /// </summary>
     public const int EbpDataId = FirstVirtual;
     public static readonly MReg EbpData = new(EbpDataId);
 
     public static MReg Of(Gpr r) => (uint)r < 16u ? Physical[(int)r] : new((int)r);
 
-    /// <summary>Long mode's name for the same thing: RBP holding a value in a leaf (X64Target).</summary>
+    /// <summary>Long mode's name for the same thing: RBP holding a value in a leaf (LongTarget).</summary>
     public const int RbpDataId = EbpDataId;
     public static MReg RbpData => EbpData;
 

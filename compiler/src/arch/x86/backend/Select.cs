@@ -1564,7 +1564,7 @@ internal sealed partial class Selector
                     break;
                 case IrType.F32:
                 case IrType.F64:
-                    // Of the XMM class, loaded from its word (a home, X86Target.Homes);
+                    // Of the XMM class, loaded from its word (a home, FamilyTarget.Homes);
                     // of the x87's, that word its home.
                     if (InXmm(p.Type)) MovF(X(p), MMem.Frame(off), FWidth(p.Type));
                     else _m.Frame.PlaceFloatParam(p, off);

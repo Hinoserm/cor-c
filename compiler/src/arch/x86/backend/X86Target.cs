@@ -1,19 +1,14 @@
 #nullable enable
-using Corsac.Lang.Frames;
-using Corsac.Lang.Ir;
 using Corsac.Lang.RegAlloc;
 
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// i386 AS THE ONE ALLOCATOR SEES IT (Corsac.Lang.RegAlloc): one class of
-/// six registers -- EAX, ECX, EDX first, free across no call, then the
-/// callee-saved EBX, ESI, EDI -- of which EAX to EBX have byte halves; ESP
-/// and EBP never touched. Each instruction lowered once into the registers
-/// it names (Roles.RegsOf), which operands may be memory or an
-/// immediate (Roles.Foldable, FoldableImm), its jumps; and the function
-/// rebuilt from what was decided (FamilyTarget.Rebuild), the loads, stores
-/// and constants around each instruction made here (Move, Remade).
+/// i386 AS THE ONE ALLOCATOR SEES IT (Corsac.Lang.RegAlloc), what is its
+/// own beside the family's (FamilyTarget): one general class of six
+/// registers -- EAX, ECX, EDX first, free across no call, then the
+/// callee-saved EBX, ESI, EDI -- of which EAX to EBX have byte halves, and
+/// the XMM class where the function has one; ESP and EBP never touched.
 /// </summary>
 internal sealed class X86Target : FamilyTarget, ITarget
 {
@@ -81,7 +76,6 @@ internal sealed class X86Target : FamilyTarget, ITarget
     /// <summary>A whole word's constant: any, a symbol's address among them.</summary>
     protected override MImm? ConstantMoved(MInstr i)
         => i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm : null;
-
 
     /// <summary>
     /// The callee-saved registers the function touches, or all of them where

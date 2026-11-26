@@ -135,17 +135,35 @@ Division uses the hardware and its trap, as on i386. A float's conversion to
 an integer follows .NET's saturating rule from the IEEE bits, as i386's
 does.
 
-What is still x86-64's own, in `compiler/src/arch/x64/backend`:
+## One allocator target, one pass pipeline
 
-- **RegAlloc.cs, X64Target.cs** -- the function lowered into the one
-  allocator's form (`Corsac.Lang.RegAlloc`), with two register classes. A value
-  live across a call cannot sit in a caller-saved register; a float across a
-  call is always spilled. Spill slots are eight bytes and reloads are whole
-  words, so a sub-word integer definition is never folded into its slot (the
-  slot's upper half would survive into the reload), and only constants a
-  sign-extended imm32 can carry are folded as immediates.
-- **FramePointerFree.cs** -- a leaf that gives RBP a value addresses its
-  frame off RSP.
+After selection a function goes through the same passes in the same order
+in both modes (`x86/backend/FamilyPasses.cs`): address folding, if-conversion,
+the XMM split, the allocator, layout, loop rotation, the peephole, the frame
+passes, and the frame slots' liveness. The allocator's view of the machine
+is one class, `FamilyTarget`: which registers an instruction names
+(`Roles.RegsOf`), which operands may be memory or a constant
+(`Roles.Foldable`), the registers an instruction touches without naming
+them (`Implicit`, with each mode's convention: `LongAbi`, `Cdecl`), the
+argument homes, what is made again where it is wanted (a constant, an
+address, a float pool's word), the rebuild of the function from what was
+decided, and the test for a leaf that needs no frame pointer.
+
+What is long mode's own there, in `x86/backend/LongTarget.cs`: its two
+register classes (fourteen general registers, sixteen XMM, by the System V
+convention), that a general register is written in a spill slot only at
+eight bytes (a slot is eight bytes and a reload the whole word, so a
+sub-word definition is never folded into its slot: the slot's upper half
+would survive into the reload), that only a constant a sign-extended imm32
+can carry is folded as an immediate, and which registers its prologue
+saves. A value live across a call cannot sit in a caller-saved register; a
+float across a call is spilled, or read again from the constant pool.
+
+A leaf that gives RBP a value addresses its frame off RSP
+(`FramePointerFree`); long mode has no function without a frame yet.
+
+`compiler/src/arch/x64/backend` holds the object's writer and driver
+alone (`X64Backend.cs`).
 
 ## Objects and linking
 
