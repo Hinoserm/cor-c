@@ -701,20 +701,23 @@ public sealed partial class Lowering
     /// gives one: in the compilation of the runtime (`runtime`, its Runtime
     /// type), that runtime's Tls.Bytes as bound for this target, so that a
     /// slot added there needs no change here -- by hand the two drifted
-    /// once, and the last slot was read past the block. A runtime whose Tls
-    /// has no Bytes bound is refused rather than given the floor, the very
+    /// once, and the last slot was read past the block. A runtime that
+    /// declares no Tls, or whose Tls has no Bytes bound, is refused rather
+    /// than given the floor, the very
     /// drift this is for; a program with no runtime has the floor, TlsBytes
     /// scaled by the word, whatever types of its own it names Tls.</summary>
     int ThreadBlockBytes(TypeSymbol? runtime)
     {
         int bytes = TlsBytes / 4 * _t.WordSize;
         if (runtime is null) return bytes;
-        // Named where the runtime declares it, not where lowering stopped.
+        // Named where the runtime declares it, not where lowering stopped (a
+        // Runtime with no declaration, which nothing makes, counts as owned
+        // and is named by the last file lowered).
         string file = runtime.Decl?.File ?? _in;
         if (!_b.Types.TryGetValue("Tls", out TypeSymbol? tls))
         {
             Errors.Add(new CompileError(file, 0, 0,
-                $"the runtime declares no Tls, whose Bytes sizes the main thread's block: one unit must hold both {RuntimeType} and Tls"));
+                $"the runtime declares no Tls, whose Bytes sizes the main thread's block: the unit that owns {RuntimeType} must hold Tls"));
             return bytes;
         }
         file = tls.Decl?.File ?? file;
