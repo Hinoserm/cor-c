@@ -142,11 +142,24 @@ internal abstract class FamilyTarget
     /// <summary>An instruction as the allocator's dumps show it.</summary>
     protected abstract string InstrText(MInstr i);
 
-    /// <summary>A move of a value of the class the operands say, between a register and a register or a slot.</summary>
-    protected abstract MInstr Move(MOperand to, MOperand from, int line);
-
-    /// <summary>The copy the allocator made of one virtual register into another, each where it was placed.</summary>
-    protected virtual MInstr Copy(int destination, MOperand to, MOperand from, int line) => Move(to, from, line);
+    /// <summary>
+    /// A MOVE OF A VALUE BY ITS CLASS'S MOVE, between a register and a
+    /// register, a slot or a constant: the class the register operand is of
+    /// (a constant is a general register's). A general one by MOV of a
+    /// word; an XMM one by MOVSS or MOVSD at the width its home has
+    /// (Homes), else its class's spill slot's -- i386's by what the function
+    /// keeps there (MFunction.XmmSpillWidth), long mode's a scalar's eight
+    /// bytes. The copy the allocator made of one virtual register into
+    /// another, each where it was placed, is this move too.
+    /// </summary>
+    private MInstr Move(MOperand to, MOperand from, int line)
+        => to is MReg r && ClassOf(r.Id) == 1 || from is MReg s && ClassOf(s.Id) == 1
+            ? new MInstr(MOp.MovF, to, from)
+            {
+                Width = from is MMem { Disp: > 0 } home && _homeWidths.TryGetValue(home.Disp, out int width) ? width : X86Mode.Long ? 8 : _m.XmmSpillWidth,
+                Line = line,
+            }
+            : new MInstr(MOp.Mov, to, from) { Width = X86Mode.Word, Line = line };
 
     /// <summary>
     /// A value made again in a register before an instruction: a constant
@@ -180,13 +193,86 @@ internal abstract class FamilyTarget
 
     /// <summary>
     /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot), found over the whole
-    /// function before its instructions are lowered: the loads of a
-    /// stack-passed argument's word that nothing else in the function
-    /// touches, by each mode's reading of its frame.
+    /// function before its instructions are lowered: the load of a
+    /// stack-passed argument's word off the frame's base -- a word's MOV, or
+    /// a float's MOVSS or a double's MOVSD into the XMM class -- where it is
+    /// the only thing in the function that touches any byte of that word,
+    /// and nothing takes an address at or above the base register: through
+    /// one, any argument could be read or written. No LEA there, no indexed
+    /// access there (a local's address, below, is a local's). The base
+    /// register as a value (Sys.FramePointer) is read through, never
+    /// written above the return address -- its contract (Prelude), held by
+    /// every use in the runtime and the kernel, which walk the chain of
+    /// saved frame pointers and return addresses -- and a home is never
+    /// written by the allocator either (Allocator.HomeOf). Any other access
+    /// at or above the frame pointer (a local below it reaches no argument)
+    /// is taken as sixteen bytes wide, whatever its Width says: a packed
+    /// store writes eight with the default four (Peephole.ParameterHomes
+    /// counts as much). i386's frame outside reads that word as one it is
+    /// pushing, so no stack map need; long mode's collector reads a stack
+    /// as memory, with no map to name it in.
     /// </summary>
-    protected abstract HashSet<MInstr> Homes();
+    private HashSet<MInstr> Homes()
+    {
+        HashSet<MInstr> homes = new(ReferenceEqualityComparer.Instance);
+        Dictionary<int, MInstr?> load = new();
+        List<(int From, int To)> touched = new();
+        int word = X86Mode.Word;
+        foreach (MBlock b in _m.Blocks)
+            foreach (MInstr i in b.Instrs)
+            {
+                // An asm block that names the stack in its own text may read
+                // or write an argument's word with no operand to show it.
+                if (i.Op == MOp.InlineAsm && i.Asm!.Analysis.UsesStack) return homes;
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not MMem mem) continue;
+                    if (mem.Index?.Id == (int)Gpr.Ebp) return homes;
+                    if (mem.Base?.Id != (int)Gpr.Ebp) continue;
+                    // An address taken AT OR ABOVE the frame pointer, or an
+                    // index from there: any argument may be reached through
+                    // it. One taken below is a local's -- a struct's value in
+                    // its frame slot, an out argument's word, a buffer --
+                    // and what is done through it stays in the local, as an
+                    // indexed access below does: taken for a reach of every
+                    // argument (as any LEA off the base was), every function
+                    // that kept a struct in its frame loaded each argument it
+                    // could not keep in a register and stored it again in a
+                    // slot of its own -- thirteen loads and twelve stores at
+                    // the top of Tcp.ReceiveOwned, once a segment.
+                    if ((i.Op == MOp.Lea || mem.Index is not null) && mem.Disp >= 0) return homes;
+                    if (i.Op == MOp.Lea) continue;
+                    // The saved frame pointer and the return address, two
+                    // words between the locals and the arguments: an access
+                    // there, sixteen bytes at most, may reach one. A local
+                    // below the frame pointer reaches none without writing
+                    // over the return address first.
+                    if (mem.Disp < 2 * word || mem.Symbol is not null || mem.Label is not null)
+                    {
+                        if (mem.Disp >= 0) touched.Add((mem.Disp, mem.Disp + 16));
+                        continue;
+                    }
+                    if ((i.Op == MOp.Mov && i.Width == word || i.Op == MOp.MovF) && k == 1 && !i.Lock
+                        && i.Operands[0] is MReg { IsMachine: false } && (mem.Disp & (word - 1)) == 0)
+                    {
+                        // A second load of the word makes it no home.
+                        load[mem.Disp] = load.ContainsKey(mem.Disp) ? null : i;
+                    }
+                    else touched.Add((mem.Disp, mem.Disp + 16));
+                }
+            }
+        foreach ((int disp, MInstr? i) in load)
+            if (i is not null && !touched.Any(t => t.From < disp + i.Width && disp < t.To))
+            {
+                homes.Add(i);
+                if (i.Op == MOp.MovF) _homeWidths[disp] = i.Width;
+            }
+        return homes;
+    }
 
     private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
+    // The width an XMM value's home is loaded at, by the home's offset (Move).
+    private readonly Dictionary<int, int> _homeWidths = new();
 
     /// <summary>Registers an instruction writes that neither its operands nor the family's table of unnamed ones say (i386's XMM registers at a call).</summary>
     protected virtual void AlsoWritten(MInstr i, List<Named> named) { }
@@ -501,7 +587,7 @@ internal abstract class FamilyTarget
         {
             if (ai.Made == Made.Jump) return new MInstr(MOp.Jmp, new MLabel(blocks[ai.Targets![0]])) { Line = ai.Line };
             int destination = ai.Regs[0].Reg;
-            return Copy(destination, PlaceOf(p.Of(index, 0), MReg.Of(destination)), PlaceOf(p.Of(index, 1), MReg.Of(ai.Regs[1].Reg)), ai.Line);
+            return Move(PlaceOf(p.Of(index, 0), MReg.Of(destination)), PlaceOf(p.Of(index, 1), MReg.Of(ai.Regs[1].Reg)), ai.Line);
         }
         // A jump table whose blocks the allocator laid out again: the blocks they are now.
         List<MBlock>? table = i.Table;

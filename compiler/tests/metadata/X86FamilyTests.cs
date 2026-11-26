@@ -207,6 +207,13 @@ public static class X86FamilyTests
                 b.Instrs.Add(new MInstr(MOp.Lea, a, MMem.Frame(-16)) { Width = word });
                 b.Instrs.Add(new MInstr(MOp.Lea, a, new MMem(MReg.Of(Gpr.Esp), 8)) { Width = word });
                 b.Instrs.Add(new MInstr(MOp.Mov, a, new MMem(c, 0)) { Width = word });
+                // Two arguments passed on the stack, each loaded once: a word
+                // and a double. A third word loaded twice is no home.
+                MReg h = m.NewReg(), twice = m.NewReg(), hx = m.NewFloat();
+                b.Instrs.Add(new MInstr(MOp.Mov, h, MMem.Frame(2 * word)) { Width = word });
+                b.Instrs.Add(new MInstr(MOp.MovF, hx, MMem.Frame(4 * word)) { Width = 8 });
+                b.Instrs.Add(new MInstr(MOp.Mov, twice, MMem.Frame(8 * word)) { Width = word });
+                b.Instrs.Add(new MInstr(MOp.Mov, twice, MMem.Frame(8 * word)) { Width = word });
                 b.Instrs.Add(new MInstr(MOp.Epilogue) { Width = 0 });
                 b.Instrs.Add(new MInstr(MOp.Ret));
                 Corsac.Lang.RegAlloc.AFunction f = longMode ? new Corsac.Lang.X64.X64Target(m).Lower() : new X86Target(m).Lower();
@@ -249,8 +256,14 @@ public static class X86FamilyTests
                 Expect(remadeFrame is MMem { Disp: -16 }, $"{mode}: an address off the frame's base is made again by its LEA");
                 Expect(offStack is null, $"{mode}: an address off the stack pointer, which every push moves, is not made again");
                 Expect(loaded is null, $"{mode}: a load is no constant");
+                // (The LEA of a local below the frame's base, above, takes no
+                // argument's address: the homes stand.)
+                Corsac.Lang.RegAlloc.AInstr home = lowered[at++], floatHome = lowered[at++], first = lowered[at++], second = lowered[at++];
+                Expect(home.HomeSlot == 2 * word, $"{mode}: a stack-passed word loaded once is its value's home");
+                Expect(floatHome.HomeSlot == 4 * word, $"{mode}: a stack-passed double loaded once into the XMM class is its value's home");
+                Expect(first.HomeSlot is null && second.HomeSlot is null, $"{mode}: a word loaded twice is no home");
             }
-            Console.WriteLine("x86 family: an instruction is told the allocator alike in both modes but where a mode's registers differ -- self-moves, whole copies, a call's writes, slots written, wide constants, what is made again");
+            Console.WriteLine("x86 family: an instruction is told the allocator alike in both modes but where a mode's registers differ -- self-moves, whole copies, a call's writes, slots written, wide constants, what is made again, the argument homes");
         }
         finally
         {

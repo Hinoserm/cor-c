@@ -18,8 +18,6 @@ namespace Corsac.Lang.X64;
 /// </summary>
 internal sealed class X64Target : FamilyTarget, ITarget
 {
-    private const int Xmms = 1;
-
     /// <summary>
     /// Long mode's registers: the caller-saved nine first, then RBX and R12
     /// to R15, every one with a byte form under REX; sixteen XMM registers,
@@ -57,46 +55,6 @@ internal sealed class X64Target : FamilyTarget, ITarget
             ? (i.Width == 4 ? new MImm((uint)imm.Value) : imm) : null;
 
     /// <summary>
-    /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot): `mov v, [rbp+d]` of a
-    /// stack-passed argument's eight bytes, the only thing in the function
-    /// that touches any byte of them, nothing taking an address off RBP --
-    /// no LEA of it, no indexed access above it (RBP as a value is read
-    /// through only: Sys.FramePointer's contract) -- and
-    /// any other access taken as sixteen bytes wide. x86-64's collector
-    /// reads a stack as memory: no map to name it in.
-    /// </summary>
-    protected override HashSet<MInstr> Homes()
-    {
-        HashSet<MInstr> homes = new(ReferenceEqualityComparer.Instance);
-        Dictionary<int, MInstr?> load = new();
-        List<(int From, int To)> touched = new();
-        foreach (MBlock b in _m.Blocks)
-            foreach (MInstr i in b.Instrs)
-                for (int k = 0; k < i.Operands.Count; k++)
-                {
-                    if (i.Operands[k] is not MMem mem) continue;
-                    if (mem.Index?.Id == (int)Gpr.Rbp) return homes;
-                    if (mem.Base?.Id != (int)Gpr.Rbp) continue;
-                    if (i.Op == MOp.Lea || mem.Index is not null && mem.Disp >= 0) return homes;
-                    // The saved frame pointer and the return address, between the locals
-                    // and the arguments: an access there, sixteen bytes at most, may reach
-                    // one. A local below the frame pointer reaches none without writing
-                    // over the return address first.
-                    if (mem.Disp < 16 || mem.Symbol is not null || mem.Label is not null)
-                    {
-                        if (mem.Disp >= 0) touched.Add((mem.Disp, mem.Disp + 16));
-                        continue;
-                    }
-                    if (i.Op == MOp.Mov && k == 1 && i.Width == 8 && !i.Lock && i.Operands[0] is MReg { IsMachine: false, IsFloat: false } && (mem.Disp & 7) == 0)
-                        load[mem.Disp] = load.ContainsKey(mem.Disp) ? null : i;
-                    else touched.Add((mem.Disp, mem.Disp + 16));
-                }
-        foreach ((int disp, MInstr? i) in load)
-            if (i is not null && !touched.Any(t => t.From < disp + 8 && disp < t.To)) homes.Add(i);
-        return homes;
-    }
-
-    /// <summary>
     /// The callee-saved registers touched, or all of them where the function
     /// enters the collector. RBP given a value is saved by the prologue's own
     /// push, not among these.
@@ -107,12 +65,4 @@ internal sealed class X64Target : FamilyTarget, ITarget
             if (_m.SavesEverything || p.Touched.Contains((int)g)) _m.SavedRegs.Add(g);
         _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Rbp);
     }
-
-    /// <summary>A spilled value moved by its class's move (MOV, MOVSD) through an eight-byte slot: the class the register operand is of.</summary>
-    protected override MInstr Move(MOperand to, MOperand from, int line)
-        => new MInstr(to is MReg r && ClassOf(r.Id) == Xmms || from is MReg s && ClassOf(s.Id) == Xmms ? MOp.MovF : MOp.Mov, to, from) { Width = 8, Line = line };
-
-    /// <summary>The allocator's copy, by the class of the register copied into.</summary>
-    protected override MInstr Copy(int destination, MOperand to, MOperand from, int line)
-        => new MInstr(ClassOf(destination) == Xmms ? MOp.MovF : MOp.Mov, to, from) { Width = 8, Line = line };
 }
