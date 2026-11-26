@@ -1593,7 +1593,7 @@ internal static partial class Peephole
     /// slot, the load becomes a register move (MOVAPS, no memory). The store
     /// may then have nothing left to read it; DeadSpillStores, after this,
     /// takes it. Within a block, past only instructions whose register writes
-    /// Masks sees -- operands' and Roles' implicit ones; no call, which
+    /// Masks sees -- operands' and the unnamed ones (Implicit); no call, which
     /// clobbers XMM registers unnamed. A float's reload this way leaves the
     /// register's top lanes the source's, not zero, as SseCopy's move does:
     /// nothing reads a scalar's top lanes.

@@ -51,7 +51,6 @@ internal sealed class X86Target : FamilyTarget, ITarget
         },
     };
 
-    private readonly List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> _regs = new();
 
     public X86Target(MFunction m) : base(m, Leaf(m))
     {
@@ -206,62 +205,31 @@ internal sealed class X86Target : FamilyTarget, ITarget
     public string Text(AInstr i) => i.Tag is MInstr m ? AsmText.Line(_m, m)
         : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
 
-    protected override AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
+    /// <summary>
+    /// A CALL CLOBBERS EVERY XMM REGISTER, all caller-saved in i386's C: said
+    /// only in a function that has the XMM class, every other one's calls
+    /// left as they were. AN ASM BLOCK CLOBBERS THE XMM REGISTERS IT WRITES,
+    /// by number.
+    /// </summary>
+    protected override void AlsoWritten(MInstr i, List<Named> named)
     {
-        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = Roles.RegsOf(i, _regs);
-        // In a leaf the frame's base is no use of the register EBP holds:
-        // FramePointerFree makes it ESP (Leaf: EBP is named nowhere else).
-        if (_leaf) regs.RemoveAll(r => r.Reg.Id == (int)Gpr.Ebp);
-        // A CALL CLOBBERS EVERY XMM REGISTER, all caller-saved in i386's C: said
-        // only in a function that has the XMM class, every other one's calls
-        // left as they were.
-        bool clobbersXmm = _m.XmmRegs.Count > 0 && i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd
+        if (_m.XmmRegs.Count == 0) return;
+        bool call = i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd
             or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe;
-        // AN ASM BLOCK CLOBBERS THE XMM REGISTERS IT WRITES, by number.
-        uint xmmWritten = clobbersXmm ? 0xFFu : _m.XmmRegs.Count > 0 && i.Op == MOp.InlineAsm ? i.Asm!.XmmClobbers & 0xFF : 0;
-        int xmmCount = System.Numerics.BitOperations.PopCount(xmmWritten);
-        Named[] named = new Named[regs.Count + xmmCount];
-        for (int k = 0; k < regs.Count; k++)
-            named[k] = new Named(regs[k].Reg.Id, (Role)(byte)regs[k].Role, regs[k].Operand, regs[k].InMem);
-        for (int x = 0, at = regs.Count; x < 8; x++)
-            if ((xmmWritten & (1u << x)) != 0) named[at++] = new Named(MReg.XmmBase + x, Role.Def, -1, false);
-        uint mayMemory = 0, isMemory = 0, mayImmediate = 0;
-        for (int k = 0; k < i.Operands.Count && k < 32; k++)
-        {
-            if (Roles.Foldable(_m, i, k)) mayMemory |= 1u << k;
-            if (Roles.FoldableImm(i.Op, k)) mayImmediate |= 1u << k;
-            if (i.Operands[k] is MMem) isMemory |= 1u << k;
-        }
-        bool copy = i.Op is MOp.Mov or MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MReg;
-        List<ABlock>? targets = null;
-        if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel label) targets = new() { blocks[label.Target] };
-        else if (i.Op == MOp.JmpTable) targets = i.Table!.Select(t => blocks[t]).ToList();
-        return new AInstr
-        {
-            Tag = i,
-            Regs = named,
-            IsCall = i.Op is MOp.Call or MOp.CallInd,
-            IsSafepoint = i.Op == MOp.CallSafe,
-            IsCopy = copy,
-            // MOVAPS between two XMM registers is the whole register, whatever it holds.
-            WholeCopy = copy && (i.Width == 4 || i.Op == MOp.MovF) && !i.Lock,
-            DropsSelf = copy,
-            Constant = i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm
-                : PoolLoad(i) is { } pool ? pool : Address(i),
-            OperandCount = i.Operands.Count,
-            MayMemory = mayMemory,
-            MayMemoryWrite = mayMemory,
-            IsMemory = isMemory,
-            MayImmediate = mayImmediate,
-            MayImmediateWide = i.Width == 4 ? mayImmediate : 0,
-            Targets = targets,
-            Unconditional = i.EndsFlow,
-            JumpsAnywhere = i.Op == MOp.JmpInd,
-            HomeSlot = _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null,
-            Line = i.Line,
-            Effects = Effects(i),
-        };
+        uint xmmWritten = call ? 0xFFu : i.Op == MOp.InlineAsm ? i.Asm!.XmmClobbers & 0xFF : 0;
+        for (int x = 0; x < 8; x++)
+            if ((xmmWritten & (1u << x)) != 0) named.Add(new Named(MReg.XmmBase + x, Role.Def, -1, false));
     }
+
+    /// <summary>A slot holds what a register does, at any width: a narrow write leaves the rest of either as it was.</summary>
+    protected override bool MayWriteMemory(MInstr i, int operand) => true;
+
+    /// <summary>A whole word's constant, a float pool's word, or an address made from nothing placed (Address).</summary>
+    protected override object? ConstantOf(MInstr i)
+        => i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm
+            : PoolLoad(i) is { } pool ? pool : Address(i);
+
+    protected override int? HomeOf(MInstr i) => _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null;
 
     private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
 

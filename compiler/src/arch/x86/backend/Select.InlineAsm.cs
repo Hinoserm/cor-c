@@ -31,7 +31,9 @@ public sealed class InlineAsmCode
     /// <summary>
     /// Defs so (Implicit.Defs), and in long mode the XMM registers written
     /// after them; i386 says those where the function has the XMM class
-    /// (X86Target.LowerInstr).
+    /// (X86Target.AlsoWritten). Made on the first asking and kept: a record
+    /// is one function's, selected in one mode (X86Mode.Long is the
+    /// process's), and two askers at once would make equal sets.
     /// </summary>
     internal RegSet DefSet => _defSet ??= MakeDefSet();
 

@@ -59,8 +59,88 @@ internal abstract class FamilyTarget
     /// <summary>What a mode finds out about the whole function before its instructions are lowered (the argument homes).</summary>
     protected abstract void BeforeLowering();
 
-    /// <summary>One instruction as the allocator sees it: the registers it names, what may be memory or a constant, its jumps, its effects.</summary>
-    protected abstract AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks);
+    /// <summary>Registers an instruction writes that neither its operands nor the family's table of unnamed ones say (i386's XMM registers at a call).</summary>
+    protected virtual void AlsoWritten(MInstr i, List<Named> named) { }
+
+    /// <summary>Whether an operand that may be memory may be WRITTEN there: a mode whose register write does more than the slot's would says no.</summary>
+    protected abstract bool MayWriteMemory(MInstr i, int operand);
+
+    /// <summary>The value an instruction makes from nothing the allocator places, which may be made again where wanted (Remade) rather than kept: a constant, an address, a pool's word.</summary>
+    protected abstract object? ConstantOf(MInstr i);
+
+    /// <summary>The frame slot an instruction loads as its value's home (each mode's Homes), or null.</summary>
+    protected abstract int? HomeOf(MInstr i);
+
+    // One list each for the whole function's lowering.
+    private readonly List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> _regs = new();
+    private readonly List<Named> _named = new();
+
+    /// <summary>
+    /// ONE INSTRUCTION AS THE ALLOCATOR SEES IT, the same reading in both
+    /// modes: the registers it names (Roles.RegsOf), which operands may be
+    /// memory (Roles.Foldable) or an immediate (FoldableImm: any constant
+    /// where the operation is thirty-two bits wide, else one that fits
+    /// thirty-two bits signed), whether it is a copy, its jumps, its
+    /// effects (Effects).
+    /// </summary>
+    private AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
+    {
+        _named.Clear();
+        foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, _regs))
+        {
+            // In a leaf the frame's base is no use of the register the base
+            // register holds: FramePointerFree makes it the stack pointer
+            // (Leaf: the base register is named nowhere else).
+            if (_leaf && r.Id == (int)Gpr.Ebp) continue;
+            _named.Add(new Named(r.Id, (Role)(byte)role, operand, inMem));
+        }
+        AlsoWritten(i, _named);
+        uint mayMemory = 0, mayMemoryWrite = 0, isMemory = 0, mayImmediate = 0;
+        for (int k = 0; k < i.Operands.Count && k < 32; k++)
+        {
+            if (Roles.Foldable(_m, i, k))
+            {
+                mayMemory |= 1u << k;
+                if (MayWriteMemory(i, k)) mayMemoryWrite |= 1u << k;
+            }
+            if (Roles.FoldableImm(i.Op, k)) mayImmediate |= 1u << k;
+            if (i.Operands[k] is MMem) isMemory |= 1u << k;
+        }
+        bool copy = i.Op is MOp.Mov or MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MReg;
+        List<ABlock>? targets = null;
+        if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel label) targets = new() { blocks[label.Target] };
+        else if (i.Op == MOp.JmpTable) targets = i.Table!.Select(t => blocks[t]).ToList();
+        // A copy of the whole register: the mode's word, or an XMM move
+        // (MOVAPS between two XMM registers is the whole register, whatever
+        // it holds).
+        bool whole = i.Op == MOp.MovF || i.Width == X86Mode.Word;
+        return new AInstr
+        {
+            Tag = i,
+            Regs = _named.ToArray(),
+            IsCall = i.Op is MOp.Call or MOp.CallInd,
+            IsSafepoint = i.Op == MOp.CallSafe,
+            IsCopy = copy,
+            WholeCopy = copy && whole && !i.Lock,
+            // A register moved onto itself is nothing -- but long mode's
+            // 32-bit move, which clears the upper half: that is its meaning
+            // when written so.
+            DropsSelf = copy && (whole || !X86Mode.Long || i.Width != 4),
+            Constant = ConstantOf(i),
+            OperandCount = i.Operands.Count,
+            MayMemory = mayMemory,
+            MayMemoryWrite = mayMemoryWrite,
+            IsMemory = isMemory,
+            MayImmediate = mayImmediate,
+            MayImmediateWide = i.Width == 4 ? mayImmediate : 0,
+            Targets = targets,
+            Unconditional = i.EndsFlow,
+            JumpsAnywhere = i.Op == MOp.JmpInd,
+            HomeSlot = HomeOf(i),
+            Line = i.Line,
+            Effects = Effects(i),
+        };
+    }
 
     /// <summary>
     /// What an instruction does besides its registers, for the scheduler
@@ -260,7 +340,7 @@ internal abstract class FamilyTarget
         if (i.Op == MOp.JmpTable && ai.Targets is { } targets && targets.Where((t, k) => !ReferenceEquals(blocks[t], i.Table![k])).Any())
             table = targets.Select(t => blocks[t]).ToList();
         MInstr n = i.Rebuilt(table);
-        // The registers named, walked in the order each mode's RegsOf named them.
+        // The registers named, walked in the order Roles.RegsOf named them.
         int k = 0;
         for (int o = 0; o < i.Operands.Count; o++)
         {

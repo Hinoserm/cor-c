@@ -118,7 +118,7 @@ internal static class LongAbi
 /// <summary>
 /// i386'S CALLING CONVENTIONS, by register: C's, with every argument on the
 /// stack. (An XMM register is written by every call too, said where a
-/// function has that class: X86Target.LowerInstr.)
+/// function has that class: X86Target.AlsoWritten.)
 /// </summary>
 internal static class Cdecl
 {
@@ -182,6 +182,7 @@ internal sealed class RegSet
 {
     public static readonly RegSet None = new(new int[0]);
 
+    /// <summary>Read only: one array answers every asker.</summary>
     public readonly int[] Ids;
     public readonly long Mask;
 

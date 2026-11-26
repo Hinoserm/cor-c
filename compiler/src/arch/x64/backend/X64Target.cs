@@ -165,83 +165,35 @@ internal sealed class X64Target : FamilyTarget, ITarget
     public string Text(AInstr i) => i.Tag is MInstr m ? $"{m.Op} {string.Join(", ", m.Operands)}"
         : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
 
-    // One list for the whole function's lowering (Roles.RegsOf).
-    private readonly List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> _regs = new();
+    /// <summary>
+    /// A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a reload is
+    /// the whole eight bytes: a general register written at less than eight
+    /// bytes is written in a register.
+    /// </summary>
+    protected override bool MayWriteMemory(MInstr i, int operand)
+        => i.Width == 8 || i.Operands[operand] is MReg r && (r.IsFloat || _m.XmmRegs.Contains(r.Id));
 
-    protected override AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
+    /// <summary>
+    /// A constant moved into a general register -- the width part of the
+    /// value: a 4-byte move of -1 is 0xFFFFFFFF -- or an address an LEA
+    /// makes from nothing the allocator places: off RBP, which holds still,
+    /// or a symbol RIP-relative; not off RSP, which every push moves, nor
+    /// through the GOT. (A 64-bit constant folded into a move whose
+    /// destination is later spilled would ask for `mov m64, imm64`, which
+    /// x86-64 does not have: Roles.Foldable.)
+    /// </summary>
+    protected override object? ConstantOf(MInstr i)
     {
-        List<Named> named = new();
-        foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, _regs))
-        {
-            // In a leaf the frame's base is no use of the register RBP holds:
-            // FramePointerFree makes it RSP (Leaf: RBP is named nowhere else).
-            if (_leaf && r.Id == (int)Gpr.Rbp) continue;
-            named.Add(new Named(r.Id, (Role)(byte)role, operand, inMem));
-        }
-        uint mayMemory = 0, mayMemoryWrite = 0, isMemory = 0, mayImmediate = 0, mayImmediateWide = 0;
-        for (int k = 0; k < i.Operands.Count && k < 32; k++)
-        {
-            if (Roles.Foldable(_m, i, k))
-            {
-                mayMemory |= 1u << k;
-                // A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a
-                // reload is the whole eight bytes: a general register written
-                // at less than eight bytes is written in a register.
-                if (i.Width == 8 || i.Operands[k] is MReg r && (r.IsFloat || _m.XmmRegs.Contains(r.Id))) mayMemoryWrite |= 1u << k;
-            }
-            if (i.Operands[k] is MMem) isMemory |= 1u << k;
-        }
-        // A constant in place of a register: a move's or an ALU operation's
-        // source, any constant where the operation is 32 bits wide, else one
-        // that fits 32 bits signed; a push's, one that fits (PlainConstant).
-        // A 64-bit one folded into a move whose destination is later spilled
-        // would ask for `mov m64, imm64`, which x86-64 does not have.
-        if (i.Op is MOp.Mov or MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Adc or MOp.Sbb or MOp.Cmp)
-        {
-            mayImmediate = 1u << 1;
-            if (i.Width == 4) mayImmediateWide = 1u << 1;
-        }
-        else if (i.Op == MOp.Push) mayImmediate = 1u;
-        bool copy = i.Op is MOp.Mov or MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MReg;
-        object? constant = null;
-        // The width is part of the value: a 4-byte move of -1 is 0xFFFFFFFF.
         if (i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg { IsFloat: false } && i.Operands[1] is MImm { IsPlain: true } imm)
-            constant = i.Width == 4 ? new MImm((uint)imm.Value) : imm;
-        // An address an LEA makes from nothing the allocator places -- off RBP,
-        // which holds still, or a symbol RIP-relative -- remade where wanted;
-        // not off RSP, which every push moves, nor through the GOT.
-        else if (i.Op == MOp.Lea && i.Width == 8 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false, IsFloat: false }
+            return i.Width == 4 ? new MImm((uint)imm.Value) : imm;
+        if (i.Op == MOp.Lea && i.Width == 8 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false, IsFloat: false }
             && i.Operands[1] is MMem { Index: null, Label: null, IsSpill: false, Got: false, Segment: 0 } m
             && (m.Base is null ? m.Symbol is not null : m.Base.Id == (int)Gpr.Rbp && m.Symbol is null))
-            constant = m;
-        List<ABlock>? targets = null;
-        if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel label) targets = new() { blocks[label.Target] };
-        else if (i.Op == MOp.JmpTable) targets = i.Table!.Select(t => blocks[t]).ToList();
-        return new AInstr
-        {
-            Tag = i,
-            Regs = named.ToArray(),
-            IsCall = i.Op is MOp.Call or MOp.CallInd,
-            IsSafepoint = i.Op == MOp.CallSafe,
-            IsCopy = copy,
-            // A 32-bit move onto itself clears the upper half, which is its meaning when written so.
-            DropsSelf = copy && (i.Op == MOp.MovF || i.Width == 8),
-            WholeCopy = copy && !i.Lock && (i.Op == MOp.MovF || i.Width == 8),
-            Constant = constant,
-            OperandCount = i.Operands.Count,
-            MayMemory = mayMemory,
-            MayMemoryWrite = mayMemoryWrite,
-            IsMemory = isMemory,
-            MayImmediate = mayImmediate,
-            MayImmediateWide = mayImmediateWide,
-            Targets = targets,
-            Unconditional = i.EndsFlow,
-            JumpsAnywhere = i.Op == MOp.JmpInd,
-            HomeSlot = _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null,
-            Line = i.Line,
-            Effects = Effects(i),
-        };
+            return m;
+        return null;
     }
+
+    protected override int? HomeOf(MInstr i) => _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null;
 
     private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
 

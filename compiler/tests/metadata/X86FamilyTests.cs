@@ -7,13 +7,15 @@ namespace Corsac.Tests.Metadata;
 /// What the x86 family's two modes must agree with themselves about.
 ///
 /// The registers an instruction touches without naming them are one table
-/// for both modes (Implicit), told as a list, in the order the allocation
-/// names them, and as a mask for the passes that ask of every instruction.
-/// Every opcode, with every count of arguments a call may carry, must give
-/// the same registers both ways in each mode -- a register in one and not
-/// the other is a value a pass takes for dead that the allocation kept, or
-/// the reverse -- and what each mode's convention says of a call, a return
-/// and a divide is checked against the registers written out here.
+/// for both modes (Implicit), each answer its ids in the order the
+/// allocation names them and the same as a mask. THE TABLE IS WRITTEN OUT
+/// HERE A SECOND TIME, opcode by opcode, in that order: an instruction's own
+/// registers, the same in both modes, and what each mode's convention says
+/// of its calls, returns and system calls. Every opcode is asked in both
+/// modes and must answer what is written here -- none, where nothing is --
+/// so an answer that changes, or an opcode that gains one in the mode that
+/// does not make it, is seen; and a call is asked with every count of
+/// arguments it may carry.
 ///
 /// And the frame slots' liveness reads the machine's code one way for both
 /// (X86.FrameSlotLiveness): the same five shapes, built by hand in each
@@ -28,54 +30,126 @@ public static class X86FamilyTests
         bool was = X86Mode.Long;
         try
         {
+            const int A = (int)Gpr.Eax, C = (int)Gpr.Ecx, D = (int)Gpr.Edx, B = (int)Gpr.Ebx, Si = (int)Gpr.Esi, Di = (int)Gpr.Edi,
+                Bp = (int)Gpr.Ebp, R11 = (int)Gpr.R11, Xmm0 = MReg.XmmBase;
+            int[] none = new int[0], allXmm = Enumerable.Range(Xmm0, 16).ToArray();
+            // An instruction's own, the processor's: the same in both modes.
+            Dictionary<MOp, (int[] Uses, int[] Defs)> own = new()
+            {
+                [MOp.Rdmsr] = (new[] { C }, new[] { A, D }),
+                [MOp.Rdtsc] = (none, new[] { A, D }),
+                [MOp.Wrmsr] = (new[] { C, A, D }, none),
+                [MOp.Cpuid] = (new[] { A, C }, new[] { A, B, C, D }),
+                [MOp.Cmpxchg8b] = (new[] { A, B, C, D, Si }, new[] { A, D }),
+                [MOp.PackedSaveX87] = (new[] { A }, none),
+                [MOp.PackedRestoreX87] = (new[] { A }, none),
+                [MOp.PackedSaveFxsr] = (new[] { A }, none),
+                [MOp.PackedRestoreFxsr] = (new[] { A }, none),
+                [MOp.Cdq] = (new[] { A }, new[] { D }),
+                [MOp.Cwd] = (new[] { A }, new[] { D }),
+                [MOp.Mul] = (new[] { A }, new[] { A, D }),
+                [MOp.MulWide] = (new[] { A }, new[] { A, D }),
+                [MOp.ImulWide] = (new[] { A }, new[] { A, D }),
+                [MOp.Div] = (new[] { A, D }, new[] { A, D }),
+                [MOp.Idiv] = (new[] { A, D }, new[] { A, D }),
+                [MOp.Cmpxchg] = (new[] { A }, new[] { A }),
+                [MOp.RepMovsb] = (new[] { Si, Di, C }, new[] { Si, Di, C }),
+                [MOp.RepMovsd] = (new[] { Si, Di, C }, new[] { Si, Di, C }),
+                [MOp.RepMovsq] = (new[] { Si, Di, C }, new[] { Si, Di, C }),
+                [MOp.RepStosb] = (new[] { A, Di, C }, new[] { Di, C }),
+                [MOp.RepStosd] = (new[] { A, Di, C }, new[] { Di, C }),
+                [MOp.RepStosq] = (new[] { A, Di, C }, new[] { Di, C }),
+                [MOp.Sahf] = (new[] { A }, none),
+                [MOp.Fnstsw] = (none, new[] { A }),
+                [MOp.In] = (new[] { D }, new[] { A }),
+                [MOp.Out] = (new[] { D, A }, none),
+                [MOp.LoadSegments] = (new[] { A }, none),
+                [MOp.LoadCs] = (none, new[] { A }),
+                [MOp.RepInsw] = (new[] { D, Di, C }, new[] { Di, C }),
+                [MOp.RepOutsw] = (new[] { D, Si, C }, new[] { Si, C }),
+            };
+            // Each mode's convention, asked with no argument, no result and no operand.
+            Dictionary<MOp, (int[] Uses, int[] Defs)> cdecl = new()
+            {
+                [MOp.Call] = (none, new[] { A, C, D }),
+                [MOp.CallInd] = (none, new[] { A, C, D }),
+                [MOp.CallKeepEax] = (none, new[] { A }),
+                [MOp.CallKeepEaxInd] = (none, new[] { A }),
+                [MOp.SyscallTrap] = (new[] { A, B, C, D, Si, Di, Bp }, new[] { A }),
+                [MOp.SaveRegs] = (none, new[] { B, Si, Di }),
+            };
+            int[] callWrites = LongAbi.CallerSaved.Concat(allXmm).ToArray();
+            Dictionary<MOp, (int[] Uses, int[] Defs)> sysV = new()
+            {
+                [MOp.Call] = (none, callWrites),
+                [MOp.CallInd] = (none, callWrites),
+                [MOp.CallKeep] = (new[] { A, D }, none),
+                [MOp.CallKeepRax] = (new[] { A, D }, new[] { A }),
+                [MOp.CallKeepCas] = (new[] { A, C, D }, new[] { A }),
+                [MOp.CallSafe] = (none, allXmm),
+                [MOp.Syscall] = (new[] { A }, new[] { A, C, R11 }),
+                [MOp.SoftInt] = (new[] { A }, new[] { A, C, R11 }),
+                [MOp.JmpInd] = (new[] { A }, none),
+            };
+            if (callWrites.Length != 25) throw new InvalidOperationException("x86 family: long mode's call writes " + callWrites.Length + " registers, not nine general and sixteen XMM");
             int asked = 0;
             foreach (bool longMode in new[] { false, true })
             {
                 X86Mode.Long = longMode;
+                Dictionary<MOp, (int[] Uses, int[] Defs)> convention = longMode ? sysV : cdecl;
                 foreach (MOp op in Enum.GetValues<MOp>())
                 {
                     // An asm block's are its own record's.
                     if (op == MOp.InlineAsm) continue;
-                    for (int ints = 0; ints <= LongAbi.IntArgRegs.Length; ints++)
-                        for (int floats = 0; floats <= LongAbi.FloatArgRegs; floats++)
-                            foreach (bool al in new[] { false, true })
-                                foreach (int width in new[] { 0, 4, 8 })
-                                {
-                                    MInstr i = new(op) { IntArgs = ints, FloatArgs = floats, NativeAl = al, Width = width };
-                                    Same(op, "reads", Mask(Implicit.Uses(i).Ids), Implicit.Uses(i).Mask);
-                                    Same(op, "writes", Mask(Implicit.Defs(i).Ids), Implicit.Defs(i).Mask);
-                                    asked++;
-                                }
+                    (int[] uses, int[] defs) = own.TryGetValue(op, out var o) ? o : convention.TryGetValue(op, out var c) ? c : (none, none);
+                    MInstr plain = new(op) { Width = 0 };
+                    Listed(op + " reads", Implicit.Uses(plain), uses);
+                    Listed(op + " writes", Implicit.Defs(plain), defs);
+                    Same(op, "reads", Mask(uses), Implicit.Uses(plain).Mask);
+                    Same(op, "writes", Mask(defs), Implicit.Defs(plain).Mask);
+                    asked++;
                 }
             }
-            Console.WriteLine("x86 family: the unnamed registers are the same as lists and as masks in both modes, " + asked + " instructions asked");
+            Console.WriteLine("x86 family: the unnamed registers of every opcode are the ones written out, in order, in both modes: " + asked + " asked");
 
-            const int Xmm0 = MReg.XmmBase;
+            // A call's, a return's and a system call's by what they carry.
             X86Mode.Long = true;
-            MInstr call = new(MOp.Call) { IntArgs = 2, FloatArgs = 1, NativeAl = true };
-            Listed("long mode's call reads", Implicit.Uses(call), (int)Gpr.Rax, (int)Gpr.Rdi, (int)Gpr.Rsi, Xmm0);
-            Same(MOp.Call, "writes (nine general registers and sixteen XMM)", Implicit.Defs(call).Mask,
-                Mask(LongAbi.CallerSaved) | 0xFFFFL << MReg.XmmBase);
-            if (Implicit.Defs(call).Ids.Length != 25) throw new InvalidOperationException("x86 family: long mode's call writes " + Implicit.Defs(call).Ids.Length + " registers");
-            Listed("long mode's return of a float reads", Implicit.Uses(new MInstr(MOp.Epilogue) { FloatArgs = 1 }), Xmm0);
-            Listed("long mode's system call of two arguments reads", Implicit.Uses(new MInstr(MOp.Syscall) { IntArgs = 2 }), (int)Gpr.Rax, (int)Gpr.Rdi, (int)Gpr.Rsi);
-            Listed("long mode's system call writes", Implicit.Defs(new MInstr(MOp.Syscall)), (int)Gpr.Rax, (int)Gpr.Rcx, (int)Gpr.R11);
-            Listed("long mode's safe call writes no general register", Implicit.Defs(new MInstr(MOp.CallSafe)), Enumerable.Range(Xmm0, 16).ToArray());
+            asked = 0;
+            for (int ints = 0; ints <= LongAbi.IntArgRegs.Length; ints++)
+                for (int floats = 0; floats <= LongAbi.FloatArgRegs; floats++)
+                    foreach (bool al in new[] { false, true })
+                    {
+                        List<int> reads = new();
+                        if (al) reads.Add(A);
+                        for (int k = 0; k < ints; k++) reads.Add((int)LongAbi.IntArgRegs[k]);
+                        for (int k = 0; k < floats; k++) reads.Add(Xmm0 + k);
+                        foreach (MOp op in new[] { MOp.Call, MOp.CallInd })
+                        {
+                            MInstr call = new(op) { IntArgs = ints, FloatArgs = floats, NativeAl = al };
+                            Listed("long mode's call reads", Implicit.Uses(call), reads.ToArray());
+                            Listed("long mode's call writes", Implicit.Defs(call), callWrites);
+                            asked++;
+                        }
+                        List<int> returned = new();
+                        if (ints > 0) returned.Add(A);
+                        if (floats > 0) returned.Add(Xmm0);
+                        Listed("long mode's return reads", Implicit.Uses(new MInstr(MOp.Epilogue) { IntArgs = ints, FloatArgs = floats }), returned.ToArray());
+                    }
+            Listed("long mode's first integer arguments", Implicit.Uses(new MInstr(MOp.Call) { IntArgs = 3 }), (int)Gpr.Rdi, (int)Gpr.Rsi, (int)Gpr.Rdx);
+            for (int n = 0; n <= LongAbi.SyscallArgs.Length; n++)
+                Listed("long mode's system call reads", Implicit.Uses(new MInstr(MOp.Syscall) { IntArgs = n }), new[] { A }.Concat(LongAbi.SyscallArgs.Take(n)).ToArray());
+            Listed("long mode's system call's fourth argument is in R10", Implicit.Uses(new MInstr(MOp.SoftInt) { IntArgs = 4 }),
+                A, (int)Gpr.Rdi, (int)Gpr.Rsi, (int)Gpr.Rdx, (int)Gpr.R10);
             X86Mode.Long = false;
-            Listed("i386's call reads", Implicit.Uses(new MInstr(MOp.Call) { IntArgs = 2, FloatArgs = 1 }));
-            Listed("i386's call writes", Implicit.Defs(new MInstr(MOp.Call)), (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx);
-            Listed("i386's return of a long reads", Implicit.Uses(new MInstr(MOp.Epilogue) { Width = 8 }), (int)Gpr.Eax, (int)Gpr.Edx);
-            Listed("i386's return of a word reads", Implicit.Uses(new MInstr(MOp.Epilogue) { Width = 4 }), (int)Gpr.Eax);
+            Listed("i386's call reads", Implicit.Uses(new MInstr(MOp.Call) { IntArgs = 2, FloatArgs = 1, NativeAl = true }));
+            Listed("i386's return of a long reads", Implicit.Uses(new MInstr(MOp.Epilogue) { Width = 8 }), A, D);
+            Listed("i386's return of a word reads", Implicit.Uses(new MInstr(MOp.Epilogue) { Width = 4 }), A);
             Listed("i386's return of nothing reads", Implicit.Uses(new MInstr(MOp.Epilogue) { Width = 0 }));
-            foreach (bool longMode in new[] { false, true })
-            {
-                X86Mode.Long = longMode;
-                Listed("a divide reads", Implicit.Uses(new MInstr(MOp.Div)), (int)Gpr.Eax, (int)Gpr.Edx);
-                Listed("a divide writes", Implicit.Defs(new MInstr(MOp.Idiv)), (int)Gpr.Eax, (int)Gpr.Edx);
-                Listed("a string move writes", Implicit.Defs(new MInstr(MOp.RepMovsb)), (int)Gpr.Esi, (int)Gpr.Edi, (int)Gpr.Ecx);
-                Listed("CPUID writes", Implicit.Defs(new MInstr(MOp.Cpuid)), (int)Gpr.Eax, (int)Gpr.Ebx, (int)Gpr.Ecx, (int)Gpr.Edx);
-            }
-            Console.WriteLine("x86 family: each mode's convention names the registers of its calls, returns and system calls; a divide's, a string move's and CPUID's are the same in both");
+            int[] trap = { A, B, C, D, Si, Di };
+            for (int n = 0; n <= 5; n++)
+                Listed("i386's system call of " + n + " arguments reads", Implicit.Uses(new MInstr(MOp.SyscallTrap, new MImm(0), new MImm(n))), trap.Take(n + 1).ToArray());
+            Listed("i386's system call of six arguments reads", Implicit.Uses(new MInstr(MOp.SyscallTrap, new MImm(0), new MImm(6))), A, B, C, D, Si, Di, Bp);
+            Console.WriteLine("x86 family: each mode's calls, returns and system calls read the registers of what they carry, " + asked + " calls asked");
             foreach (bool longMode in new[] { false, true })
             {
                 X86Mode.Long = longMode;
