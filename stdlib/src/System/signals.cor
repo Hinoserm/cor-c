@@ -88,9 +88,10 @@ public class PosixSignalRegistration : IDisposable
     // Whether the thread that delivers has been started: once a process, by
     // the first Create (StartDelivering). A FORK'S CHILD has the word and
     // not the thread -- only the forking thread is copied -- so it is given
-    // its own (ForkedChild, ForkedThread): a daemon's workers, forked after the manager
-    // registered a handler, registered theirs and never ran them. A child
-    // that only execs (Os.ForkToExec) runs nothing of this and needs none.
+    // its own (ForkedChild, ForkedThread): a daemon's workers, forked after
+    // the manager registered a handler, registered theirs and never ran
+    // them. A child that only execs (Os.ForkToExec) runs nothing of this
+    // and needs none.
     static int _delivering;
 
     PosixSignal _signal;

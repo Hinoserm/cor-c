@@ -64,7 +64,7 @@ static class Program
 
     static int Main()
     {
-        if (Environment.GetCommandLineArgs().Length > 7) Counting._nothing = new int[4];
+        if (Environment.ProcessId < 0) Counting._nothing = new int[4];
         PosixSignalRegistration parents = PosixSignalRegistration.Create(PosixSignal.SIGTERM, new Counting());
         int pid = UnixProcess.Fork();
         if (pid == 0)

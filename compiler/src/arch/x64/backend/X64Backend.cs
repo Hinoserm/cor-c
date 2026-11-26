@@ -285,7 +285,7 @@ public sealed class X64Backend : IBackend
             Section tables = PositionIndependent ? relocatedConstants : rodata;
             foreach ((string sym, List<MBlock> targets) in encoder.Tables)
             {
-                Pad(tables, 8, 0);
+                Corsac.Lang.Backends.ObjectData.Pad(tables, 8, 0);
                 obj.Symbols.Add(new Symbol { Name = sym, Section = tables, Offset = tables.Bytes.Count, Size = targets.Count * 8, Global = false });
                 defined.Add(sym);
                 foreach (MBlock t in targets)
@@ -295,7 +295,8 @@ public sealed class X64Backend : IBackend
                 }
             }
             encoder.ReleaseFunction();
-            // (Not a unit made again at the link: UnitBackend asks for no release.)
+            // (Only where nothing reads a body after Generate: Driver sets
+            // ReleaseBodies off where the object is to carry the module's IR.)
             if (ReleaseBodies) Corsac.Lang.Backends.ObjectData.Release(f);
         }
 
@@ -310,7 +311,7 @@ public sealed class X64Backend : IBackend
         if (frames.Count > 0)
         {
             byte[] bytes = Corsac.Lang.X86.FrameTable.Build(frames, out int fixup, out string baseSymbol);
-            Pad(rodata, 8, 0);
+            Corsac.Lang.Backends.ObjectData.Pad(rodata, 8, 0);
             int at = rodata.Bytes.Count;
             obj.Symbols.Add(new Symbol
             {
@@ -628,6 +629,4 @@ public sealed class X64Backend : IBackend
         foreach (string stub in new[] { Corsac.Lang.Lto.RuntimeAbi.SequencesStart, RefStoreStub, CardStoreStub, RefExchangeStub, RefCompareExchangeStub, Corsac.Lang.Lto.RuntimeAbi.SequencesEnd })
             defined.Add(stub);
     }
-
-    private static void Pad(Section s, int align, byte fill) => Corsac.Lang.Backends.ObjectData.Pad(s, align, fill);
 }

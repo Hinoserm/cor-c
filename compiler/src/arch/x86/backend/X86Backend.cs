@@ -591,7 +591,7 @@ public sealed class X86Backend : IBackend
             Section tables = PositionIndependent ? relocatedConstants : rodata;
             foreach ((string sym, List<MBlock> targets) in encoder.Tables)
             {
-                Pad(tables, 4, 0);
+                Corsac.Lang.Backends.ObjectData.Pad(tables, 4, 0);
                 obj.Symbols.Add(new Symbol { Name = sym, Section = tables, Offset = tables.Bytes.Count, Size = targets.Count * 4, Global = false });
                 defined.Add(sym);
                 foreach (MBlock t in targets)
@@ -614,7 +614,7 @@ public sealed class X86Backend : IBackend
             // relocation, and a relocation may not land in a page the loader
             // has to keep read-only. Jump tables move for the same reason.
             Section frameSection = PositionIndependent ? relocatedConstants : rodata;
-            Pad(frameSection, 4, 0);
+            Corsac.Lang.Backends.ObjectData.Pad(frameSection, 4, 0);
             int at = frameSection.Bytes.Count;
             // Built straight into the section, never one array of its own.
             FrameTable.Build(frameSection.Bytes, frames, out int fixup, out string baseSymbol);
@@ -1137,6 +1137,4 @@ public sealed class X86Backend : IBackend
         defined.Add(StackMapStart);
         defined.Add(StackMapEnd);
     }
-
-    private static void Pad(Section s, int align, byte fill) => Corsac.Lang.Backends.ObjectData.Pad(s, align, fill);
 }
