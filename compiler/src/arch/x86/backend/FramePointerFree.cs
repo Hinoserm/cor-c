@@ -56,17 +56,33 @@ internal static class FramePointerFree
             // frameless function's is there.
             _ => throw new InvalidOperationException($"{m.Source.Name}: a frame slot at EBP + {disp} in a function without a frame"),
         };
+        Readdress(m, Address, !m.ColdFrames);
+    }
+
+    /// <summary>
+    /// EVERY OPERAND MOVED OFF THE FRAME'S BASE, for both modes: one based on
+    /// the base register becomes one off the stack pointer at `address` of
+    /// its displacement, and the value the base register holds
+    /// (MReg.EbpData), as an operand or in one, becomes the register itself.
+    /// Refused, not miscompiled, where something moves the stack pointer --
+    /// a call (but a cold-framed function's own, `calls` false, which make
+    /// their frame on the way), a store sequence's stub's, a push or a pop
+    /// -- or writes it: the allocator's leaf test and OnlyColdCalls let no
+    /// such function here.
+    /// </summary>
+    internal static void Readdress(MFunction m, Func<int, int> address, bool calls)
+    {
         List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
         foreach (MBlock b in m.Blocks)
         {
             foreach (MInstr i in b.Instrs)
             {
-                if ((i.Op is MOp.Call or MOp.CallInd && !m.ColdFrames) || i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe
-                    or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf)
-                    throw new InvalidOperationException($"{m.Source.Name}: {i.Op} in a function without a frame");
+                if ((i.Op is MOp.Call or MOp.CallInd && calls) || i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                    or MOp.CallKeepRax or MOp.CallKeepCas or MOp.CallSafe or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf)
+                    throw new InvalidOperationException($"{m.Source.Name}: {i.Op} in a function without a frame pointer");
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0)
-                        throw new InvalidOperationException($"{m.Source.Name}: ESP written in a function without a frame");
+                        throw new InvalidOperationException($"{m.Source.Name}: the stack pointer written in a function without a frame pointer");
                 for (int o = 0; o < i.Operands.Count; o++)
                 {
                     switch (i.Operands[o])
@@ -74,21 +90,15 @@ internal static class FramePointerFree
                         case MReg { Id: MReg.EbpDataId }:
                             i.Operands[o] = MReg.Of(Gpr.Ebp);
                             break;
-                        case MMem mem when mem.Base?.Id == (int)Gpr.Ebp:
-                            i.Operands[o] = new MMem(MReg.Of(Gpr.Esp), Address(mem.Disp))
-                            {
-                                Index = mem.Index?.Id == MReg.EbpDataId ? MReg.Of(Gpr.Ebp) : mem.Index, Scale = mem.Scale,
-                                Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, IsSpill = mem.IsSpill, Device = mem.Device,
-                            };
-                            break;
                         // A new operand, not this one changed: one shared by two
                         // instructions, met again, would be taken for the frame.
+                        case MMem mem when mem.Base?.Id == (int)Gpr.Ebp:
+                            i.Operands[o] = mem.WithRegisters(MReg.Of(Gpr.Esp), mem.Index?.Id == MReg.EbpDataId ? MReg.Of(Gpr.Ebp) : mem.Index)
+                                .WithDisp(address(mem.Disp) - mem.Disp);
+                            break;
                         case MMem mem when mem.Base?.Id == MReg.EbpDataId || mem.Index?.Id == MReg.EbpDataId:
-                            i.Operands[o] = new MMem(mem.Base?.Id == MReg.EbpDataId ? MReg.Of(Gpr.Ebp) : mem.Base, mem.Disp)
-                            {
-                                Index = mem.Index?.Id == MReg.EbpDataId ? MReg.Of(Gpr.Ebp) : mem.Index, Scale = mem.Scale,
-                                Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, IsSpill = mem.IsSpill, Device = mem.Device,
-                            };
+                            i.Operands[o] = mem.WithRegisters(mem.Base?.Id == MReg.EbpDataId ? MReg.Of(Gpr.Ebp) : mem.Base,
+                                mem.Index?.Id == MReg.EbpDataId ? MReg.Of(Gpr.Ebp) : mem.Index);
                             break;
                     }
                 }
