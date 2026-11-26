@@ -331,7 +331,7 @@ public static class X86FamilyTests
                     new MInstr(MOp.Add, sum, kept) { Width = word },
                     new MInstr(MOp.Test, kept, kept) { Width = word },
                     new MInstr(MOp.MovF, fx, MMem.Frame(-8)) { Width = 8 },
-                    new MInstr(MOp.MovF, MReg.Of(MReg.XmmBase), fx) { Width = 8 },
+                    new MInstr(MOp.MovF, MReg.Of(MReg.XmmBase + 5), fx) { Width = 8 },
                     new MInstr(MOp.Mov, MReg.Of(Gpr.Eax), kept) { Width = word },
                     new MInstr(MOp.Epilogue) { Width = word, IntArgs = 1 },
                     new MInstr(MOp.Ret),
@@ -341,8 +341,10 @@ public static class X86FamilyTests
                 List<MInstr> left = pruned.Blocks.SelectMany(block => block.Instrs).ToList();
                 Expect(!left.Any(i => i.Operands.Any(o => o is MImm { Value: 5 })), $"{mode}: a constant nothing reads is gone");
                 Expect(!left.Any(i => i.Op == MOp.Add), $"{mode}: arithmetic nothing reads, its flags written over, is gone");
-                Expect(left.Any(i => i.Operands.Any(o => o is MImm { Value: 7 })) || left.Any(i => i.Op == MOp.Test), $"{mode}: a value read stays");
-                Expect(left.Any(i => i.Op == MOp.MovF && i.Operands[0] is MReg { Id: MReg.XmmBase }), $"{mode}: a machine XMM register's write stays, whoever reads it");
+                Expect(left.Any(i => i.Operands.Any(o => o is MImm { Value: 7 })), $"{mode}: a value read stays");
+                // (XMM5: no register the allocator's first choice for the
+                // value moved, so only the write itself puts it there.)
+                Expect(left.Any(i => i.Op == MOp.MovF && i.Operands[0] is MReg { Id: MReg.XmmBase + 5 }), $"{mode}: a machine XMM register's write stays, whoever reads it");
             }
             Console.WriteLine("x86 family: an instruction is told the allocator alike in both modes but where a mode's registers differ -- self-moves, whole copies, a call's writes, slots written, wide constants, what is made again, the argument homes, the register files, a leaf's, the values pruned");
         }

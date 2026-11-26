@@ -6,7 +6,7 @@
 # of a frame slot -- and no constant with a zero low word is added to the
 # low word at all, on either side of an addition or taken away (Halves).
 # And the same source compiled for long mode, whose edges carry the
-# allocator's loads as i386's do (X64Target, IPlacement.EdgeMoves), runs
+# allocator's loads as i386's do (LongTarget, IPlacement.EdgeMoves), runs
 # to .NET's answers.
 #
 #     tests/language/2689_wide_counters_kept_in_registers.sh

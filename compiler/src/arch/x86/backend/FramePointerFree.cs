@@ -4,7 +4,12 @@ using Corsac.Lang.Ir;
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// A FUNCTION WITHOUT A FRAME made so, last before it is written: a leaf
+/// A FUNCTION WITHOUT A FRAME POINTER made so, last before it is written,
+/// in both modes: the one walk that moves its operands off the frame's base
+/// (Readdress), and each mode's layout -- long mode's below (RunLong),
+/// i386's here.
+///
+/// i386: a leaf
 /// (MFunction.Frameless), or one whose only calls never return, which makes
 /// its frame on the way to them alone (MFunction.ColdFrames, OnlyColdCalls).
 /// Every pass until here took an operand based on EBP for the frame, and the value EBP holds in a leaf that gives it one as
