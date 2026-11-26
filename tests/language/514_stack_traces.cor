@@ -114,7 +114,7 @@ static class Program
         catch (InvalidOperationException e)
         {
             Line("caught " + e.Message);
-            trace = e.StackTrace;
+            trace = e.StackTrace ?? "";
         }
 
         Line("frame " + Named(trace, 0));
