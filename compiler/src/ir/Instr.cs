@@ -189,11 +189,15 @@ public sealed class Instr : OperandList
     public bool RegionSite { get => (_flags & RegionSiteFlag) != 0; set => SetFlag(RegionSiteFlag, value); }
 
     /// <summary>
-    /// Load: A READ OF A DEVICE'S MEMORY (Sys.PeekWord, PeekHalf, PeekByte),
-    /// made every time it is written: never answered by an earlier read of
-    /// the same address or a store to it (Gvn, LoadReuse). A card's status
-    /// read twice was read once, and a register that clears as it is read
-    /// was cleared once for two reads.
+    /// Load, Store: A DEVICE'S REGISTER READ OR WRITTEN (Sys.Read8 to
+    /// Read64, Sys.Write8 to Write64), made every time and in the order it
+    /// is written: a read never answered by an earlier read of the same
+    /// address or a store to it, a write never dropped for a later one nor
+    /// merged with it, neither moved past any other read or write of memory
+    /// -- and memory not taken to hold after one what it held before (the
+    /// device may have written it). A card's status read twice was read
+    /// once, and a register that clears as it is read was cleared once for
+    /// two reads; a read nobody used was taken for a null check and removed.
     /// </summary>
     public bool Device { get => (_flags & DeviceFlag) != 0; set => SetFlag(DeviceFlag, value); }
 

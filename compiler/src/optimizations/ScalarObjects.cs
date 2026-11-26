@@ -176,7 +176,8 @@ public sealed class ScalarObjects : IParallelModulePass
                 cardMarks.Add(i);
                 continue;
             }
-            if (i.Op is not (Opcode.Load or Opcode.Store) || i.Size is not (1 or 2 or 4 or 8)
+            // (Nor a device's read or write, Instr.Device: made in memory as written.)
+            if (i.Op is not (Opcode.Load or Opcode.Store) || i.Device || i.Size is not (1 or 2 or 4 or 8)
                 || i.Operands[0] is not RegOperand root || !addresses.TryGetValue(root.Reg, out long offset)) return false;
             if (i.Op == Opcode.Store && i.Operands[1] is RegOperand value && addresses.ContainsKey(value.Reg)) return false;
             if (i.Offset < 0 || i.Offset > bytes || offset > bytes - i.Offset) return false;

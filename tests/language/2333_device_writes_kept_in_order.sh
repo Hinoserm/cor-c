@@ -10,6 +10,8 @@
 #             the first
 #   Widths    the read nobody uses is made
 #   Polled    the memory's load stays in the loop, after the register's write
+#   Flagged   the flag in memory is compared on both sides of the read
+#   Local     a local as the register: both writes made in its slot
 #
 #     tests/language/2333_device_writes_kept_in_order.sh
 set -u
@@ -59,10 +61,19 @@ for target in x86 x86-64; do
     wrote=$(echo "$widths" | grep -E '^mov [A-Z]+ PTR \[' | grep -cvE 'PTR \[[er](sp|bp)')
     wanted=4; [ $target = x86 ] && wanted=5
     if [ "$wrote" -eq $wanted ]; then pass "$target: Widths makes every write"; else fail "$target: Widths makes every write ($wrote of $wanted)"; echo "$widths"; fi
-    if echo "$widths" | grep -qE '^(mov|test|cmp) [a-z0-9]+,DWORD PTR \[|^(test|cmp) DWORD PTR \['; then pass "$target: Widths makes the read nobody uses"; else fail "$target: Widths makes the read nobody uses"; echo "$widths"; fi
+    # (i386 reads the 64-bit register as two 32-bit loads: the unused read is a third.)
+    read32=$(echo "$widths" | grep -E '^(mov|test|cmp) [a-z0-9]+,DWORD PTR \[|^(test|cmp) DWORD PTR \[' | grep -cvE 'PTR \[[er](sp|bp)')
+    wanted=1; [ $target = x86 ] && wanted=3
+    if [ "$read32" -ge $wanted ]; then pass "$target: Widths makes the read nobody uses"; else fail "$target: Widths makes the read nobody uses ($read32 of $wanted 32-bit reads)"; echo "$widths"; fi
     store=$(echo "$polled" | grep -nE '^mov DWORD PTR \[' | head -1 | cut -d: -f1)
     load=$(echo "$polled" | grep -nE '^(mov|add) [a-z0-9]+,[A-Z]+ PTR \[' | tail -1 | cut -d: -f1)
     if [ -n "$store" ] && [ -n "$load" ] && [ "$load" -gt "$store" ]; then pass "$target: Polled loads memory after the register's write, in the loop"; else fail "$target: Polled loads memory after the register's write, in the loop (store at ${store:-none}, load at ${load:-none})"; echo "$polled"; fi
+    flagged=$(body "$image" Flagged) || fail "$target: Flagged is in the image"
+    compares=$(echo "$flagged" | grep -cE '^(cmp|test) [A-Z]+ PTR \[|^(cmp|test) [a-z0-9]+,[A-Z]+ PTR \[')
+    if [ "$compares" -ge 2 ]; then pass "$target: Flagged compares the flag in memory on both sides of the read"; else fail "$target: Flagged compares the flag in memory on both sides of the read ($compares)"; echo "$flagged"; fi
+    local=$(body "$image" Local) || fail "$target: Local is in the image"
+    slotted=$(echo "$local" | grep -cE '^mov DWORD PTR \[[er](sp|bp)[^]]*\],')
+    if [ "$slotted" -ge 2 ] && echo "$local" | grep -qE ',DWORD PTR \[[er](sp|bp)'; then pass "$target: Local writes its slot twice and reads it"; else fail "$target: Local writes its slot twice and reads it ($slotted stores)"; echo "$local"; fi
 done
 
 echo

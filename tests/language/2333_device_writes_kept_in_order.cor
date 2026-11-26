@@ -5,6 +5,7 @@
 // 3 0 2 21
 // 5 5 10
 // 40
+// 0 4 1
 //
 // Sys.Read8..64 and Sys.Write8..64 are a device's register read and written
 // (Instr.Device): no write is dropped because another follows to the same
@@ -17,6 +18,11 @@
 
 using System;
 using System.Runtime.CompilerServices;
+
+class Box
+{
+    public int Flag;
+}
 
 static class Program
 {
@@ -71,6 +77,29 @@ static class Program
         return sum;
     }
 
+    // A flag in memory tested on both sides of a device's read: tested twice,
+    // the second no echo of the first (the device may have set it).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Flagged(nuint register, Box box)
+    {
+        if (box.Flag != 0) return 1;
+        Sys.Read32(register);
+        if (box.Flag != 0) return 2;
+        return 0;
+    }
+
+    // The "register" a local of the function itself: still written twice in
+    // memory and read from it, no value kept in a register for it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static uint Local(uint seed)
+    {
+        uint cell = seed;
+        nuint at = Sys.AddressOf(ref cell);
+        Sys.Write32(at, 1);
+        Sys.Write32(at, seed + 2);
+        return Sys.Read32(at) + cell - seed;
+    }
+
     static int Main()
     {
         nuint register = Sys.AddressOf(ref _register), memory = Sys.AddressOf(ref _memory);
@@ -83,6 +112,7 @@ static class Program
         Console.WriteLine(_memory + " " + _memory + " " + Status(register, memory));
         _memory = 10;
         Console.WriteLine(Polled(register, memory, 4));
+        Console.WriteLine(Flagged(register, new Box()) + " " + Local(0) + " " + Flagged(register, new Box { Flag = 3 }));
         return 0;
     }
 }

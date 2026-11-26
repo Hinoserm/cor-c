@@ -42,7 +42,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// </summary>
 public sealed class MarkVerifier
 {
-    private readonly record struct Marks(bool Number, string? Family, string? Field, bool RegionSite, string? DispatchType, Opcode Op, bool Immutable);
+    private readonly record struct Marks(bool Number, string? Family, string? Field, bool RegionSite, string? DispatchType, Opcode Op, bool Immutable, bool Device);
     private sealed record Noted(Instr Instr, Block Block, int Index, Marks Marks);
 
     private readonly List<Noted> _instrs = new();
@@ -55,7 +55,7 @@ public sealed class MarkVerifier
     private const string LoopConsumer = "region-points-to";
 
     private static bool Marked(Instr i)
-        => i.Number || i.Family is not null || i.Field is not null || i.RegionSite || i.DispatchType is not null || i.Immutable;
+        => i.Number || i.Family is not null || i.Field is not null || i.RegionSite || i.DispatchType is not null || i.Immutable || i.Device;
 
     /// <summary>Every mark on a function, as it is before a pass.</summary>
     public static MarkVerifier Snapshot(Function f)
@@ -67,7 +67,7 @@ public sealed class MarkVerifier
             {
                 Instr i = b.Instrs[k];
                 noted._present.Add(i);
-                if (Marked(i)) noted._instrs.Add(new(i, b, k, new(i.Number, i.Family, i.Field, i.RegionSite, i.DispatchType, i.Op, i.Immutable)));
+                if (Marked(i)) noted._instrs.Add(new(i, b, k, new(i.Number, i.Family, i.Field, i.RegionSite, i.DispatchType, i.Op, i.Immutable, i.Device)));
             }
             if (b.RegionLoop) noted._loops.Add((b, b.RegionLoopBytes, b.Instrs.ToArray()));
         }
@@ -164,6 +164,7 @@ public sealed class MarkVerifier
             gone.Add("Field " + Shown(was.Field));
         if (was.RegionSite && !now.RegionSite) gone.Add("RegionSite");
         if (was.Immutable && !now.Immutable && now.Op == Opcode.Load) gone.Add("Immutable");
+        if (was.Device && !now.Device && now.Op is Opcode.Load or Opcode.Store) gone.Add("Device");
         // A call through a slot made direct names its callee and needs no
         // declaring type; one still through a slot (or a catch's end) does.
         if (was.DispatchType is not null && now.DispatchType is null && now.Op == was.Op) gone.Add("DispatchType " + was.DispatchType);

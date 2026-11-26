@@ -18,8 +18,9 @@ public sealed class MMem : MOperand
     public bool Aligned { get; init; }
 
     /// <summary>
-    /// A device's register (Instr.Device: Sys.PeekByte, PeekHalf, PeekWord):
-    /// read every time the source reads it, never one read for two -- a
+    /// A device's register (Instr.Device: Sys.Read8 to Read64, Sys.Write8 to
+    /// Write64): read and written every time the source does, in its order,
+    /// never one read for two -- a
     /// status changes by itself, and a register may clear as it is read.
     /// Carried by every rebuild of the operand, as IsSpill is.
     /// </summary>

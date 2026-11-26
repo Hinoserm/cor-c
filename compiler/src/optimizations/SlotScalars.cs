@@ -147,6 +147,12 @@ public static class SlotScalars
                 if (i.Dest is { } d && alias.ContainsKey(d)) continue;
                 switch (i.Op)
                 {
+                    // (A device's read or write, Instr.Device, is made in
+                    // memory as written: its slot is no scalar's.)
+                    case Opcode.Load or Opcode.Store when i.Device && i.Operands.Count >= 1 && SlotOf(i.Operands[0]) is { } s:
+                        candidates.Remove(s.Slot);
+                        for (int o = 1; o < i.Operands.Count; o++) Refuse(i.Operands[o]);
+                        continue;
                     case Opcode.Load when i.Operands.Count == 1 && SlotOf(i.Operands[0]) is { } s && i.Dest is { } loaded:
                         Field(s.Slot, s.At + i.Offset, i.Size, loaded.Type);
                         continue;

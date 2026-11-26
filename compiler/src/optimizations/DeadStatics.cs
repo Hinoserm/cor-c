@@ -71,8 +71,9 @@ public sealed class DeadStatics : IModulePass
                         }
 
                         // The address as the destination of a store is the
-                        // one use that is not a read.
-                        if (i.Op == Opcode.Store && k == 0)
+                        // one use that is not a read -- but a device's write
+                        // (Instr.Device), which is made whoever reads it.
+                        if (i.Op == Opcode.Store && k == 0 && !i.Device)
                         {
                             written.Add(s.Name);
                         }
@@ -244,7 +245,7 @@ public static class UnwrittenStatics
                 for (int k = 0; k < instrs.Count; k++)
                 {
                     Instr i = instrs[k];
-                    if (i.Op is not (Opcode.Load or Opcode.Store) || i.Operands[0] is not SymOperand s || !zero.ContainsKey(s.Name)) continue;
+                    if (i.Op is not (Opcode.Load or Opcode.Store) || i.Device || i.Operands[0] is not SymOperand s || !zero.ContainsKey(s.Name)) continue;
                     touched = true;
                     if (i.Op == Opcode.Store || i.Dest is null)
                     {

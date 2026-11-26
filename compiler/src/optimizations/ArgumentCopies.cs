@@ -732,5 +732,5 @@ public static class ArgumentCopies
     }
 
     /// <summary>An instruction that neither writes memory nor calls: arithmetic, a comparison, a conversion, a copy, a load.</summary>
-    private static bool Quiet(Instr i) => i.Op is >= Opcode.Copy and <= Opcode.Bits or Opcode.Load;
+    private static bool Quiet(Instr i) => !i.Device && i.Op is >= Opcode.Copy and <= Opcode.Bits or Opcode.Load;
 }

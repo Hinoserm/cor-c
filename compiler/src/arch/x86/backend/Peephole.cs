@@ -257,7 +257,14 @@ internal static partial class Peephole
                 // the compare may read, ends it; anything else ends it too.
                 if (i.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Setcc or MOp.Cmov && !i.Lock && i.Operands.Count >= 1)
                 {
-                    if (i.Operands[0] is MMem) { if (ReadsMemory(last)) last = null; }
+                    // A DEVICE'S REGISTER READ OR WRITTEN (MMem.Device), or a
+                    // word another processor's (a segment's): memory is not
+                    // known to hold after it what it held before, so a
+                    // compare that read memory does not stand -- the flag a
+                    // device sets while its status is read, tested on both
+                    // sides of the read.
+                    if (i.Op != MOp.Lea && i.Operands.Any(o => o is MMem { Device: true } or MMem { Segment: not 0 }) && ReadsMemory(last)) last = null;
+                    else if (i.Operands[0] is MMem) { if (ReadsMemory(last)) last = null; }
                     else if (i.Operands[0] is MReg w && CompareReads(last, w.Id)) last = null;
                     continue;
                 }

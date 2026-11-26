@@ -18,8 +18,10 @@ public sealed class StoreBackElimination : IPass
         HashSet<FrameSlot> escaped = new();
         foreach (Instr instruction in function.Blocks.SelectMany(block => block.Instrs))
             for (int n = 0; n < instruction.Operands.Count; n++)
+                // (A device's read or write of a slot, Instr.Device, is not one
+                // to reason about: the slot is as one whose address is out.)
                 if (instruction.Operands[n] is SlotOperand slot
-                    && !(n == 0 && instruction.Op is Opcode.Load or Opcode.Store))
+                    && !(n == 0 && instruction.Op is Opcode.Load or Opcode.Store && !instruction.Device))
                     escaped.Add(slot.Slot);
 
         foreach (var block in function.Blocks)

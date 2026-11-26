@@ -83,7 +83,7 @@ public sealed class ReadOnlyFold : IParallelModulePass
                         }
                         continue;
                     }
-                    if (i.Op != Opcode.Load || i.Dest is null || i.Dest.Type.IsFloat())
+                    if (i.Op != Opcode.Load || i.Device || i.Dest is null || i.Dest.Type.IsFloat())
                     {
                         continue;
                     }
