@@ -683,6 +683,16 @@ internal sealed partial class Selector
             case Corsac.Lang.X86.MachineIntrinsics.DoublePrecision:
                 // SSE2's doubles round once already.
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.Barrier:
+                // THE SNAPSHOT BARRIER'S SLOW PATH (CardMarks.Expand): the slot
+                // in RAX, the value in RDX, every register kept by the
+                // object's stub (Corsac.Lang.X64.X64Backend's barrier stub),
+                // which calls Runtime.WriteBarrier by the convention.
+                MovL(Rax, RL(i.Operands[0]));
+                MovL(Rdx, RL(i.Operands[1]));
+                Emit(MOp.CallKeep, MImm.Sym(Corsac.Lang.X86.X86Backend.BarrierStub, 0));
+                _m.UsesBarrierStub = true;
+                return;
             case Corsac.Lang.X86.MachineIntrinsics.RefStore:
             case Corsac.Lang.X86.MachineIntrinsics.CardStore:
                 // A REFERENCE STORED IN ONE SEQUENCE (CardMarks.FuseStores):

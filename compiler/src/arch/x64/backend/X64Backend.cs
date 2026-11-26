@@ -192,6 +192,8 @@ public sealed class X64Backend : IBackend
         // The stack maps' records as each function is encoded (StackMapRecorder, both backends').
         Corsac.Lang.Backends.StackMapRecorder maps = new(StackMapLayout.X64);
         HashSet<string> eligible = new(StringComparer.Ordinal);
+        // Whether a function called the barrier's stub (Selector, MachineIntrinsics.Barrier).
+        bool barrierStub = false;
         FunctionSizes.Clear();
 
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
@@ -215,6 +217,7 @@ public sealed class X64Backend : IBackend
             // Here, in the order the functions are laid down, not on the
             // workers: the blocks' numbers are the same from run to run.
             if (spills is not null) SpillCount.Run(m, spills);
+            barrierStub |= m.UsesBarrierStub;
             Function f = m.Source;
             int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
             Encoder.Nops(text.Bytes, gap);
@@ -259,6 +262,7 @@ public sealed class X64Backend : IBackend
         }
 
         EmitStoreSequences(module, text, obj, defined);
+        if (barrierStub) EmitBarrierStub(text, obj, defined);
 
         // The stack-map table (version 1 in x86-64's layout), one an object.
         // Its base is the distance from the header's word to the first
@@ -382,6 +386,52 @@ public sealed class X64Backend : IBackend
             return null;
         }
         return m;
+    }
+
+    /// <summary>
+    /// THE BARRIER'S STUB (MachineIntrinsics.Barrier, CardMarks.Expand): the
+    /// snapshot barrier's slow path, slot in RAX and value in RDX, every
+    /// register kept -- the nine general registers the convention lets a
+    /// callee destroy pushed, the sixteen XMM saved in 256 bytes at sixteen
+    /// (RSP is 8 past a 16 at entry; nine pushes make it 16) -- around
+    /// Runtime.WriteBarrier(slot, value) called by the System V convention.
+    /// The object's own, local, as i386's __corsac_barrier. No frame record
+    /// and no stack map: a collection while it runs finds none for the
+    /// frames above and reads them whole, as for the store sequences'.
+    /// Never in a position-independent object, whose selection calls the
+    /// runtime instead.
+    /// </summary>
+    private void EmitBarrierStub(Section text, ObjectFile obj, HashSet<string> defined)
+    {
+        ChunkedBytes b = text.Bytes;
+        int gap = (FunctionAlign - b.Count % FunctionAlign) % FunctionAlign;
+        Encoder.Nops(b, gap);
+        int start = b.Count;
+        void Bytes(params byte[] bytes) => b.AddRange(bytes);
+        void Xmms(bool store)
+        {
+            // movdqu [rsp+16k], xmmK, or back.
+            for (int k = 0; k < 16; k++)
+            {
+                Bytes(0xF3);
+                if (k >= 8) Bytes(0x44);
+                Bytes(0x0F, store ? (byte)0x7F : (byte)0x6F, (byte)(0x84 | ((k & 7) << 3)), 0x24);
+                b.AddRange(BitConverter.GetBytes(16 * k));
+            }
+        }
+        Bytes(0x50, 0x51, 0x52, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53);   // push rax rcx rdx rsi rdi r8-r11
+        Bytes(0x48, 0x81, 0xEC); b.AddRange(BitConverter.GetBytes(256));                      // sub rsp, 256
+        Xmms(true);
+        Bytes(0x48, 0x89, 0xC7, 0x48, 0x89, 0xD6);                                              // mov rdi, rax; mov rsi, rdx
+        Bytes(0xE8);                                                                            // call Runtime.WriteBarrier
+        text.Relocs.Add(new Relocation(b.Count, Corsac.Lang.Lto.RuntimeAbi.WriteBarrier, -4, RelocKind.Plt32));
+        b.AddRange(new byte[4]);
+        Xmms(false);
+        Bytes(0x48, 0x81, 0xC4); b.AddRange(BitConverter.GetBytes(256));                      // add rsp, 256
+        Bytes(0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5A, 0x59, 0x58);   // pop r11-r8 rdi rsi rdx rcx rax
+        Bytes(0xC3);                                                                            // ret
+        obj.Symbols.Add(new Symbol { Name = Corsac.Lang.X86.X86Backend.BarrierStub, Section = text, Offset = start, Size = b.Count - start, IsFunction = true, Global = false });
+        defined.Add(Corsac.Lang.X86.X86Backend.BarrierStub);
     }
 
     /// <summary>The store sequences' stubs, named as i386's (RuntimeAbi; CardMarks.FuseStores).</summary>

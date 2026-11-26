@@ -459,9 +459,14 @@ public sealed class CardMarks : IModulePass
 
     public static void Expand(Function f)
     {
-        // ON I386 THE SNAPSHOT BARRIER'S SLOW PATH IS A CALL TO THE OBJECT'S
-        // STUB, slot and value in registers, which calls the runtime and
-        // keeps every register: it runs only while a collection marks.
+        // THE SNAPSHOT BARRIER'S SLOW PATH IS A CALL TO THE OBJECT'S STUB, slot
+        // and value in registers, which calls the runtime and keeps every
+        // register: it runs only while a collection marks, and a call of the
+        // convention's there made every caller-saved register -- long mode's
+        // nine general and sixteen XMM -- one the store's whole function
+        // could not keep a value in across it (as Go's amd64 write barrier
+        // and HotSpot's G1 stubs keep them). Both x86 modes; a position-
+        // independent object's selection calls the runtime instead.
         //
         // THE CARD MARK IS WRITTEN OUT, as on every target: the table's load,
         // its test, a shift and a byte store. It ran as a call to a stub that
@@ -470,7 +475,8 @@ public sealed class CardMarks : IModulePass
         // loop called it each lap. Written out it is four instructions on
         // the path that runs, and the register it needs for the table is
         // free again after the store.
-        if (Target.Current.Name == "x86")
+        bool i386 = Target.Current.Name == "x86";
+        if (i386 || Target.Current.Name == "x86-64")
         {
             foreach (Block block in f.Blocks)
                 for (int k = 0; k < block.Instrs.Count; k++)
@@ -482,7 +488,7 @@ public sealed class CardMarks : IModulePass
                         if (at.Type == IrTypes.Word && value.Type == IrTypes.Word)
                             block.Instrs[k] = new Instr { Op = Opcode.Call, Callee = "__x86.i.barrier", Operands = { at, value }, Line = i.Line };
                     }
-                    else if (i.Op == Opcode.Call && i.Callee == CardMark && i.Operands.Count == 1)
+                    else if (i386 && i.Op == Opcode.Call && i.Callee == CardMark && i.Operands.Count == 1)
                     {
                         // The address the runtime's long was widened from, so
                         // the shift below is of a word.

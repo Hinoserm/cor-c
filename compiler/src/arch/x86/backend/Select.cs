@@ -4494,7 +4494,7 @@ internal sealed partial class Selector
         bool longMode = X86Mode.Long;
         if (LandingPadHead(i)) return;
 
-        if (!longMode && _positionIndependent && i.Op == Opcode.Call && i.Callee is MachineIntrinsics.CardMark or MachineIntrinsics.Barrier)
+        if (_positionIndependent && i.Op == Opcode.Call && i.Callee is MachineIntrinsics.CardMark or MachineIntrinsics.Barrier)
         {
             Instr routine = new()
             {
