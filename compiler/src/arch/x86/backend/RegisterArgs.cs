@@ -107,8 +107,8 @@ internal static class RegisterArgs
     /// </summary>
     public static bool BodyInRegisters(Function f)
     {
-        if (Of(f) == 0) return false;
         if (f.RegisterBody != 0) return f.RegisterBody == 1;
+        if (Of(f) == 0) return false;
         bool inRegisters = true;
         foreach (Corsac.Lang.Ir.Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
@@ -171,27 +171,15 @@ internal static class RegisterArgs
         return (code.ToArray(), field);
     }
 
+    /// <summary>Whether what is under a function's name is the way in to a body that keeps its arguments on the stack (StackEntry): it takes some in registers, and its body does not.</summary>
+    public static bool StackBody(Function f) => !BodyInRegisters(f) && Of(f) > 0;
+
     /// <summary>Where a call's arguments begin among its operands, or -1 for one this convention is not for (into C, an intrinsic, a [StackArguments] method by name).</summary>
     private static int First(Instr call)
     {
         if (call.Op == Opcode.Call) return call.Callee is { } callee && Managed(callee) ? 0 : -1;
         if (call.Op == Opcode.CallIndirect) return NativeCall.Is(call) ? -1 : 1;
         return -1;
-    }
-
-    /// <summary>
-    /// How many of its arguments a call passes in registers: its first
-    /// three words, or as many as it has. A call through an address as a
-    /// call by name -- its operands after the address -- unless it is one
-    /// into C (NativeCall).
-    /// </summary>
-    public static int Of(Instr call)
-    {
-        int first = First(call);
-        if (first < 0) return 0;
-        IrType[] types = new IrType[call.Operands.Count - first];
-        for (int k = 0; k < types.Length; k++) types[k] = call.Operands[first + k].Type;
-        return Conventions.I386.Arguments(types).Generals;
     }
 
     /// <summary>

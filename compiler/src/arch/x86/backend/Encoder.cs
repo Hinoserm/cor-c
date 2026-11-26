@@ -67,7 +67,10 @@ internal sealed partial class Encoder
     /// counts from: its own name, or the body's own where the name is the
     /// way in to a body that keeps its arguments on the stack (RegisterArgs.StackEntry).
     /// </summary>
-    private string BodySymbol => X86Mode.Long ? _m.Source.Name : !RegisterArgs.BodyInRegisters(_m.Source) && RegisterArgs.Of(_m.Source) > 0 ? RegisterArgs.StackBodyName(_m.Source.Name) : _m.Source.Name;
+    private string BodySymbol => _bodySymbol;
+
+    // (Asked once a function, as it is begun: every label's address asks.)
+    private string _bodySymbol = "";
 
     public Encoder(Section text, bool optimizeSize = false)
     {
@@ -88,6 +91,7 @@ internal sealed partial class Encoder
     {
         Audit(m);
         _m = m;
+        _bodySymbol = !X86Mode.Long && RegisterArgs.StackBody(m.Source) ? RegisterArgs.StackBodyName(m.Source.Name) : m.Source.Name;
         if (X86Mode.Long) _frameBytes = FrameBytes(m);
         _funcStart = _out.Count;
         _long.Clear();

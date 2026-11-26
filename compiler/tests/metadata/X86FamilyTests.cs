@@ -257,7 +257,6 @@ public static class X86FamilyTests
                 }
                 Same($"i386: {function.Name}'s stack bytes", plan.StackBytes, stack);
                 Same($"i386: {function.Name}'s register count as a function", RegisterArgs.Of(function), words);
-                Same($"i386: {function.Name}'s register count as a call", RegisterArgs.Of(call), words);
                 Same($"i386: {function.Name} is a call of the register form", RegisterArgs.Applies(call), true);
                 Same($"i386: {function.Name} agrees with its own call", RegisterArgs.Agree(RegisterArgs.Shape(call), RegisterArgs.Shape(function)), true);
                 swept++;

@@ -321,8 +321,23 @@ internal static class Program
         // But not between a flag's maker and what reads it: a compare and
         // the cmov it feeds (IfConvert), a subtract and the SBB or ADC that
         // takes its borrow (a 64-bit pair's compare and negation): an xor
-        // would write the flags they read.
-        Check(!System.Text.RegularExpressions.Regex.IsMatch(asm, @"\n\s+mov e\w\w, 0\n(?!\s+(cmov|sbb|adc))"), "zeroing a register uses xor");
+        // would write the flags they read. Only there: the instruction after
+        // the move reads the flags, and the last before it that is no move
+        // wrote them.
+        string[] flagWriters = { "cmp", "test", "sub", "sbb", "add", "adc", "neg", "and", "or", "xor", "shl", "shr", "sar", "shld", "shrd", "inc", "dec", "imul", "mul", "bt" };
+        string[] asmLines = asm.Split('\n');
+        int zeroingByMove = 0;
+        for (int line = 1; line + 1 < asmLines.Length; line++)
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(asmLines[line], @"^\s+mov e\w\w, 0$")) continue;
+            string after = asmLines[line + 1].Trim().Split(' ')[0];
+            int back = line - 1;
+            while (back > 0 && asmLines[back].Trim().Split(' ')[0] is "mov" or "lea") back--;
+            string before = asmLines[back].Trim().Split(' ')[0];
+            bool flagsLive = flagWriters.Contains(before) && (after.StartsWith("cmov") || after is "sbb" or "adc");
+            if (!flagsLive) zeroingByMove++;
+        }
+        Check(zeroingByMove == 0, $"zeroing a register uses xor ({zeroingByMove} by a move where the flags are free)");
         string remat = FunctionAsm(asm, "remat");
         Check(!System.Text.RegularExpressions.Regex.IsMatch(remat, @"mov (\w+), 77\n\s+mov \[ebp-\d+\], \1"), "a spilled constant is rematerialised, not stored");
         Check(remat.Contains(", 77"), "a rematerialised constant folds into its use");

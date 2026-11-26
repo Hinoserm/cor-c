@@ -39,7 +39,8 @@ internal static class DivisionByConstant
         public bool Signed => Op is Opcode.DivS or Opcode.RemS;
     }
 
-    private static List<Case> Cases(bool longMode)
+    /// <summary>The same cases for both modes: i386 takes its I64 ones through its pair division.</summary>
+    private static List<Case> Cases()
     {
         List<Case> cases = new();
         void Add(IrType type, bool signed, long divisor, int narrow = 0)
@@ -141,7 +142,7 @@ internal static class DivisionByConstant
     {
         List<string> checkers = new();
         ulong[] inputs = Inputs();
-        foreach (Case c in Cases(longMode: false))
+        foreach (Case c in Cases())
         {
             Build(m, c);
             Function check = new(c.Name + "_check", IrType.I32);
@@ -179,7 +180,7 @@ internal static class DivisionByConstant
             Console.WriteLine("[--] long mode's division by a constant not run: this host is no x86-64 Linux");
             return;
         }
-        List<Case> cases = Cases(longMode: true);
+        List<Case> cases = Cases();
         Module m = new("division-by-constant-long");
         foreach (Case c in cases) Build(m, c);
         Target target = Target.Current;
@@ -218,7 +219,9 @@ internal static class DivisionByConstant
         try
         {
             Marshal.Copy(code, 0, memory, code.Length);
-            check(mprotect(memory, length, 5) == 0, "long mode: the division cases' memory made executable");   // read and execute
+            bool executable = mprotect(memory, length, 5) == 0;   // read and execute
+            check(executable, "long mode: the division cases' memory made executable");
+            if (!executable) return;
             ulong[] inputs = Inputs();
             int wrong = 0, runs = 0;
             foreach (Case c in cases)
@@ -231,9 +234,13 @@ internal static class DivisionByConstant
                 IntPtr entry = memory + (nint)s.Offset;
                 foreach (ulong x in inputs)
                 {
-                    ulong got = c.ParamType == IrType.I32
-                        ? c.Type == IrType.I32 ? ((delegate* unmanaged<uint, uint>)entry)((uint)x) : ((delegate* unmanaged<uint, ulong>)entry)((uint)x)
-                        : ((delegate* unmanaged<ulong, ulong>)entry)(x);
+                    // A 32-bit argument with its upper half not the callee's
+                    // to trust (System V leaves it undefined), and a 32-bit
+                    // result read from the low half alone: the code may rely
+                    // on neither being clean.
+                    ulong argument = c.ParamType == IrType.I32 ? (x & 0xFFFFFFFF) | 0xA5A5A5A500000000UL : x;
+                    ulong got = ((delegate* unmanaged<ulong, ulong>)entry)(argument);
+                    if (c.Type == IrType.I32) got &= 0xFFFFFFFF;
                     runs++;
                     ulong want = Expected(c, x);
                     if (got != want && wrong++ < 20)

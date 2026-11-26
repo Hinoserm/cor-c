@@ -449,7 +449,7 @@ public sealed class X86Backend : IBackend
             // names the stack, RegisterArgs.BodyInRegisters): its body is
             // under a name of this object's own, and the function's name is
             // on the few instructions after it that push them and call it.
-            bool stackBody = !RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) > 0;
+            bool stackBody = RegisterArgs.StackBody(f);
             string bodyName = stackBody ? RegisterArgs.StackBodyName(f.Name) : f.Name;
             // ITS WAY IN WITH ITS COMMONEST NUMBERS (Function.ConstantEntry,
             // the link's ArgumentFacts.Entries), in front of it under a name

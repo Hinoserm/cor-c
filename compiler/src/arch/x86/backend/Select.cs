@@ -2934,11 +2934,13 @@ internal sealed partial class Selector
         }
         if (wantRemainder)
         {
-            // n - q * c, mod 2^64: qlo*clo whole, the cross terms' low words above it.
+            // n - q * c, mod 2^64: qlo*clo whole, the cross terms' low words
+            // above it, each by MulByConstant (a word of 1 a move, of 0 a
+            // zero, a small one shifts and LEAs where --cpu says).
             MReg factor = Temp(), cross = Temp(), cross2 = Temp();
             Mov(factor, Imm(unchecked((int)(uint)c)));
-            Mov(cross, qhi); Emit(MOp.Imul3, cross, cross, Imm(unchecked((int)(uint)c)));
-            Mov(cross2, qlo); Emit(MOp.Imul3, cross2, cross2, Imm(unchecked((int)(uint)(c >> 32))));
+            MulByConstant(cross, qhi, unchecked((int)(uint)c), 4);
+            MulByConstant(cross2, qlo, unchecked((int)(uint)(c >> 32)), 4);
             Mov(Eax, qlo); Emit(MOp.Mul, factor);
             Emit(MOp.Add, Edx, cross); Emit(MOp.Add, Edx, cross2);
             Mov(rlo, lo); Mov(rhi, hi);
