@@ -58,7 +58,7 @@ public enum MOp : byte
     //
     // Width 4 is a float (SSE: the F3 forms), 8 a double (SSE2: F2, and 66
     // for the compare). The XMM operands are registers of the allocator's XMM
-    // class (MReg.XmmBase on), or memory where Allocator.Foldable says so.
+    // class (MReg.XmmBase on), or memory where Roles.Foldable says so.
     /// <summary>movss/movsd xmm, m; m, xmm; movaps xmm, xmm between registers.</summary>
     MovF,
     /// <summary>addss/sd, subss/sd, mulss/sd, divss/sd: xmm op= xmm/m.</summary>
@@ -104,7 +104,7 @@ public enum MOp : byte
     CompilerFence,
     /// <summary>
     /// Sys.SaveRegisters: no instruction, but EBX, ESI and EDI counted as
-    /// written (Roles.ImplicitDefs), so the prologue pushes all three.
+    /// written (Implicit.Defs), so the prologue pushes all three.
     /// </summary>
     SaveRegs,
     /// <summary>
@@ -132,7 +132,7 @@ public enum MOp : byte
     // AL/AX/EAX, and the string forms are the rep-prefixed pair's ESI/EDI/ECX,
     // exactly as the hardware fixes them. The selector moves values into those
     // registers first and the allocator learns the dependency from
-    // ImplicitUses/ImplicitDefs, which is how SyscallTrap already works.
+    // Implicit.Uses and Defs, which is how SyscallTrap already works.
     /// <summary>in al/ax/eax, dx -- Width says which.</summary>
     In,
     /// <summary>out dx, al/ax/eax.</summary>

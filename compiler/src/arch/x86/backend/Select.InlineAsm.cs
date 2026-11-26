@@ -24,6 +24,25 @@ public sealed class InlineAsmCode
     public required Gpr[] Defs { get; init; }
     /// <summary>The XMM registers it writes, a bit each by number.</summary>
     public required uint XmmClobbers { get; init; }
+
+    private RegSet? _useSet, _defSet;
+    /// <summary>Uses as the allocator and the passes ask for it (Implicit.Uses).</summary>
+    internal RegSet UseSet => _useSet ??= RegSet.Of(Uses);
+    /// <summary>
+    /// Defs so (Implicit.Defs), and in long mode the XMM registers written
+    /// after them; i386 says those where the function has the XMM class
+    /// (X86Target.LowerInstr).
+    /// </summary>
+    internal RegSet DefSet => _defSet ??= MakeDefSet();
+
+    private RegSet MakeDefSet()
+    {
+        List<int> ids = new();
+        foreach (Gpr r in Defs) ids.Add((int)r);
+        if (X86Mode.Long)
+            for (int x = 0; x < 16; x++) if ((XmmClobbers & (1u << x)) != 0) ids.Add(MReg.XmmBase + x);
+        return new RegSet(ids.ToArray());
+    }
     /// <summary>
     /// Whether it needs the method's frame as it is: a local in a slot, or
     /// the stack pointer or the frame's base named or moved (a push, an address off either). Without,

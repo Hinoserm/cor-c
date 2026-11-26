@@ -8,8 +8,9 @@ namespace Corsac.Lang.X86;
 /// i386 REGISTER ALLOCATION: the function's dead wide halves pruned, then
 /// lowered into the one allocator's form (X86Target) and allocated there
 /// (Corsac.Lang.RegAlloc.Allocator), which knows no instruction set; this
-/// file holds what is i386's alone -- which registers an instruction names
-/// and which of its operands may be memory or an immediate.
+/// file holds what is i386's alone, the pruning. Which registers an
+/// instruction names and which of its operands may be memory or an
+/// immediate is the family's (Roles.RegsOf, Foldable, FoldableImm).
 /// </summary>
 internal static class Allocator
 {
@@ -70,7 +71,7 @@ internal static class Allocator
             used.Clear();
             foreach (MBlock block in m.Blocks)
             foreach (MInstr instruction in block.Instrs)
-                foreach (var operand in RegsOf(instruction, regs))
+                foreach (var operand in Roles.RegsOf(instruction, regs))
                     if ((operand.Role & Role.Use) != 0
                         // A dead two-address update does not make its own
                         // discarded value live. Kept flag-producing updates
@@ -112,69 +113,4 @@ internal static class Allocator
         or MOp.Bsf or MOp.Bsr or MOp.WriteFlags
         // The scalar SSE forms leave every flag as it was.
         || Isa.FlagNeutralScalar(op);
-
-    /// <summary>
-    /// The registers an instruction names, with what it does with each, into
-    /// `into` (emptied first), which is returned. A list the caller keeps for
-    /// the whole pass: as an iterator it was an object for every instruction
-    /// every walk looked at.
-    /// </summary>
-    internal static List<(MReg Reg, Role Role, int Operand, bool InMem)> RegsOf(MInstr i, List<(MReg Reg, Role Role, int Operand, bool InMem)> into)
-    {
-        into.Clear();
-        // `xor v, v` zeroes v without caring what it held: a definition
-        // only, so no reload of a spilled v is needed before it.
-        bool zeroing = i.Op is MOp.Xor or MOp.XorPs && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
-        for (int k = 0; k < i.Operands.Count; k++)
-        {
-            switch (i.Operands[k])
-            {
-                case MReg r:
-                    into.Add((r, zeroing ? Role.Def : Roles.Of(i.Op, k), k, false));
-                    break;
-                case MMem m:
-                    if (m.Base is not null)
-                    {
-                        into.Add((m.Base, Role.Use, k, true));
-                    }
-                    if (m.Index is not null)
-                    {
-                        into.Add((m.Index, Role.Use, k, true));
-                    }
-                    break;
-            }
-        }
-        foreach (Gpr g in Roles.ImplicitUses(i))
-        {
-            into.Add((MReg.Of(g), Role.Use, -1, false));
-        }
-        foreach (Gpr g in Roles.ImplicitDefs(i))
-        {
-            into.Add((MReg.Of(g), Role.Def, -1, false));
-        }
-        return into;
-    }
-
-    /// <summary>Whether an operand position may be a memory operand: a spill slot read or written in place.</summary>
-    internal static bool Foldable(MOp op, int operand) => op switch
-    {
-        MOp.Mov or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp => true,
-        MOp.Push or MOp.Test or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg or MOp.Not
-            or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Setcc or MOp.CallInd => operand == 0,
-        MOp.Imul or MOp.Imul3 or MOp.Movzx or MOp.Movsx or MOp.Cmov => operand == 1,
-        // The scalar SSE forms: a move either way, every other source.
-        MOp.MovF => true,
-        MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.CvtIntToF
-            or MOp.Cvttss2si or MOp.Cvttsd2si or MOp.MovdToX => operand == 1,
-        MOp.MovdFromX => operand == 0,
-        _ => false,
-    };
-
-    /// <summary>Whether an operand position accepts an immediate in place of a register.</summary>
-    internal static bool FoldableImm(MOp op, int operand) => op switch
-    {
-        MOp.Mov or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp => operand == 1,
-        MOp.Push => true,
-        _ => false,
-    };
 }

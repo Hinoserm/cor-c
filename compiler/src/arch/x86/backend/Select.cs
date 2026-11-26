@@ -4374,7 +4374,7 @@ internal sealed partial class Selector
                     break;
             }
         }
-        // The width says which of EAX and EDX carry the value out (see Roles.ImplicitUses).
+        // The width says which of EAX and EDX carry the value out (see Implicit.Uses).
         int width = i.Operands.Count == 0 ? 0 : i.Operands[0].Type switch { IrType.I32 => 4, IrType.I64 => 8, _ => 0 };
         Emit(new MInstr(MOp.Epilogue) { Width = width });
     }
@@ -4487,7 +4487,7 @@ internal sealed partial class Selector
     ///
     /// Operands go to the registers the hardware fixes (the port in DX, the
     /// datum in AL/AX/EAX, the string forms' ESI/EDI/ECX) and the allocator
-    /// learns the dependency from Roles.ImplicitUses, exactly as it does for
+    /// learns the dependency from Implicit.Uses, exactly as it does for
     /// the system-call trap.
     /// </summary>
     private void ByteSwapWord(MReg value)
@@ -5024,7 +5024,7 @@ internal sealed partial class Selector
             if (constant is not null) Mov(Ebp, constant);
             else Mov(Ebp, new MMem(Esp, 4));
         }
-        // The argument count rides along, so the trap reads only those registers (Roles.ImplicitUses).
+        // The argument count rides along, so the trap reads only those registers (Implicit.Uses).
         Emit(MOp.SyscallTrap, new MImm(i.Offset == 0 ? 0x80 : i.Offset), new MImm(args));
         if (sixth)
         {

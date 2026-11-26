@@ -11,8 +11,8 @@ namespace Corsac.Lang.X64;
 /// the fourteen general registers -- the caller-saved nine first, then RBX
 /// and R12 to R15 -- and the sixteen XMM registers, every one caller-saved
 /// under the System V ABI; RSP and RBP never touched. Each instruction
-/// lowered once into the registers it names (Allocator.RegsOf), which
-/// operands may be memory (Allocator.Foldable) or a constant, its jumps; and
+/// lowered once into the registers it names (Roles.RegsOf), which
+/// operands may be memory (Roles.Foldable) or a constant, its jumps; and
 /// the function rebuilt from what was decided (FamilyTarget.Rebuild), a spilled
 /// value moved by its class's move (MOV, MOVSD) through an eight-byte slot.
 /// </summary>
@@ -128,6 +128,7 @@ internal sealed class X64Target : FamilyTarget, ITarget
     private static bool Leaf(MFunction m)
     {
         if (m.SavesEverything || m.RealignsStack) return false;
+        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
         foreach (MBlock b in m.Blocks)
         {
             if (b.Source?.IsLandingPad == true) return false;
@@ -141,7 +142,7 @@ internal sealed class X64Target : FamilyTarget, ITarget
                 if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Rbp } }) return false;
-                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i))
+                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
                 {
                     if (r.Id == (int)Gpr.Rbp && !inMem) return false;
                     if (r.Id == (int)Gpr.Rsp && (role & Roles.Role.Def) != 0) return false;
@@ -164,10 +165,13 @@ internal sealed class X64Target : FamilyTarget, ITarget
     public string Text(AInstr i) => i.Tag is MInstr m ? $"{m.Op} {string.Join(", ", m.Operands)}"
         : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
 
+    // One list for the whole function's lowering (Roles.RegsOf).
+    private readonly List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> _regs = new();
+
     protected override AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
     {
         List<Named> named = new();
-        foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i))
+        foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, _regs))
         {
             // In a leaf the frame's base is no use of the register RBP holds:
             // FramePointerFree makes it RSP (Leaf: RBP is named nowhere else).
@@ -177,7 +181,7 @@ internal sealed class X64Target : FamilyTarget, ITarget
         uint mayMemory = 0, mayMemoryWrite = 0, isMemory = 0, mayImmediate = 0, mayImmediateWide = 0;
         for (int k = 0; k < i.Operands.Count && k < 32; k++)
         {
-            if (Allocator.Foldable(_m, i, k))
+            if (Roles.Foldable(_m, i, k))
             {
                 mayMemory |= 1u << k;
                 // A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a

@@ -20,6 +20,7 @@ internal static class FramePointerFree
     {
         if (!m.FramePointerFree) return;
         int k = Encoder.FrameBytes(m);
+        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
         foreach (MBlock b in m.Blocks)
         {
             foreach (MInstr i in b.Instrs)
@@ -27,7 +28,7 @@ internal static class FramePointerFree
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas
                     or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf)
                     throw new InvalidOperationException($"{m.Source.Name}: {i.Op} in a function without a frame pointer");
-                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i))
+                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Rsp && (role & Roles.Role.Def) != 0)
                         throw new InvalidOperationException($"{m.Source.Name}: RSP written in a function without a frame pointer");
                 for (int o = 0; o < i.Operands.Count; o++)

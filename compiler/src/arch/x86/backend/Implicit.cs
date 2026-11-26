@@ -24,345 +24,286 @@ internal static class LongAbi
     {
         (int)Gpr.Rdi, (int)Gpr.Rsi, (int)Gpr.Rdx, (int)Gpr.R10, (int)Gpr.R8, (int)Gpr.R9,
     };
+
+    // ---- what a call, a system call and a return touch without naming it ----
+
+    private static readonly RegSet KeepUses = RegSet.Of(Gpr.Rax, Gpr.Rdx), CasUses = RegSet.Of(Gpr.Rax, Gpr.Rcx, Gpr.Rdx),
+        Rax = RegSet.Of(Gpr.Rax), SyscallDefs = RegSet.Of(Gpr.Rax, Gpr.Rcx, Gpr.R11);
+    private static readonly RegSet AllXmm = new(XmmFrom(0, 16)), CallDefs = new(CallerSaved.Concat(XmmFrom(0, 16)).ToArray());
+    /// <summary>A call's reads by [AL named][integer arguments][float arguments]: RAX where a native callee reads AL, then the arguments' registers in order.</summary>
+    private static readonly RegSet[][][] CallUses = MakeCallUses();
+    /// <summary>A system call's reads by argument count: its number in RAX, then its arguments' registers.</summary>
+    private static readonly RegSet[] SyscallUses = MakeSyscallUses();
+    /// <summary>A return's reads by [an integer result][a float result]: RAX, XMM0.</summary>
+    private static readonly RegSet[][] ReturnUses =
+    {
+        new[] { RegSet.None, new RegSet(new[] { MReg.XmmBase }) },
+        new[] { Rax, new RegSet(new[] { (int)Gpr.Rax, MReg.XmmBase }) },
+    };
+
+    private static int[] XmmFrom(int first, int count)
+    {
+        int[] ids = new int[count];
+        for (int k = 0; k < count; k++) ids[k] = MReg.XmmBase + first + k;
+        return ids;
+    }
+
+    private static RegSet[][][] MakeCallUses()
+    {
+        RegSet[][][] made = new RegSet[2][][];
+        for (int al = 0; al < 2; al++)
+        {
+            made[al] = new RegSet[IntArgRegs.Length + 1][];
+            for (int ints = 0; ints <= IntArgRegs.Length; ints++)
+            {
+                made[al][ints] = new RegSet[FloatArgRegs + 1];
+                for (int floats = 0; floats <= FloatArgRegs; floats++)
+                {
+                    List<int> ids = new();
+                    if (al == 1) ids.Add((int)Gpr.Rax);
+                    for (int k = 0; k < ints; k++) ids.Add((int)IntArgRegs[k]);
+                    for (int k = 0; k < floats; k++) ids.Add(MReg.XmmBase + k);
+                    made[al][ints][floats] = new RegSet(ids.ToArray());
+                }
+            }
+        }
+        return made;
+    }
+
+    private static RegSet[] MakeSyscallUses()
+    {
+        RegSet[] made = new RegSet[SyscallArgs.Length + 1];
+        for (int n = 0; n <= SyscallArgs.Length; n++)
+        {
+            int[] ids = new int[n + 1];
+            ids[0] = (int)Gpr.Rax;
+            for (int k = 0; k < n; k++) ids[k + 1] = SyscallArgs[k];
+            made[n] = new RegSet(ids);
+        }
+        return made;
+    }
+
+    /// <summary>What the convention's own instructions read without naming it.</summary>
+    internal static RegSet Uses(MInstr i) => i.Op switch
+    {
+        // A store sequence's stub takes its two words in RAX and RDX, an
+        // exchange's its third in RCX (X64Backend.RefStoreStub).
+        MOp.CallKeep or MOp.CallKeepRax => KeepUses,
+        MOp.CallKeepCas => CasUses,
+        MOp.Call or MOp.CallInd => CallUses[i.NativeAl ? 1 : 0][i.IntArgs][i.FloatArgs],
+        MOp.Syscall or MOp.SoftInt => SyscallUses[i.IntArgs],
+        // Unwind's exception travels in RAX to the landing pad.
+        MOp.JmpInd => Rax,
+        MOp.Epilogue => ReturnUses[i.IntArgs > 0 ? 1 : 0][i.FloatArgs > 0 ? 1 : 0],
+        _ => RegSet.None,
+    };
+
+    /// <summary>What the convention's own instructions write without naming it.</summary>
+    internal static RegSet Defs(MInstr i) => i.Op switch
+    {
+        // A store sequence's stub keeps every register but the one it
+        // answers in (X64Backend.RefStoreStub).
+        MOp.CallKeepRax or MOp.CallKeepCas => Rax,
+        // The general registers pushed around it (MOp.CallSafe); the XMM
+        // ones a callee may destroy.
+        MOp.CallSafe => AllXmm,
+        // The callee may destroy every register the convention does not
+        // make it preserve: nine general ones and all sixteen XMM.
+        MOp.Call or MOp.CallInd => CallDefs,
+        MOp.Syscall or MOp.SoftInt => SyscallDefs,
+        _ => RegSet.None,
+    };
 }
 
 /// <summary>
-/// What each instruction touches without naming it, in long mode and its
-/// calling conventions. What an operand does to its register is the
-/// family's one table (Corsac.Lang.X86.Roles.Of).
+/// i386'S CALLING CONVENTIONS, by register: C's, with every argument on the
+/// stack. (An XMM register is written by every call too, said where a
+/// function has that class: X86Target.LowerInstr.)
+/// </summary>
+internal static class Cdecl
+{
+    private static readonly RegSet Eax = RegSet.Of(Gpr.Eax), EaxEdx = RegSet.Of(Gpr.Eax, Gpr.Edx),
+        CallDefs = RegSet.Of(Gpr.Eax, Gpr.Ecx, Gpr.Edx), CalleeSaved = RegSet.Of(Gpr.Ebx, Gpr.Esi, Gpr.Edi),
+        EverySyscallUse = RegSet.Of(Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi, Gpr.Edi, Gpr.Ebp);
+    /// <summary>A system call's number and its first n arguments, by n up to five (the sixth borrows EBP: all of them).</summary>
+    private static readonly RegSet[] SyscallUses =
+    {
+        RegSet.Of(Gpr.Eax), RegSet.Of(Gpr.Eax, Gpr.Ebx), RegSet.Of(Gpr.Eax, Gpr.Ebx, Gpr.Ecx),
+        RegSet.Of(Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx), RegSet.Of(Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi),
+        RegSet.Of(Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi, Gpr.Edi),
+    };
+
+    /// <summary>What the convention's own instructions read without naming it.</summary>
+    internal static RegSet Uses(MInstr i)
+    {
+        switch (i.Op)
+        {
+            case MOp.SyscallTrap:
+                // THE ARGUMENTS THE CALL HAS, and no more: its count is the
+                // second operand (Select's SelectSyscall). All six read by
+                // every trap kept ESI and EDI alive back to whatever last set
+                // them -- a write's three arguments held both across every
+                // loop between it and an mmap before it. The sixth is in EBP,
+                // which the selector borrows around the trap when there is one.
+                return i.Operands.Count > 1 && i.Operands[1] is MImm { Value: var args and >= 0 and <= 5 }
+                    ? SyscallUses[args] : EverySyscallUse;
+            case MOp.Epilogue:
+                // The return value is already in place; keep it alive through the pops.
+                // Only the registers it occupies: EDX read by every return of a
+                // function that never writes it is live from entry, and busy in
+                // the whole function (EAX too, in one that returns nothing).
+                return i.Width switch { 8 => EaxEdx, 4 => Eax, _ => RegSet.None };
+            default:
+                return RegSet.None;
+        }
+    }
+
+    /// <summary>What the convention's own instructions write without naming it.</summary>
+    internal static RegSet Defs(MInstr i) => i.Op switch
+    {
+        // cdecl: the callee may destroy these.
+        MOp.Call or MOp.CallInd => CallDefs,
+        // A reference exchange's stub answers in EAX (X86Backend).
+        MOp.CallKeepEax or MOp.CallKeepEaxInd => Eax,
+        MOp.SyscallTrap => Eax,
+        MOp.SaveRegs => CalleeSaved,
+        _ => RegSet.None,
+    };
+}
+
+/// <summary>
+/// Registers an instruction touches without naming them: their ids in the
+/// order the allocator is told them, and the same as a mask, a bit per id
+/// (general registers bits 0 to 15, XMM ones 16 to 31) for the passes that
+/// ask of every instruction, often. Made once and shared: nothing made per
+/// instruction asked.
+/// </summary>
+internal sealed class RegSet
+{
+    public static readonly RegSet None = new(new int[0]);
+
+    public readonly int[] Ids;
+    public readonly long Mask;
+
+    public RegSet(int[] ids)
+    {
+        Ids = ids;
+        foreach (int id in ids) Mask |= 1L << id;
+    }
+
+    public static RegSet Of(params Gpr[] registers) => new(Array.ConvertAll(registers, r => (int)r));
+
+    public bool Contains(int reg) => (uint)reg < 64u && (Mask >> reg & 1) != 0;
+}
+
+/// <summary>
+/// WHAT EACH INSTRUCTION TOUCHES WITHOUT NAMING IT. ONE TABLE FOR BOTH MODES:
+/// an instruction's own registers (a divide's, a string move's, CPUID's) are
+/// the processor's, the same by number in either mode, and what a call, a
+/// system call and a return touch is the mode's convention's (LongAbi,
+/// Cdecl). What an operand does to its register is Roles.Of.
 /// </summary>
 internal static class Implicit
 {
-    /// <summary>Registers an instruction reads without naming them, by id.</summary>
-    public static IEnumerable<int> Uses(MInstr i)
+    private static readonly RegSet A = RegSet.Of(Gpr.Eax), C = RegSet.Of(Gpr.Ecx), D = RegSet.Of(Gpr.Edx),
+        AD = RegSet.Of(Gpr.Eax, Gpr.Edx), AC = RegSet.Of(Gpr.Eax, Gpr.Ecx), DA = RegSet.Of(Gpr.Edx, Gpr.Eax),
+        CAD = RegSet.Of(Gpr.Ecx, Gpr.Eax, Gpr.Edx), ABCD = RegSet.Of(Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx),
+        Cmpxchg8bUses = RegSet.Of(Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi),
+        SiDiC = RegSet.Of(Gpr.Esi, Gpr.Edi, Gpr.Ecx), ADiC = RegSet.Of(Gpr.Eax, Gpr.Edi, Gpr.Ecx),
+        DiC = RegSet.Of(Gpr.Edi, Gpr.Ecx), SiC = RegSet.Of(Gpr.Esi, Gpr.Ecx),
+        DDiC = RegSet.Of(Gpr.Edx, Gpr.Edi, Gpr.Ecx), DSiC = RegSet.Of(Gpr.Edx, Gpr.Esi, Gpr.Ecx);
+
+    /// <summary>Registers an instruction reads without naming them.</summary>
+    public static RegSet Uses(MInstr i)
     {
         switch (i.Op)
         {
             case MOp.InlineAsm:
-                foreach (Gpr r in i.Asm!.Uses) yield return (int)r;
-                break;
+                return i.Asm!.UseSet;
+            case MOp.Rdmsr:
+                return C;
+            case MOp.Wrmsr:
+                return CAD;
+            case MOp.Cpuid:
+                return AC;
+            case MOp.Cmpxchg8b:
+                return Cmpxchg8bUses;
+            case MOp.PackedSaveX87:
+            case MOp.PackedRestoreX87:
+            case MOp.PackedSaveFxsr:
+            case MOp.PackedRestoreFxsr:
+            case MOp.Cdq:
             case MOp.Cwd:
+            case MOp.Mul:
             case MOp.MulWide:
             case MOp.ImulWide:
             case MOp.Cmpxchg:
-                yield return (int)Gpr.Rax;
-                break;
+            case MOp.Sahf:
+            case MOp.LoadSegments:
+                return A;
             case MOp.Div:
             case MOp.Idiv:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rdx;
-                break;
+                return AD;
             case MOp.RepMovsb:
+            case MOp.RepMovsd:
             case MOp.RepMovsq:
-                yield return (int)Gpr.Rsi;
-                yield return (int)Gpr.Rdi;
-                yield return (int)Gpr.Rcx;
-                break;
+                return SiDiC;
             case MOp.RepStosb:
+            case MOp.RepStosd:
             case MOp.RepStosq:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rdi;
-                yield return (int)Gpr.Rcx;
-                break;
+                return ADiC;
             case MOp.In:
-                yield return (int)Gpr.Rdx;
-                break;
+                return D;
             case MOp.Out:
-                yield return (int)Gpr.Rdx;
-                yield return (int)Gpr.Rax;
-                break;
+                return DA;
             case MOp.RepInsw:
-                yield return (int)Gpr.Rdi;
-                yield return (int)Gpr.Rcx;
-                yield return (int)Gpr.Rdx;
-                break;
+                return DDiC;
             case MOp.RepOutsw:
-                yield return (int)Gpr.Rsi;
-                yield return (int)Gpr.Rcx;
-                yield return (int)Gpr.Rdx;
-                break;
-            case MOp.LoadSegments:
-                yield return (int)Gpr.Rax;
-                break;
-            case MOp.Rdmsr:
-                yield return (int)Gpr.Rcx;
-                break;
-            case MOp.Wrmsr:
-                yield return (int)Gpr.Rcx;
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rdx;
-                break;
-            case MOp.Cpuid:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rcx;
-                break;
-            case MOp.CallKeep:
-            case MOp.CallKeepRax:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rdx;
-                break;
-            case MOp.CallKeepCas:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rcx;
-                yield return (int)Gpr.Rdx;
-                break;
-            case MOp.Call:
-            case MOp.CallInd:
-                if (i.NativeAl)
-                {
-                    yield return (int)Gpr.Rax;
-                }
-                for (int k = 0; k < i.IntArgs; k++)
-                {
-                    yield return (int)LongAbi.IntArgRegs[k];
-                }
-                for (int k = 0; k < i.FloatArgs; k++)
-                {
-                    yield return MReg.XmmBase + k;
-                }
-                break;
-            case MOp.Syscall:
-            case MOp.SoftInt:
-                yield return (int)Gpr.Rax;
-                for (int k = 0; k < i.IntArgs; k++)
-                {
-                    yield return LongAbi.SyscallArgs[k];
-                }
-                break;
-            case MOp.JmpInd:
-                // Unwind's exception travels in RAX to the landing pad.
-                yield return (int)Gpr.Rax;
-                break;
-            case MOp.Epilogue:
-                if (i.IntArgs > 0)
-                {
-                    yield return (int)Gpr.Rax;
-                }
-                if (i.FloatArgs > 0)
-                {
-                    yield return MReg.XmmBase;
-                }
-                break;
+                return DSiC;
+            default:
+                return X86Mode.Long ? LongAbi.Uses(i) : Cdecl.Uses(i);
         }
     }
 
-    /// <summary>Registers an instruction writes without naming them, by id.</summary>
-    public static IEnumerable<int> Defs(MInstr i)
+    /// <summary>Registers an instruction writes without naming them.</summary>
+    public static RegSet Defs(MInstr i)
     {
         switch (i.Op)
         {
             case MOp.InlineAsm:
-                foreach (Gpr r in i.Asm!.Defs) yield return (int)r;
-                for (int x = 0; x < 16; x++) if ((i.Asm.XmmClobbers & (1u << x)) != 0) yield return MReg.XmmBase + x;
-                break;
-            case MOp.RepInsw:
-                yield return (int)Gpr.Rdi;
-                yield return (int)Gpr.Rcx;
-                break;
-            case MOp.RepOutsw:
-                yield return (int)Gpr.Rsi;
-                yield return (int)Gpr.Rcx;
-                break;
-            case MOp.LoadCs:
-                yield return (int)Gpr.Rax;
-                break;
+                return i.Asm!.DefSet;
             case MOp.Rdmsr:
             case MOp.Rdtsc:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rdx;
-                break;
-            case MOp.Cpuid:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rbx;
-                yield return (int)Gpr.Rcx;
-                yield return (int)Gpr.Rdx;
-                break;
-            case MOp.Cwd:
-                yield return (int)Gpr.Rdx;
-                break;
+            case MOp.Mul:
             case MOp.MulWide:
             case MOp.ImulWide:
             case MOp.Div:
             case MOp.Idiv:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rdx;
-                break;
-            case MOp.Cmpxchg:
-            case MOp.In:
-                yield return (int)Gpr.Rax;
-                break;
-            case MOp.RepMovsb:
-            case MOp.RepMovsq:
-                yield return (int)Gpr.Rsi;
-                yield return (int)Gpr.Rdi;
-                yield return (int)Gpr.Rcx;
-                break;
-            case MOp.RepStosb:
-            case MOp.RepStosq:
-                yield return (int)Gpr.Rdi;
-                yield return (int)Gpr.Rcx;
-                break;
-            case MOp.CallKeepRax:
-            case MOp.CallKeepCas:
-                // A store sequence's stub keeps every register but the one it
-                // answers in (X64Backend.RefStoreStub).
-                yield return (int)Gpr.Rax;
-                break;
-            case MOp.CallSafe:
-                // The general registers pushed around it (MOp.CallSafe); the
-                // XMM ones a callee may destroy.
-                for (int k = 0; k < 16; k++)
-                {
-                    yield return MReg.XmmBase + k;
-                }
-                break;
-            case MOp.Call:
-            case MOp.CallInd:
-                // The callee may destroy every register the convention does
-                // not make it preserve: nine general ones and all sixteen XMM.
-                foreach (int r in LongAbi.CallerSaved)
-                {
-                    yield return r;
-                }
-                for (int k = 0; k < 16; k++)
-                {
-                    yield return MReg.XmmBase + k;
-                }
-                break;
-            case MOp.Syscall:
-            case MOp.SoftInt:
-                yield return (int)Gpr.Rax;
-                yield return (int)Gpr.Rcx;
-                yield return (int)Gpr.R11;
-                break;
-        }
-    }
-
-    // ---- the same two answers as masks, a bit per register id -------------------
-    //
-    // For the passes that ask of every instruction, often (Peephole.Masks):
-    // no iterator made, no register an object. General registers are bits
-    // 0 to 15, XMM ones 16 to 31. WHAT THESE SAY IS WHAT Uses AND Defs SAY,
-    // register for register (X86FamilyTests holds the two together).
-
-    private const long Rax = 1L << (int)Gpr.Rax, Rcx = 1L << (int)Gpr.Rcx, Rdx = 1L << (int)Gpr.Rdx, Rbx = 1L << (int)Gpr.Rbx,
-        Rsi = 1L << (int)Gpr.Rsi, Rdi = 1L << (int)Gpr.Rdi, R11 = 1L << (int)Gpr.R11;
-    private const long AllXmm = 0xFFFFL << MReg.XmmBase;
-    private static readonly long CallerSavedMask = MaskOf(LongAbi.CallerSaved);
-    private static readonly long[] IntArgMasks = Prefixes(Array.ConvertAll(LongAbi.IntArgRegs, r => (int)r));
-    private static readonly long[] SyscallArgMasks = Prefixes(LongAbi.SyscallArgs);
-
-    private static long MaskOf(int[] ids)
-    {
-        long mask = 0;
-        foreach (int id in ids) mask |= 1L << id;
-        return mask;
-    }
-
-    /// <summary>For each count n, the first n registers of a list as a mask.</summary>
-    private static long[] Prefixes(int[] ids)
-    {
-        long[] masks = new long[ids.Length + 1];
-        for (int n = 1; n <= ids.Length; n++) masks[n] = masks[n - 1] | 1L << ids[n - 1];
-        return masks;
-    }
-
-    /// <summary>What the instruction reads and writes without naming it, as masks by register id.</summary>
-    public static void Masks(MInstr i, out long uses, out long defs)
-    {
-        uses = 0;
-        defs = 0;
-        switch (i.Op)
-        {
-            case MOp.InlineAsm:
-                foreach (Gpr r in i.Asm!.Uses) uses |= 1L << (int)r;
-                foreach (Gpr r in i.Asm.Defs) defs |= 1L << (int)r;
-                defs |= (long)(i.Asm.XmmClobbers & 0xFFFF) << MReg.XmmBase;
-                break;
-            case MOp.Cwd:
-                uses = Rax; defs = Rdx;
-                break;
-            case MOp.MulWide:
-            case MOp.ImulWide:
-                uses = Rax; defs = Rax | Rdx;
-                break;
-            case MOp.Cmpxchg:
-                uses = Rax; defs = Rax;
-                break;
-            case MOp.Div:
-            case MOp.Idiv:
-                uses = Rax | Rdx; defs = Rax | Rdx;
-                break;
-            case MOp.RepMovsb:
-            case MOp.RepMovsq:
-                uses = Rsi | Rdi | Rcx; defs = Rsi | Rdi | Rcx;
-                break;
-            case MOp.RepStosb:
-            case MOp.RepStosq:
-                uses = Rax | Rdi | Rcx; defs = Rdi | Rcx;
-                break;
-            case MOp.In:
-                uses = Rdx; defs = Rax;
-                break;
-            case MOp.Out:
-                uses = Rdx | Rax;
-                break;
-            case MOp.RepInsw:
-                uses = Rdi | Rcx | Rdx; defs = Rdi | Rcx;
-                break;
-            case MOp.RepOutsw:
-                uses = Rsi | Rcx | Rdx; defs = Rsi | Rcx;
-                break;
-            case MOp.LoadSegments:
-                uses = Rax;
-                break;
-            case MOp.LoadCs:
-                defs = Rax;
-                break;
-            case MOp.Rdmsr:
-                uses = Rcx; defs = Rax | Rdx;
-                break;
-            case MOp.Rdtsc:
-                defs = Rax | Rdx;
-                break;
-            case MOp.Wrmsr:
-                uses = Rcx | Rax | Rdx;
-                break;
+            case MOp.Cmpxchg8b:
+                return AD;
             case MOp.Cpuid:
-                uses = Rax | Rcx; defs = Rax | Rbx | Rcx | Rdx;
-                break;
-            case MOp.CallKeep:
-                uses = Rax | Rdx;
-                break;
-            case MOp.CallKeepRax:
-                uses = Rax | Rdx; defs = Rax;
-                break;
-            case MOp.CallKeepCas:
-                uses = Rax | Rcx | Rdx; defs = Rax;
-                break;
-            case MOp.CallSafe:
-                defs = AllXmm;
-                break;
-            case MOp.Call:
-            case MOp.CallInd:
-                if (i.NativeAl) uses |= Rax;
-                uses |= IntArgMasks[i.IntArgs];
-                uses |= ((1L << i.FloatArgs) - 1) << MReg.XmmBase;
-                defs = CallerSavedMask | AllXmm;
-                break;
-            case MOp.Syscall:
-            case MOp.SoftInt:
-                uses = Rax | SyscallArgMasks[i.IntArgs];
-                defs = Rax | Rcx | R11;
-                break;
-            case MOp.JmpInd:
-                // Unwind's exception travels in RAX to the landing pad.
-                uses = Rax;
-                break;
-            case MOp.Epilogue:
-                if (i.IntArgs > 0) uses |= Rax;
-                if (i.FloatArgs > 0) uses |= 1L << MReg.XmmBase;
-                break;
+                return ABCD;
+            case MOp.LoadCs:
+            case MOp.Cmpxchg:
+            case MOp.Fnstsw:
+            case MOp.In:
+                return A;
+            case MOp.Cdq:
+            case MOp.Cwd:
+                return D;
+            case MOp.RepMovsb:
+            case MOp.RepMovsd:
+            case MOp.RepMovsq:
+                return SiDiC;
+            case MOp.RepStosb:
+            case MOp.RepStosd:
+            case MOp.RepStosq:
+            case MOp.RepInsw:
+                return DiC;
+            case MOp.RepOutsw:
+                return SiC;
+            default:
+                return X86Mode.Long ? LongAbi.Defs(i) : Cdecl.Defs(i);
         }
     }
 }

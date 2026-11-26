@@ -10,8 +10,8 @@ namespace Corsac.Lang.X86;
 /// six registers -- EAX, ECX, EDX first, free across no call, then the
 /// callee-saved EBX, ESI, EDI -- of which EAX to EBX have byte halves; ESP
 /// and EBP never touched. Each instruction lowered once into the registers
-/// it names (Allocator.RegsOf), which operands may be memory or an
-/// immediate (Allocator.Foldable, FoldableImm), its jumps; and the function
+/// it names (Roles.RegsOf), which operands may be memory or an
+/// immediate (Roles.Foldable, FoldableImm), its jumps; and the function
 /// rebuilt from what was decided (FamilyTarget.Rebuild), the loads, stores
 /// and constants around each instruction made here (Move, Remade).
 /// </summary>
@@ -128,7 +128,7 @@ internal sealed class X86Target : FamilyTarget, ITarget
                 if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
-                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
+                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
                 {
                     if (r.Id == (int)Gpr.Ebp && !inMem) return false;
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;
@@ -208,7 +208,7 @@ internal sealed class X86Target : FamilyTarget, ITarget
 
     protected override AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
     {
-        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = Allocator.RegsOf(i, _regs);
+        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = Roles.RegsOf(i, _regs);
         // In a leaf the frame's base is no use of the register EBP holds:
         // FramePointerFree makes it ESP (Leaf: EBP is named nowhere else).
         if (_leaf) regs.RemoveAll(r => r.Reg.Id == (int)Gpr.Ebp);
@@ -228,8 +228,8 @@ internal sealed class X86Target : FamilyTarget, ITarget
         uint mayMemory = 0, isMemory = 0, mayImmediate = 0;
         for (int k = 0; k < i.Operands.Count && k < 32; k++)
         {
-            if (Allocator.Foldable(i.Op, k)) mayMemory |= 1u << k;
-            if (Allocator.FoldableImm(i.Op, k)) mayImmediate |= 1u << k;
+            if (Roles.Foldable(_m, i, k)) mayMemory |= 1u << k;
+            if (Roles.FoldableImm(i.Op, k)) mayImmediate |= 1u << k;
             if (i.Operands[k] is MMem) isMemory |= 1u << k;
         }
         bool copy = i.Op is MOp.Mov or MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MReg;

@@ -878,7 +878,7 @@ internal sealed partial class Selector
             // The target as the register it is in, as i386's: the allocation
             // keeps it out of the registers the arguments are moved into
             // (they are written while it is live), may leave it in memory
-            // (Allocator.Foldable), and a target loaded only to be called is
+            // (Roles.Foldable), and a target loaded only to be called is
             // called where it lies (AddressFold's step 5) -- a virtual
             // method's slot, a delegate's target. Copied to a fixed scratch
             // register first, none of that was seen.

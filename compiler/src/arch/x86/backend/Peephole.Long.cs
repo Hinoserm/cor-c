@@ -172,7 +172,7 @@ internal static partial class Peephole
         // A call takes every register it clobbers whole.
         if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeepRax or MOp.CallKeepCas)
         {
-            foreach (int clobbered in Implicit.Defs(i))
+            foreach (int clobbered in Implicit.Defs(i).Ids)
                 if (clobbered < MReg.XmmBase) read &= ~(1UL << clobbered);
         }
         for (int k = 0; k < i.Operands.Count; k++)
@@ -196,7 +196,7 @@ internal static partial class Peephole
                     break;
             }
         }
-        foreach (int used in Implicit.Uses(i))
+        foreach (int used in Implicit.Uses(i).Ids)
         {
             if (used >= MReg.XmmBase) continue;
             // What a function returning an int hands back is eax alone.

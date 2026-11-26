@@ -1043,22 +1043,15 @@ internal static partial class Peephole
 
     /// <summary>
     /// What an instruction reads and writes WITHOUT NAMING IT, as masks by
-    /// register id, in the mode's own terms: i386's tables (Roles), long
-    /// mode's (Implicit) -- its calls read the registers their arguments are
-    /// in and write every register the convention lets a callee change.
+    /// register id, in the mode's own terms (Implicit) -- long mode's calls
+    /// read the registers their arguments are in and write every register
+    /// the convention lets a callee change.
     /// General registers are the low sixteen bits, XMM ones the next.
     /// </summary>
     private static void Unnamed(MInstr i, out long uses, out long defs)
     {
-        if (X86Mode.Long)
-        {
-            Implicit.Masks(i, out uses, out defs);
-            return;
-        }
-        uses = 0;
-        defs = 0;
-        foreach (Gpr g in Roles.ImplicitUses(i)) uses |= 1L << (int)g;
-        foreach (Gpr g in Roles.ImplicitDefs(i)) defs |= 1L << (int)g;
+        uses = Implicit.Uses(i).Mask;
+        defs = Implicit.Defs(i).Mask;
     }
 
     /// <summary>

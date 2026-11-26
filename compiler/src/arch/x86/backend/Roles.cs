@@ -21,6 +21,91 @@ public static class Roles
         UseDef = 3,
     }
 
+    /// <summary>
+    /// THE REGISTERS AN INSTRUCTION NAMES, with what it does with each, into
+    /// `into` (emptied first), which is returned: its operands in order -- a
+    /// memory operand's base and index only ever read -- then the registers
+    /// it reads without naming them, then those it writes so (Implicit). A list the caller
+    /// keeps for the whole pass: as an iterator it was an object for every
+    /// instruction every walk looked at. One reading for both modes.
+    /// </summary>
+    internal static List<(MReg Reg, Role Role, int Operand, bool InMem)> RegsOf(MInstr i, List<(MReg Reg, Role Role, int Operand, bool InMem)> into)
+    {
+        into.Clear();
+        // `xor v, v`, `xorps x, x` and `xorpd x, x` make zero whatever the
+        // register held: a definition only, so no reload of a spilled v
+        // before it, and no value of v's alive back from it.
+        bool zeroing = i.Op is MOp.Xor or MOp.XorPs or MOp.XorF && i.Operands.Count == 2
+            && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
+        for (int k = 0; k < i.Operands.Count; k++)
+        {
+            switch (i.Operands[k])
+            {
+                case MReg r:
+                    into.Add((r, zeroing ? Role.Def : Of(i.Op, k), k, false));
+                    break;
+                case MMem m:
+                    if (m.Base is not null) into.Add((m.Base, Role.Use, k, true));
+                    if (m.Index is not null) into.Add((m.Index, Role.Use, k, true));
+                    break;
+            }
+        }
+        foreach (int g in Implicit.Uses(i).Ids) into.Add((MReg.Of(g), Role.Use, -1, false));
+        foreach (int g in Implicit.Defs(i).Ids) into.Add((MReg.Of(g), Role.Def, -1, false));
+        return into;
+    }
+
+    /// <summary>
+    /// Whether an operand position may be a memory operand: a spill slot
+    /// read or written in place. One table for both modes -- an opcode only
+    /// one of them makes is in it for that one -- and long mode's two rules
+    /// of its own: no 64-bit immediate goes to memory, and of a move between
+    /// the two register files only the general register's side may be memory.
+    /// </summary>
+    internal static bool Foldable(MFunction m, MInstr i, int operand)
+    {
+        switch (i.Op)
+        {
+            case MOp.Mov:
+                // Never a memory destination for a 64-bit immediate: there is no such form.
+                return operand == 1 || !X86Mode.Long || i.Operands[1] is not MImm { FitsInt32: false };
+            case MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp:
+                return true;
+            case MOp.Push or MOp.Test or MOp.Mul or MOp.MulWide or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg or MOp.Not
+                or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Rol or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Setcc or MOp.CallInd:
+                return operand == 0;
+            // (A conditional move reads its source whether it moves or not: a
+            // spill slot, which is always there to read.)
+            case MOp.Imul or MOp.Imul3 or MOp.Movzx or MOp.Movsx or MOp.Cmov:
+                return operand == 1;
+            // The scalar SSE forms: a move either way, every other source.
+            // (The family's truncations, which a float's conversion to
+            // thirty-two bits is, take xmm/m32 or xmm/m64 as their source.)
+            case MOp.MovF:
+                return true;
+            case MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.CvtIntToF
+                or MOp.CvtFToInt or MOp.Cvttss2si or MOp.Cvttsd2si or MOp.MovdToX:
+                return operand == 1;
+            case MOp.MovdFromX:
+                return operand == 0;
+            case MOp.MovGx:
+                // The general register's side may be memory; the XMM side may
+                // not. (By the function's record of which registers are XMM
+                // ones: a renamed operand does not say, MReg.IsFloat.)
+                return i.Operands[operand] is MReg r && !r.IsFloat && !m.XmmRegs.Contains(r.Id);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Whether an operand position accepts an immediate in place of a register.</summary>
+    internal static bool FoldableImm(MOp op, int operand) => op switch
+    {
+        MOp.Mov or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp => operand == 1,
+        MOp.Push => true,
+        _ => false,
+    };
+
     public static Role Of(MOp op, int operand)
     {
         switch (op)
@@ -112,172 +197,6 @@ public static class Roles
                 return operand == 0 ? Role.Use : Role.UseDef;
             default:
                 return Role.Use;
-        }
-    }
-
-    // WHAT THESE ANSWER IS FIXED BY THE OPCODE, so it is a table shared by every
-    // call. As iterators they made an object for every instruction the
-    // register allocator looked at, twice.
-    private static readonly Gpr[] NoneGpr_ = new Gpr[0];
-    private static readonly Gpr[] Gpr_ImplicitUses0 = { Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitUses1 = { Gpr.Ecx, Gpr.Eax, Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitUses2 = { Gpr.Eax, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitUses3 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitUses4 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitUses5 = { Gpr.Eax, Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitUses6 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_Cmpxchg8bUses = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi };
-    private static readonly Gpr[] Gpr_PackedStateUses = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitUses7 = { Gpr.Esi, Gpr.Edi, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitUses8 = { Gpr.Eax, Gpr.Edi, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitUses9 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitUses10 = { Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitUses11 = { Gpr.Edx, Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitUses12 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitUses13 = { Gpr.Edx, Gpr.Edi, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitUses14 = { Gpr.Edx, Gpr.Esi, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitUses15 = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi, Gpr.Edi, Gpr.Ebp };
-    /// <summary>A system call's number and its first n arguments, by n up to five (the sixth borrows EBP: all of them).</summary>
-    private static readonly Gpr[][] Gpr_SyscallUses =
-    {
-        new[] { Gpr.Eax }, new[] { Gpr.Eax, Gpr.Ebx }, new[] { Gpr.Eax, Gpr.Ebx, Gpr.Ecx },
-        new[] { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx }, new[] { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi },
-        new[] { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi, Gpr.Edi },
-    };
-    private static readonly Gpr[] Gpr_ImplicitUses16 = { Gpr.Eax, Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitDefs0 = { Gpr.Eax, Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitDefs1 = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitDefs2 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitDefs3 = { Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitDefs4 = { Gpr.Eax, Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitDefs5 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitDefs6 = { Gpr.Esi, Gpr.Edi, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitDefs7 = { Gpr.Edi, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitDefs8 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitDefs9 = { Gpr.Eax, Gpr.Ecx, Gpr.Edx };
-    private static readonly Gpr[] Gpr_ImplicitDefs10 = { Gpr.Eax };
-    private static readonly Gpr[] Gpr_ImplicitDefs11 = { Gpr.Edi, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_ImplicitDefs12 = { Gpr.Esi, Gpr.Ecx };
-    private static readonly Gpr[] Gpr_CalleeSaved = { Gpr.Ebx, Gpr.Esi, Gpr.Edi };
-
-    /// <summary>Registers an instruction reads without naming them.</summary>
-    public static Gpr[] ImplicitUses(MInstr i)
-    {
-        switch (i.Op)
-        {
-            case MOp.InlineAsm:
-                return i.Asm!.Uses;
-            case MOp.Rdmsr:
-                return Gpr_ImplicitUses0;
-            case MOp.Wrmsr:
-                return Gpr_ImplicitUses1;
-            case MOp.Cpuid:
-                return Gpr_ImplicitUses2;
-            case MOp.Cmpxchg8b:
-                return Gpr_Cmpxchg8bUses;
-            case MOp.PackedSaveX87:
-            case MOp.PackedRestoreX87:
-            case MOp.PackedSaveFxsr:
-            case MOp.PackedRestoreFxsr:
-                return Gpr_PackedStateUses;
-            case MOp.Cdq:
-                return Gpr_ImplicitUses3;
-            case MOp.Mul:
-            case MOp.ImulWide:
-                return Gpr_ImplicitUses4;
-            case MOp.Div:
-            case MOp.Idiv:
-                return Gpr_ImplicitUses5;
-            case MOp.Cmpxchg:
-                return Gpr_ImplicitUses6;
-            case MOp.RepMovsb:
-            case MOp.RepMovsd:
-                return Gpr_ImplicitUses7;
-            case MOp.RepStosb:
-            case MOp.RepStosd:
-                return Gpr_ImplicitUses8;
-            case MOp.Sahf:
-                return Gpr_ImplicitUses9;
-            case MOp.In:
-                return Gpr_ImplicitUses10;
-            case MOp.Out:
-                return Gpr_ImplicitUses11;
-            case MOp.LoadSegments:
-                return Gpr_ImplicitUses12;
-            case MOp.RepInsw:
-                return Gpr_ImplicitUses13;
-            case MOp.RepOutsw:
-                return Gpr_ImplicitUses14;
-            case MOp.SyscallTrap:
-                // THE ARGUMENTS THE CALL HAS, and no more: its count is the
-                // second operand (Select's SelectSyscall). All six read by
-                // every trap kept ESI and EDI alive back to whatever last set
-                // them -- a write's three arguments held both across every
-                // loop between it and an mmap before it. The sixth is in EBP,
-                // which the selector borrows around the trap when there is one.
-                return i.Operands.Count > 1 && i.Operands[1] is MImm { Value: var args and >= 0 and <= 5 }
-                    ? Gpr_SyscallUses[args] : Gpr_ImplicitUses15;
-            case MOp.Epilogue:
-                // The return value is already in place; keep it alive through the pops.
-                // Only the registers it occupies: EDX read by every return of a
-                // function that never writes it is live from entry, and busy in
-                // the whole function (EAX too, in one that returns nothing).
-                return i.Width switch { 8 => Gpr_ImplicitUses16, 4 => Gpr_ImplicitUses3, _ => NoneGpr_ };
-            default:
-                return NoneGpr_;
-        }
-    }
-
-    /// <summary>Registers an instruction writes without naming them.</summary>
-    public static Gpr[] ImplicitDefs(MInstr i)
-    {
-        switch (i.Op)
-        {
-            case MOp.InlineAsm:
-                return i.Asm!.Defs;
-            case MOp.Rdmsr:
-            case MOp.Rdtsc:
-                return Gpr_ImplicitDefs0;
-            case MOp.Cpuid:
-                return Gpr_ImplicitDefs1;
-            case MOp.LoadCs:
-                return Gpr_ImplicitDefs2;
-            case MOp.Cdq:
-                return Gpr_ImplicitDefs3;
-            case MOp.Mul:
-            case MOp.ImulWide:
-            case MOp.Div:
-            case MOp.Idiv:
-            case MOp.Cmpxchg8b:
-                return Gpr_ImplicitDefs4;
-            case MOp.Cmpxchg:
-            // A reference exchange's stub answers in EAX (X86Backend).
-            case MOp.CallKeepEax:
-            case MOp.CallKeepEaxInd:
-                return Gpr_ImplicitDefs5;
-            case MOp.RepMovsb:
-            case MOp.RepMovsd:
-                return Gpr_ImplicitDefs6;
-            case MOp.RepStosb:
-            case MOp.RepStosd:
-                return Gpr_ImplicitDefs7;
-            case MOp.Fnstsw:
-                return Gpr_ImplicitDefs8;
-            case MOp.Call:
-            case MOp.CallInd:
-                // cdecl: the callee may destroy these.
-                return Gpr_ImplicitDefs9;
-            case MOp.SyscallTrap:
-            case MOp.In:
-                return Gpr_ImplicitDefs10;
-            case MOp.RepInsw:
-                return Gpr_ImplicitDefs11;
-            case MOp.RepOutsw:
-                return Gpr_ImplicitDefs12;
-            case MOp.SaveRegs:
-                return Gpr_CalleeSaved;
-            default:
-                return NoneGpr_;
         }
     }
 }

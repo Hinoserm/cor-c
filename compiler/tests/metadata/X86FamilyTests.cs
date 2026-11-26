@@ -6,12 +6,14 @@ namespace Corsac.Tests.Metadata;
 /// <summary>
 /// What the x86 family's two modes must agree with themselves about.
 ///
-/// Long mode's unnamed registers are told two ways -- as lists, in the order
-/// the allocation names them (Implicit.Uses, Implicit.Defs), and as masks,
-/// for the passes that ask of every instruction (Implicit.Masks). Every
-/// opcode, with every count of arguments a call may carry, must give the
-/// same registers both ways: a register in one and not the other is a value
-/// a pass takes for dead that the allocation kept, or the reverse.
+/// The registers an instruction touches without naming them are one table
+/// for both modes (Implicit), told as a list, in the order the allocation
+/// names them, and as a mask for the passes that ask of every instruction.
+/// Every opcode, with every count of arguments a call may carry, must give
+/// the same registers both ways in each mode -- a register in one and not
+/// the other is a value a pass takes for dead that the allocation kept, or
+/// the reverse -- and what each mode's convention says of a call, a return
+/// and a divide is checked against the registers written out here.
 ///
 /// And the frame slots' liveness reads the machine's code one way for both
 /// (X86.FrameSlotLiveness): the same five shapes, built by hand in each
@@ -24,26 +26,56 @@ public static class X86FamilyTests
     public static void Run()
     {
         bool was = X86Mode.Long;
-        X86Mode.Long = true;
         try
         {
             int asked = 0;
-            foreach (MOp op in Enum.GetValues<MOp>())
+            foreach (bool longMode in new[] { false, true })
             {
-                // An asm block's are its own record's, read by both from it.
-                if (op == MOp.InlineAsm) continue;
-                for (int ints = 0; ints <= LongAbi.IntArgRegs.Length; ints++)
-                    for (int floats = 0; floats <= LongAbi.FloatArgRegs; floats++)
-                        foreach (bool al in new[] { false, true })
-                        {
-                            MInstr i = new(op) { IntArgs = ints, FloatArgs = floats, NativeAl = al };
-                            Implicit.Masks(i, out long uses, out long defs);
-                            Same(op, "reads", Mask(Implicit.Uses(i)), uses);
-                            Same(op, "writes", Mask(Implicit.Defs(i)), defs);
-                            asked++;
-                        }
+                X86Mode.Long = longMode;
+                foreach (MOp op in Enum.GetValues<MOp>())
+                {
+                    // An asm block's are its own record's.
+                    if (op == MOp.InlineAsm) continue;
+                    for (int ints = 0; ints <= LongAbi.IntArgRegs.Length; ints++)
+                        for (int floats = 0; floats <= LongAbi.FloatArgRegs; floats++)
+                            foreach (bool al in new[] { false, true })
+                                foreach (int width in new[] { 0, 4, 8 })
+                                {
+                                    MInstr i = new(op) { IntArgs = ints, FloatArgs = floats, NativeAl = al, Width = width };
+                                    Same(op, "reads", Mask(Implicit.Uses(i).Ids), Implicit.Uses(i).Mask);
+                                    Same(op, "writes", Mask(Implicit.Defs(i).Ids), Implicit.Defs(i).Mask);
+                                    asked++;
+                                }
+                }
             }
-            Console.WriteLine("x86 family: long mode's unnamed registers are the same as lists and as masks, " + asked + " instructions asked");
+            Console.WriteLine("x86 family: the unnamed registers are the same as lists and as masks in both modes, " + asked + " instructions asked");
+
+            const int Xmm0 = MReg.XmmBase;
+            X86Mode.Long = true;
+            MInstr call = new(MOp.Call) { IntArgs = 2, FloatArgs = 1, NativeAl = true };
+            Listed("long mode's call reads", Implicit.Uses(call), (int)Gpr.Rax, (int)Gpr.Rdi, (int)Gpr.Rsi, Xmm0);
+            Same(MOp.Call, "writes (nine general registers and sixteen XMM)", Implicit.Defs(call).Mask,
+                Mask(LongAbi.CallerSaved) | 0xFFFFL << MReg.XmmBase);
+            if (Implicit.Defs(call).Ids.Length != 25) throw new InvalidOperationException("x86 family: long mode's call writes " + Implicit.Defs(call).Ids.Length + " registers");
+            Listed("long mode's return of a float reads", Implicit.Uses(new MInstr(MOp.Epilogue) { FloatArgs = 1 }), Xmm0);
+            Listed("long mode's system call of two arguments reads", Implicit.Uses(new MInstr(MOp.Syscall) { IntArgs = 2 }), (int)Gpr.Rax, (int)Gpr.Rdi, (int)Gpr.Rsi);
+            Listed("long mode's system call writes", Implicit.Defs(new MInstr(MOp.Syscall)), (int)Gpr.Rax, (int)Gpr.Rcx, (int)Gpr.R11);
+            Listed("long mode's safe call writes no general register", Implicit.Defs(new MInstr(MOp.CallSafe)), Enumerable.Range(Xmm0, 16).ToArray());
+            X86Mode.Long = false;
+            Listed("i386's call reads", Implicit.Uses(new MInstr(MOp.Call) { IntArgs = 2, FloatArgs = 1 }));
+            Listed("i386's call writes", Implicit.Defs(new MInstr(MOp.Call)), (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx);
+            Listed("i386's return of a long reads", Implicit.Uses(new MInstr(MOp.Epilogue) { Width = 8 }), (int)Gpr.Eax, (int)Gpr.Edx);
+            Listed("i386's return of a word reads", Implicit.Uses(new MInstr(MOp.Epilogue) { Width = 4 }), (int)Gpr.Eax);
+            Listed("i386's return of nothing reads", Implicit.Uses(new MInstr(MOp.Epilogue) { Width = 0 }));
+            foreach (bool longMode in new[] { false, true })
+            {
+                X86Mode.Long = longMode;
+                Listed("a divide reads", Implicit.Uses(new MInstr(MOp.Div)), (int)Gpr.Eax, (int)Gpr.Edx);
+                Listed("a divide writes", Implicit.Defs(new MInstr(MOp.Idiv)), (int)Gpr.Eax, (int)Gpr.Edx);
+                Listed("a string move writes", Implicit.Defs(new MInstr(MOp.RepMovsb)), (int)Gpr.Esi, (int)Gpr.Edi, (int)Gpr.Ecx);
+                Listed("CPUID writes", Implicit.Defs(new MInstr(MOp.Cpuid)), (int)Gpr.Eax, (int)Gpr.Ebx, (int)Gpr.Ecx, (int)Gpr.Edx);
+            }
+            Console.WriteLine("x86 family: each mode's convention names the registers of its calls, returns and system calls; a divide's, a string move's and CPUID's are the same in both");
             foreach (bool longMode in new[] { false, true })
             {
                 X86Mode.Long = longMode;
@@ -219,6 +251,12 @@ public static class X86FamilyTests
         long mask = 0;
         foreach (int id in ids) mask |= 1L << id;
         return mask;
+    }
+
+    private static void Listed(string what, RegSet set, params int[] expected)
+    {
+        if (!set.Ids.SequenceEqual(expected))
+            throw new InvalidOperationException($"x86 family: {what} [{string.Join(", ", set.Ids)}], not [{string.Join(", ", expected)}]");
     }
 
     private static void Same(MOp op, string what, long listed, long masked)

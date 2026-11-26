@@ -64,7 +64,7 @@ internal static class FramePointerFree
                 if ((i.Op is MOp.Call or MOp.CallInd && !m.ColdFrames) || i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.CallSafe
                     or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf)
                     throw new InvalidOperationException($"{m.Source.Name}: {i.Op} in a function without a frame");
-                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
+                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0)
                         throw new InvalidOperationException($"{m.Source.Name}: ESP written in a function without a frame");
                 for (int o = 0; o < i.Operands.Count; o++)
@@ -141,7 +141,7 @@ internal static class FramePointerFree
                     if (o is MMem mem && (mem.Index?.Id is (int)Gpr.Ebp or MReg.EbpDataId || mem.Base?.Id == MReg.EbpDataId
                         || mem.Base?.Id == (int)Gpr.Ebp && mem.Disp is >= 0 and < 8)) return false;
                 }
-                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
+                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;
             }
         }
