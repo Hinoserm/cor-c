@@ -1,0 +1,247 @@
+// test: division_and_remainder_by_every_kind_of_constant
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// u32 fails 0
+// i32 fails 0
+// u64 fails 0
+// i64 fails 0
+// narrow fails 0
+// checks 845954
+//
+// EVERY KIND OF CONSTANT DIVISOR, BOTH WIDTHS, BOTH SIGNS (Select.
+// DivideByConstant and, for i386's 64-bit values, UnsignedByConstant; the
+// numbers DivisionMagic's): each quotient and remainder by a constant
+// against the processor's own division by the same divisor read at run
+// time, over edge dividends and pseudo-random ones. The divisors take
+// every form: a magic of the width; one of a bit more (7, 19, 21, the
+// add-and-halve form, and long mode's single 64-bit multiply for it); an
+// even one divided by its power of two first (14, 28); powers of two,
+// signed and unsigned (shifts, masks, the bias toward zero); the largest
+// and the most negative; unsigned 64-bit divisors above 2^63 (a compare);
+// and dividends known narrow (a byte, a ushort, a uint widened), whose
+// magic is smaller, or whose quotient is known zero.
+//
+// (Generated: one line per divisor per type, so every one is its own
+// constant to the compiler.)
+using System;
+
+static class Program
+{
+    static uint Zero;
+    static int Fails, Checks;
+    static uint OU(uint v) => v ^ Zero;
+    static int OI(int v) => v ^ (int)Zero;
+    static ulong OUL(ulong v) => v ^ Zero;
+    static long OL(long v) => v ^ (long)Zero;
+
+    static void Report(string kind, string n, string d)
+    {
+        Fails++;
+        if (Fails <= 20) Console.WriteLine(kind + " " + n + " / " + d + " wrong");
+    }
+    static void CU(uint n, uint d, uint q, uint r) { Checks++; if (n / d != q || n % d != r) Report("u32", n.ToString(), d.ToString()); }
+    static void CI(int n, int d, int q, int r) { Checks++; if (n / d != q || n % d != r) Report("i32", n.ToString(), d.ToString()); }
+    static void CUL(ulong n, ulong d, ulong q, ulong r) { Checks++; if (n / d != q || n % d != r) Report("u64", n.ToString(), d.ToString()); }
+    static void CL(long n, long d, long q, long r) { Checks++; if (n / d != q || n % d != r) Report("i64", n.ToString(), d.ToString()); }
+
+    static void U32(uint n)
+    {
+        CU(n, OU(2u), n / 2u, n % 2u);
+        CU(n, OU(3u), n / 3u, n % 3u);
+        CU(n, OU(4u), n / 4u, n % 4u);
+        CU(n, OU(5u), n / 5u, n % 5u);
+        CU(n, OU(6u), n / 6u, n % 6u);
+        CU(n, OU(7u), n / 7u, n % 7u);
+        CU(n, OU(8u), n / 8u, n % 8u);
+        CU(n, OU(9u), n / 9u, n % 9u);
+        CU(n, OU(10u), n / 10u, n % 10u);
+        CU(n, OU(11u), n / 11u, n % 11u);
+        CU(n, OU(12u), n / 12u, n % 12u);
+        CU(n, OU(13u), n / 13u, n % 13u);
+        CU(n, OU(14u), n / 14u, n % 14u);
+        CU(n, OU(19u), n / 19u, n % 19u);
+        CU(n, OU(21u), n / 21u, n % 21u);
+        CU(n, OU(25u), n / 25u, n % 25u);
+        CU(n, OU(27u), n / 27u, n % 27u);
+        CU(n, OU(28u), n / 28u, n % 28u);
+        CU(n, OU(31u), n / 31u, n % 31u);
+        CU(n, OU(60u), n / 60u, n % 60u);
+        CU(n, OU(100u), n / 100u, n % 100u);
+        CU(n, OU(125u), n / 125u, n % 125u);
+        CU(n, OU(255u), n / 255u, n % 255u);
+        CU(n, OU(641u), n / 641u, n % 641u);
+        CU(n, OU(1000u), n / 1000u, n % 1000u);
+        CU(n, OU(1024u), n / 1024u, n % 1024u);
+        CU(n, OU(7919u), n / 7919u, n % 7919u);
+        CU(n, OU(65537u), n / 65537u, n % 65537u);
+        CU(n, OU(1000000007u), n / 1000000007u, n % 1000000007u);
+        CU(n, OU(2147483647u), n / 2147483647u, n % 2147483647u);
+        CU(n, OU(2147483648u), n / 2147483648u, n % 2147483648u);
+        CU(n, OU(2147483649u), n / 2147483649u, n % 2147483649u);
+        CU(n, OU(4294967294u), n / 4294967294u, n % 4294967294u);
+        CU(n, OU(4294967295u), n / 4294967295u, n % 4294967295u);
+    }
+    static void I32(int n)
+    {
+        CI(n, OI(2), n / 2, n % 2);
+        CI(n, OI(3), n / 3, n % 3);
+        CI(n, OI(4), n / 4, n % 4);
+        CI(n, OI(5), n / 5, n % 5);
+        CI(n, OI(6), n / 6, n % 6);
+        CI(n, OI(7), n / 7, n % 7);
+        CI(n, OI(8), n / 8, n % 8);
+        CI(n, OI(9), n / 9, n % 9);
+        CI(n, OI(10), n / 10, n % 10);
+        CI(n, OI(11), n / 11, n % 11);
+        CI(n, OI(25), n / 25, n % 25);
+        CI(n, OI(27), n / 27, n % 27);
+        CI(n, OI(125), n / 125, n % 125);
+        CI(n, OI(641), n / 641, n % 641);
+        CI(n, OI(1000), n / 1000, n % 1000);
+        CI(n, OI(1024), n / 1024, n % 1024);
+        CI(n, OI(7919), n / 7919, n % 7919);
+        CI(n, OI(1000000007), n / 1000000007, n % 1000000007);
+        CI(n, OI(2147483647), n / 2147483647, n % 2147483647);
+        CI(n, OI((-2)), n / (-2), n % (-2));
+        CI(n, OI((-3)), n / (-3), n % (-3));
+        CI(n, OI((-4)), n / (-4), n % (-4));
+        CI(n, OI((-5)), n / (-5), n % (-5));
+        CI(n, OI((-6)), n / (-6), n % (-6));
+        CI(n, OI((-7)), n / (-7), n % (-7));
+        CI(n, OI((-8)), n / (-8), n % (-8));
+        CI(n, OI((-9)), n / (-9), n % (-9));
+        CI(n, OI((-10)), n / (-10), n % (-10));
+        CI(n, OI((-11)), n / (-11), n % (-11));
+        CI(n, OI((-25)), n / (-25), n % (-25));
+        CI(n, OI((-27)), n / (-27), n % (-27));
+        CI(n, OI((-125)), n / (-125), n % (-125));
+        CI(n, OI((-641)), n / (-641), n % (-641));
+        CI(n, OI((-1000)), n / (-1000), n % (-1000));
+        CI(n, OI((-1024)), n / (-1024), n % (-1024));
+        CI(n, OI((-7919)), n / (-7919), n % (-7919));
+        CI(n, OI((-1000000007)), n / (-1000000007), n % (-1000000007));
+        CI(n, OI((-2147483647)), n / (-2147483647), n % (-2147483647));
+        CI(n, OI(int.MinValue), n / int.MinValue, n % int.MinValue);
+    }
+    static void U64(ulong n)
+    {
+        CUL(n, OUL(2UL), n / 2UL, n % 2UL);
+        CUL(n, OUL(3UL), n / 3UL, n % 3UL);
+        CUL(n, OUL(4UL), n / 4UL, n % 4UL);
+        CUL(n, OUL(5UL), n / 5UL, n % 5UL);
+        CUL(n, OUL(6UL), n / 6UL, n % 6UL);
+        CUL(n, OUL(7UL), n / 7UL, n % 7UL);
+        CUL(n, OUL(10UL), n / 10UL, n % 10UL);
+        CUL(n, OUL(14UL), n / 14UL, n % 14UL);
+        CUL(n, OUL(19UL), n / 19UL, n % 19UL);
+        CUL(n, OUL(21UL), n / 21UL, n % 21UL);
+        CUL(n, OUL(28UL), n / 28UL, n % 28UL);
+        CUL(n, OUL(641UL), n / 641UL, n % 641UL);
+        CUL(n, OUL(1000UL), n / 1000UL, n % 1000UL);
+        CUL(n, OUL(6700417UL), n / 6700417UL, n % 6700417UL);
+        CUL(n, OUL(1000000007UL), n / 1000000007UL, n % 1000000007UL);
+        CUL(n, OUL(4294967295UL), n / 4294967295UL, n % 4294967295UL);
+        CUL(n, OUL(4294967296UL), n / 4294967296UL, n % 4294967296UL);
+        CUL(n, OUL(4294967297UL), n / 4294967297UL, n % 4294967297UL);
+        CUL(n, OUL(1000000000000UL), n / 1000000000000UL, n % 1000000000000UL);
+        CUL(n, OUL(1099511627776UL), n / 1099511627776UL, n % 1099511627776UL);
+        CUL(n, OUL(9223372036854775807UL), n / 9223372036854775807UL, n % 9223372036854775807UL);
+        CUL(n, OUL(9223372036854775808UL), n / 9223372036854775808UL, n % 9223372036854775808UL);
+        CUL(n, OUL(9223372036854775809UL), n / 9223372036854775809UL, n % 9223372036854775809UL);
+        CUL(n, OUL(13835058055282163712UL), n / 13835058055282163712UL, n % 13835058055282163712UL);
+        CUL(n, OUL(18446744073709551614UL), n / 18446744073709551614UL, n % 18446744073709551614UL);
+        CUL(n, OUL(18446744073709551615UL), n / 18446744073709551615UL, n % 18446744073709551615UL);
+    }
+    static void I64(long n)
+    {
+        CL(n, OL(2L), n / 2L, n % 2L);
+        CL(n, OL(3L), n / 3L, n % 3L);
+        CL(n, OL(4L), n / 4L, n % 4L);
+        CL(n, OL(7L), n / 7L, n % 7L);
+        CL(n, OL(10L), n / 10L, n % 10L);
+        CL(n, OL(14L), n / 14L, n % 14L);
+        CL(n, OL(641L), n / 641L, n % 641L);
+        CL(n, OL(6700417L), n / 6700417L, n % 6700417L);
+        CL(n, OL(1000000007L), n / 1000000007L, n % 1000000007L);
+        CL(n, OL(4294967297L), n / 4294967297L, n % 4294967297L);
+        CL(n, OL(1000000000000L), n / 1000000000000L, n % 1000000000000L);
+        CL(n, OL(1099511627776L), n / 1099511627776L, n % 1099511627776L);
+        CL(n, OL(9223372036854775807L), n / 9223372036854775807L, n % 9223372036854775807L);
+        CL(n, OL((-2L)), n / (-2L), n % (-2L));
+        CL(n, OL((-3L)), n / (-3L), n % (-3L));
+        CL(n, OL((-4L)), n / (-4L), n % (-4L));
+        CL(n, OL((-7L)), n / (-7L), n % (-7L));
+        CL(n, OL((-10L)), n / (-10L), n % (-10L));
+        CL(n, OL((-14L)), n / (-14L), n % (-14L));
+        CL(n, OL((-641L)), n / (-641L), n % (-641L));
+        CL(n, OL((-6700417L)), n / (-6700417L), n % (-6700417L));
+        CL(n, OL((-1000000007L)), n / (-1000000007L), n % (-1000000007L));
+        CL(n, OL((-4294967297L)), n / (-4294967297L), n % (-4294967297L));
+        CL(n, OL((-1000000000000L)), n / (-1000000000000L), n % (-1000000000000L));
+        CL(n, OL((-1099511627776L)), n / (-1099511627776L), n % (-1099511627776L));
+        CL(n, OL((-9223372036854775807L)), n / (-9223372036854775807L), n % (-9223372036854775807L));
+        CL(n, OL(long.MinValue), n / long.MinValue, n % long.MinValue);
+    }
+    static void Narrow(ulong x)
+    {
+        byte b = (byte)x;
+        ushort h = (ushort)x;
+        uint u = (uint)x;
+        uint wb = b, wh = h;
+        ulong wu = u;
+        CU(wb, OU(7u), wb / 7u, wb % 7u);
+        CU(wb, OU(14u), wb / 14u, wb % 14u);
+        CU(wb, OU(300u), wb / 300u, wb % 300u);
+        CU(wb, OU(256u), wb / 256u, wb % 256u);
+        CU(wh, OU(7u), wh / 7u, wh % 7u);
+        CU(wh, OU(641u), wh / 641u, wh % 641u);
+        CU(wh, OU(65537u), wh / 65537u, wh % 65537u);
+        CUL(wu, OUL(7UL), wu / 7UL, wu % 7UL);
+        CUL(wu, OUL(19UL), wu / 19UL, wu % 19UL);
+        CUL(wu, OUL(28UL), wu / 28UL, wu % 28UL);
+        CUL(wu, OUL(4294967295UL), wu / 4294967295UL, wu % 4294967295UL);
+        CUL(wu, OUL(4294967297UL), wu / 4294967297UL, wu % 4294967297UL);
+        CUL(wu, OUL(0xFFFFFFFFFFFFFFFEUL), wu / 0xFFFFFFFFFFFFFFFEUL, wu % 0xFFFFFFFFFFFFFFFEUL);
+    }
+
+    static int Main()
+    {
+        Zero = (uint)(Environment.GetCommandLineArgs().Length >> 16);
+        ulong[] edges = { 0, 1, 2, 3, 6, 7, 8, 9, 13, 14, 15, 27, 28, 255, 256, 299, 300, 640, 641, 642, 65535, 65536, 65537,
+            0x7FFFFFFE, 0x7FFFFFFF, 0x80000000, 0x80000001, 0xFFFFFFFD, 0xFFFFFFFE, 0xFFFFFFFF, 0x100000000, 0x100000001,
+            999999999999, 1000000000000, 0x7FFFFFFFFFFFFFFE, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0x8000000000000001,
+            0xBFFFFFFFFFFFFFFF, 0xC000000000000000, 0xFFFFFFFFFFFFFFFD, 0xFFFFFFFFFFFFFFFE, 0xFFFFFFFFFFFFFFFF };
+        int failed = 0;
+        string[] kinds = { "u32", "i32", "u64", "i64", "narrow" };
+        for (int kind = 0; kind < 5; kind++)
+        {
+            Fails = 0;
+            ulong seed = 0x9E3779B97F4A7C15UL;
+            for (int k = 0; k < edges.Length + 3000; k++)
+            {
+                ulong x;
+                if (k < edges.Length) x = edges[k];
+                else
+                {
+                    seed = seed * 6364136223846793005UL + 1442695040888963407UL;
+                    // Random magnitudes too: the top bits cleared by a varying amount.
+                    x = seed >> (int)((seed >> 58) & 63);
+                }
+                for (int sign = 0; sign < 2; sign++)
+                {
+                    ulong v = sign == 0 ? x : 0UL - x;
+                    if (kind == 0) U32((uint)v);
+                    else if (kind == 1) I32((int)v);
+                    else if (kind == 2) U64(v);
+                    else if (kind == 3) I64((long)v);
+                    else Narrow(v);
+                }
+            }
+            Console.WriteLine(kinds[kind] + " fails " + Fails);
+            failed += Fails;
+        }
+        Console.WriteLine("checks " + Checks);
+        return failed == 0 ? 0 : 1;
+    }
+}
