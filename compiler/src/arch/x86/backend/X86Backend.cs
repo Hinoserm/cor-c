@@ -1015,6 +1015,7 @@ public sealed class X86Backend : IBackend
 
     public string Assembly(Module module)
     {
+        X86Mode.Long = false;
         _fpuFree = FpuFree.Compute(module, SafepointPolls, out _fpuDefined);
         _fpuDeferred = null;
         StringBuilder sb = new();
@@ -1032,36 +1033,7 @@ public sealed class X86Backend : IBackend
                 AsmText.Print(sb, m);
             }
         }
-        foreach (string section in new[] { ".rodata", ".data", ".bss" })
-        {
-            List<DataItem> items = module.Data.Where(d => (d.Zero ? ".bss" : d.ReadOnly ? ".rodata" : ".data") == section).ToList();
-            if (items.Count == 0)
-            {
-                continue;
-            }
-            sb.Append("section ").Append(section).Append('\n');
-            foreach (DataItem d in items)
-            {
-                sb.Append("    align ").Append(d.Align).Append('\n');
-                sb.Append(d.Name).Append(":\n");
-                if (d.Zero)
-                {
-                    sb.Append("    resb ").Append(d.Bytes.Length).Append('\n');
-                    continue;
-                }
-                sb.Append("    db ").Append(string.Join(", ", d.Bytes.Select(b => $"0x{b:x2}"))).Append('\n');
-                foreach (DataReloc r in d.Relocs)
-                {
-                    sb.Append("    ; +").Append(r.Offset).Append(": dd ").Append(r.Symbol);
-                    if (r.Addend != 0)
-                    {
-                        sb.Append('+').Append(r.Addend);
-                    }
-                    sb.Append('\n');
-                }
-            }
-            sb.Append('\n');
-        }
+        AsmText.PrintData(sb, module);
         foreach (string e in errors)
         {
             sb.Append("; error: ").Append(e).Append('\n');

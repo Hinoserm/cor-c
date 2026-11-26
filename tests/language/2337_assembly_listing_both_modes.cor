@@ -1,0 +1,45 @@
+// test: a program whose listing (--asm) is read in both modes (the script beside it)
+// expect-exit: 0
+// expect-output:
+// 42 3 -7 2.5
+//
+// What the listing must name in each mode: a framed function's way in and
+// out, a call, a sign extension into a long, a division's sign spread, a
+// double's arithmetic and its truncation, a byte stored. Long mode's
+// --asm stopped the compiler ("long mode's selector was asked for a
+// function outside long mode": the listing never said the mode) and what
+// it printed before that was the machine IR's own names.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static byte[] s_bytes = new byte[4];
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static long Widen(int x) => x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static long Divide(long a, long b) => a / b;
+    [MethodImpl(MethodImplOptions.NoInlining)] static double Halve(double x) => x / 2;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Whole(double x) => (int)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static void Put(int at, int value) { s_bytes[at] = (byte)value; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Framed(int a)
+    {
+        Put(1, a);
+        return (int)Widen(a) + s_bytes[1];
+    }
+
+    // The arguments from memory the run fills, so that no function here is
+    // made over for a constant one.
+    static int[] s_in = new int[4];
+
+    static int Main()
+    {
+        s_in[0] = 21; s_in[1] = -7; s_in[2] = 7; s_in[3] = 1;
+        Console.WriteLine(FramedAt(0) + " " + Divide(Widen(s_in[1]) * -3, s_in[2]) + " " + Widen(s_in[1]) + " " + Halve(Whole(s_in[2] - 1.1)));
+        return 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int FramedAt(int k) { Put(s_in[3], s_in[k]); return Framed(s_in[k]); }
+}

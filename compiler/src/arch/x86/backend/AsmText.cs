@@ -6,7 +6,10 @@ namespace Corsac.Lang.X86;
 /// <summary>
 /// Prints allocated machine code as Intel-syntax assembly, close enough to
 /// NASM that a human can set it beside `objdump -d -M intel` of the bytes.
-/// Nothing consumes this; it exists to be read.
+/// Nothing consumes this; it exists to be read. Both modes': a register by
+/// the name its width has in the mode (RegName), the ways in and out of a
+/// function as each mode's encoder writes them (Encoder.Prologue,
+/// Encoder.Long's PrologueL), and long mode's own instructions.
 /// </summary>
 internal static class AsmText
 {
@@ -31,12 +34,60 @@ internal static class AsmText
         sb.Append('\n');
     }
 
-    private static string RegName(int id, int width) => width switch
+    /// <summary>The module's data as the listing shows it, a section each: every item's bytes, and under them where an address goes (a doubleword's on i386, a quadword's in long mode).</summary>
+    public static void PrintData(StringBuilder sb, Corsac.Lang.Ir.Module module)
     {
-        1 => new[] { "al", "cl", "dl", "bl", "ah", "ch", "dh", "bh" }[id],
-        2 => new[] { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" }[id],
-        _ => new[] { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi" }[id],
-    };
+        string address = X86Mode.Long ? "dq" : "dd";
+        foreach (string section in new[] { ".rodata", ".data", ".bss" })
+        {
+            List<Corsac.Lang.Ir.DataItem> items = module.Data.Where(d => (d.Zero ? ".bss" : d.ReadOnly ? ".rodata" : ".data") == section).ToList();
+            if (items.Count == 0) continue;
+            sb.Append("section ").Append(section).Append('\n');
+            foreach (Corsac.Lang.Ir.DataItem d in items)
+            {
+                sb.Append("    align ").Append(d.Align).Append('\n');
+                sb.Append(d.Name).Append(":\n");
+                if (d.Zero)
+                {
+                    sb.Append("    resb ").Append(d.Bytes.Length).Append('\n');
+                    continue;
+                }
+                sb.Append("    db ").Append(string.Join(", ", d.Bytes.Select(b => $"0x{b:x2}"))).Append('\n');
+                foreach (Corsac.Lang.Ir.DataReloc r in d.Relocs)
+                {
+                    sb.Append("    ; +").Append(r.Offset).Append(": ").Append(address).Append(' ').Append(r.Symbol);
+                    if (r.Addend != 0) sb.Append('+').Append(r.Addend);
+                    sb.Append('\n');
+                }
+            }
+            sb.Append('\n');
+        }
+    }
+
+    private static readonly string[] Low8 = { "al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil" },
+        Words = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" },
+        Doubles = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi" },
+        Quads = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi" };
+
+    /// <summary>
+    /// A general register at a width. i386's byte registers 4 to 7 are AH
+    /// to BH; long mode's are SPL to DIL (every byte instruction of its
+    /// encoder's carries the REX that makes them so), its eight more R8 to
+    /// R15 with b, w, d for the narrower, and a width the instruction does
+    /// not give (0) is the whole register's.
+    /// </summary>
+    private static string RegName(int id, int width)
+    {
+        if (!X86Mode.Long)
+            return width switch
+            {
+                1 => new[] { "al", "cl", "dl", "bl", "ah", "ch", "dh", "bh" }[id],
+                2 => Words[id],
+                _ => Doubles[id],
+            };
+        if (id >= 8) return "r" + id + width switch { 1 => "b", 2 => "w", 4 => "d", _ => "" };
+        return width switch { 1 => Low8[id], 2 => Words[id], 4 => Doubles[id], _ => Quads[id] };
+    }
 
     /// <summary>Whether the encoder zeroes the instruction's register first (Encoder.ZeroFirst): asked, and not its own source.</summary>
     private static bool Zeroes(MInstr i) => i.ZeroFirst
@@ -63,7 +114,7 @@ internal static class AsmText
             case MReg r when r.IsXmm:
                 return $"xmm{r.XmmNumber}";
             case MReg { Id: MReg.EbpDataId }:
-                return "ebp";
+                return RegName((int)Gpr.Ebp, X86Mode.Long ? 8 : 4);
             case MReg r:
                 return $"v{r.Id}";
             case MMem m:
@@ -79,6 +130,11 @@ internal static class AsmText
 
     private static IEnumerable<string> Lines(MFunction m, MInstr i)
     {
+        if (X86Mode.Long && LongLines(m, i) is { } own)
+        {
+            foreach (string line in own) yield return line;
+            yield break;
+        }
         switch (i.Op)
         {
             case MOp.Prologue:
@@ -294,6 +350,9 @@ internal static class AsmText
                 yield break;
             case MOp.XmmStoreNtV:
                 yield return $"movntdq {Op(i.Operands[0], 16, false)}, {Op(i.Operands[1], 16, false)}";
+                yield break;
+            case MOp.Movnti:
+                yield return $"movnti {Op(i.Operands[0], i.Width, true)}, {Op(i.Operands[1], i.Width, false)}";
                 yield break;
             case MOp.AddF:
             case MOp.SubF:
@@ -592,10 +651,134 @@ internal static class AsmText
         yield return ops.Count == 0 ? prefix + Mnemonic(i) : $"{prefix}{Mnemonic(i)} {string.Join(", ", ops)}";
     }
 
+    /// <summary>
+    /// LONG MODE'S OWN: the instructions it writes otherwise than i386 does
+    /// (Encoder.Long), each as its encoder's case writes it; null for one
+    /// the family's lines are right for.
+    /// </summary>
+    private static List<string>? LongLines(MFunction m, MInstr i)
+    {
+        string Q(Gpr g) => RegName((int)g, 8);
+        string O(int k, int width, bool sized = false) => Op(i.Operands[k], width, sized);
+        List<string> lines = new();
+        int frame = Encoder.FrameBytes(m);
+        string SaveSlot(int k) => m.Frameless ? $"[rsp+{frame + 8 * (m.SavedRegs.Count - 1 - k)}]" : $"[rbp-{m.Frame.Size + 8 * (k + 1)}]";
+        switch (i.Op)
+        {
+            case MOp.Prologue:
+                if (m.ReservedFrame)
+                {
+                    lines.Add(frame == 0 ? "push rax ; RBP's word, not written" : $"sub rsp, {frame + 8} ; the frame and RBP's word, not written");
+                    foreach (Gpr g in m.SavedRegs) lines.Add("push " + Q(g));
+                    if (Encoder.ReservedPad(m) != 0) lines.Add("push rax ; the stack at sixteen");
+                    return lines;
+                }
+                if (m.Frameless)
+                {
+                    foreach (Gpr g in m.SavedRegs) lines.Add("push " + Q(g));
+                    if (frame > 0) lines.Add($"sub rsp, {frame}");
+                    return lines;
+                }
+                lines.Add("push rbp");
+                lines.Add("mov rbp, rsp");
+                if (m.RealignsStack) lines.Add("and rsp, -16");
+                if (frame > 0) lines.Add($"sub rsp, {frame}");
+                for (int k = 0; k < m.SavedRegs.Count; k++) lines.Add($"mov {SaveSlot(k)}, {Q(m.SavedRegs[k])}");
+                return lines;
+            case MOp.Epilogue:
+                if (m.ReservedFrame)
+                {
+                    if (Encoder.ReservedPad(m) != 0) lines.Add("pop rcx");
+                    for (int k = m.SavedRegs.Count - 1; k >= 0; k--) lines.Add("pop " + Q(m.SavedRegs[k]));
+                    lines.Add(frame == 0 ? "pop rcx" : $"add rsp, {frame + 8}");
+                    lines.Add("ret");
+                    return lines;
+                }
+                if (m.Frameless)
+                {
+                    if (frame > 0) lines.Add($"add rsp, {frame}");
+                    for (int k = m.SavedRegs.Count - 1; k >= 0; k--) lines.Add("pop " + Q(m.SavedRegs[k]));
+                    lines.Add("ret");
+                    return lines;
+                }
+                for (int k = 0; k < m.SavedRegs.Count; k++) lines.Add($"mov {Q(m.SavedRegs[k])}, {SaveSlot(k)}");
+                lines.Add("leave");
+                lines.Add("ret");
+                return lines;
+            // A sign extension into the low half (To32) or the whole register; a zero extension always into the low half, which clears the upper.
+            case MOp.Movsx when i.Width == 4:
+                lines.Add($"movsxd {O(0, 8)}, {O(1, 4, true)}");
+                return lines;
+            case MOp.Movsx:
+                lines.Add($"movsx {O(0, i.To32 ? 4 : 8)}, {O(1, i.Width, true)}");
+                return lines;
+            case MOp.Movzx:
+                lines.Add($"movzx {O(0, 4)}, {O(1, i.Width, true)}");
+                return lines;
+            // movd or movq between the register files, by the width.
+            case MOp.MovGx:
+                lines.Add($"{(i.Width == 8 ? "movq" : "movd")} {O(0, i.Width)}, {O(1, i.Width)}");
+                return lines;
+            // xorps, whatever the value's width; a float truncated to an integer by its own width's instruction.
+            case MOp.XorF:
+                lines.Add($"xorps {O(0, 16)}, {O(1, 16)}");
+                return lines;
+            case MOp.CvtFToInt:
+                lines.Add($"{(i.SourceWidth == 4 ? "cvttss2si" : "cvttsd2si")} {O(0, i.Width)}, {O(1, i.SourceWidth, true)}");
+                return lines;
+            // 99 by the width: the accumulator's sign through RDX (cqo) or EDX (cdq).
+            case MOp.Cwd:
+                lines.Add(i.Width == 8 ? "cqo" : "cdq");
+                return lines;
+            case MOp.RepMovsq: lines.Add("rep movsq"); return lines;
+            case MOp.RepStosq: lines.Add("rep stosq"); return lines;
+            case MOp.Syscall: lines.Add("syscall"); return lines;
+            case MOp.Swapgs: lines.Add("swapgs"); return lines;
+            case MOp.SoftInt: lines.Add($"int {O(0, 4)}"); return lines;
+            case MOp.Push or MOp.Pop:
+                lines.Add($"{Mnemonic(i)} {O(0, 8, true)}");
+                return lines;
+            // A cold-framed function's call makes its frame on the way (Encoder.Long's ColdFrameL).
+            case MOp.Call or MOp.CallInd when m.ColdFrames:
+            {
+                if (m.ReservedFrame)
+                {
+                    int x = frame + 8 * m.SavedRegs.Count + Encoder.ReservedPad(m);
+                    lines.Add($"mov [rsp+{x}], rbp");
+                    lines.Add($"lea rbp, [rsp+{x}] ; the frame, on the way to a call that never returns");
+                }
+                else
+                {
+                    lines.Add("push rbp");
+                    lines.Add("mov rbp, rsp ; the frame, on the way to a call that never returns");
+                }
+                lines.Add($"call {O(0, 8, i.Op == MOp.CallInd)}");
+                return lines;
+            }
+            // A safepoint's call keeps the nine registers a call may change, the stack at sixteen under them.
+            case MOp.CallSafe:
+                lines.Add($"call {O(0, 8)} ; a safepoint that keeps the registers (nine pushed, eight bytes more, and back)");
+                return lines;
+            case MOp.Call or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas:
+                lines.Add($"call {O(0, 8)}{(i.Op is MOp.Call ? "" : " ; " + i.Op)}");
+                return lines;
+            case MOp.CallInd or MOp.CallKeepInd or MOp.JmpInd:
+                lines.Add($"{(i.Op == MOp.JmpInd ? "jmp" : "call")} {O(0, 8, true)}");
+                return lines;
+            case MOp.Lea:
+                lines.Add($"lea {O(0, i.Width == 4 ? 4 : 8)}, {O(1, 8)}");
+                return lines;
+            // The x87, MMX and 3DNow! instructions are i386's alone.
+            default:
+                return null;
+        }
+    }
+
     private static string Mnemonic(MInstr i) => i.Op switch
     {
         MOp.Imul3 => "imul",
         MOp.ImulWide => "imul",
+        MOp.MulWide => "mul",
         MOp.Fnstcw => "fnstcw",
         _ => i.Op.ToString().ToLowerInvariant(),
     };

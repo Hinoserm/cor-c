@@ -422,8 +422,12 @@ public sealed class X64Backend : IBackend
         return obj;
     }
 
+    /// <summary>The module as assembly to read (--asm): long mode's machine code as the family's listing prints it (AsmText), then its data.</summary>
     public string Assembly(Module module)
     {
+        // Long mode, as Generate says it: the selection, the allocation and
+        // the listing all read it.
+        X86Mode.Long = true;
         StringBuilder sb = new();
         List<string> errors = new();
         sb.Append("; module ").Append(module.Name).Append('\n');
@@ -436,35 +440,14 @@ public sealed class X64Backend : IBackend
                 continue;
             }
             if (CountSpills) SpillCount.Run(m, new Corsac.Lang.RegAlloc.SpillCounter(null));
-            sb.Append(f.Name).Append(":\n");
-            foreach (MBlock b in m.Blocks)
-            {
-                sb.Append(".").Append(b.Name).Append(":\n");
-                foreach (MInstr i in b.Instrs)
-                {
-                    sb.Append("    ").Append(Print(i)).Append('\n');
-                }
-            }
-            sb.Append('\n');
+            AsmText.Print(sb, m);
         }
+        AsmText.PrintData(sb, module);
         foreach (string e in errors)
         {
             sb.Append("; error: ").Append(e).Append('\n');
         }
         return sb.ToString();
-    }
-
-    private static string Print(MInstr i)
-    {
-        string name = i.Op switch
-        {
-            MOp.Jcc => "j" + i.Cond.Mnemonic(),
-            MOp.Setcc => "set" + i.Cond.Mnemonic(),
-            MOp.Cmov => "cmov" + i.Cond.Mnemonic(),
-            _ => i.Op.ToString().ToLowerInvariant(),
-        };
-        string width = i.Op is MOp.Jcc or MOp.Jmp or MOp.Call or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas ? "" : $".{i.Width}";
-        return $"{(i.Lock ? "lock " : "")}{name}{width} {string.Join(", ", i.Operands)}";
     }
 
     private MFunction? Compile(Function f, List<string> errors, bool entry = false, Func<string, bool>? isExternal = null)

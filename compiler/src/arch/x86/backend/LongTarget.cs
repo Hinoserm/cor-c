@@ -31,7 +31,7 @@ internal sealed class LongTarget : FamilyTarget, ITarget
 
     protected override (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) ModeFiles => Of;
 
-    protected override string InstrText(MInstr i) => $"{i.Op} {string.Join(", ", i.Operands)}";
+    protected override string InstrText(MInstr i) => AsmText.Line(_m, i);
 
     /// <summary>
     /// A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a reload is
