@@ -257,8 +257,9 @@ public static class Platform
     // MapHook(bytes, piece | 1, 0) -> address (Map: 1, whole; MapPieces);
     // UnmapHook(at, bytes, 0). The second word's low bit set is this
     // runtime saying how the mapping comes back -- 1 alone whole, a page
-    // multiple with the bit in pieces of that size; an older runtime's 0
-    // says nothing (the kernel takes it at page grain).
+    // multiple with the bit in pieces of that size; 0 says nothing (an
+    // older runtime's, or MapPieces' for a piece that is no page multiple),
+    // and the kernel takes it at page grain.
     public static nuint MapHook;
     public static nuint UnmapHook;
 

@@ -140,7 +140,8 @@ public sealed class X64Backend : IBackend
     /// <summary>
     /// The runtime's streaming copy and fill, where the module has them to
     /// call (Module.RuntimeHelpers: lowering kept them) and the code is
-    /// hosted: a copy or a fill calls them at 256 KB and over -- behind a
+    /// hosted: a copy or a fill calls them at Selector._streamBytes and over
+    /// (three quarters of --cpu's last cache) -- behind a
     /// compare where its length is known only as it runs
     /// (Selector.StreamedOr) -- as i386's.
     /// </summary>

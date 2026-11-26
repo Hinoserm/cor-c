@@ -111,7 +111,7 @@ internal sealed partial class Selector
     /// StreamFill), where the image has them and this code is an operating
     /// system's guest (i386's borrow the x87's state, which only such code
     /// owns; long mode's borrow nothing and follow the same rule): a copy
-    /// or fill of StreamBytes and over calls them -- behind a compare where
+    /// or fill of _streamBytes and over calls them -- behind a compare where
     /// its length is known only as it runs (StreamedOr). Null otherwise.
     /// </summary>
     private string? _streamCopy, _streamFill;
@@ -123,10 +123,13 @@ internal sealed partial class Selector
     /// so stored around it, it evicts nothing. A shorter one is read again
     /// soon, and stored around the cache it would be fetched back from
     /// memory; the inline REP MOVS is the copy for it. A processor with no
-    /// cache of its own has nothing to stream around: never.
+    /// cache of its own has nothing to stream around: never. (One whose
+    /// --cpu has no MOVNTQ keeps the compare and the call: the image may run
+    /// on one that has, and Runtime.StreamCopy asks the processor it runs
+    /// on, copying the ordinary way where it has none.)
     /// </summary>
-    private static int StreamBytes
-        => Target.Current.X86Profile.LastLevelCacheKb is var kb and > 0 ? kb * 768 : int.MaxValue;
+    private readonly int _streamBytes
+        = Target.Current.X86Profile.LastLevelCacheKb is var kb and > 0 ? kb * 768 : int.MaxValue;
 
     private Selector(Function f, List<string> errors, bool automaticPacked, bool sse)
     {
@@ -4111,7 +4114,7 @@ internal sealed partial class Selector
 
     /// <summary>
     /// A LONG BLOCK THE RUNTIME'S WAY: `inline`, the REP form, where the
-    /// length is under StreamBytes, and a call of `routine` (the destination,
+    /// length is under _streamBytes, and a call of `routine` (the destination,
     /// the source or the fill value, the length: three words, as
     /// Runtime.StreamCopy and StreamFill take them) where it is not. Here, past every pass that
     /// reads the MemCopy or the MemSet as what it is (escape, regions, the
@@ -4121,12 +4124,12 @@ internal sealed partial class Selector
     {
         bool longMode = X86Mode.Long;
         // A processor with no cache to stream around: the inline form, asking nothing.
-        if (StreamBytes == int.MaxValue) { inline(); return; }
-        // A LENGTH KNOWN HERE asks nothing as it runs: under StreamBytes
+        if (_streamBytes == int.MaxValue) { inline(); return; }
+        // A LENGTH KNOWN HERE asks nothing as it runs: under _streamBytes
         // the inline form alone, at it and over the call alone.
         if (i.Operands[2] is ImmOperand { Value: var known })
         {
-            if (known < StreamBytes) inline();
+            if (known < _streamBytes) inline();
             else StreamCall(i, routine, longMode ? RL(i.Operands[2]) : null);
             return;
         }
@@ -4134,12 +4137,12 @@ internal sealed partial class Selector
         if (longMode)
         {
             MovL(n, RL(i.Operands[2]));
-            EmitW(MOp.Cmp, 8, n, Imm(StreamBytes));
+            EmitW(MOp.Cmp, 8, n, Imm(_streamBytes));
         }
         else
         {
             Mov(n, RM(i.Operands[2]));
-            Emit(MOp.Cmp, n, Imm(StreamBytes));
+            Emit(MOp.Cmp, n, Imm(_streamBytes));
         }
         MBlock big = Aside();
         MBlock done = _m.NewBlock($"{_cur.Name}.{_splits++}", big);
@@ -4158,7 +4161,7 @@ internal sealed partial class Selector
     /// else the instruction's own operand). A CALL LIKE ANY OTHER to the
     /// allocator: in long mode it changes every XMM register and the
     /// general ones a call may, on a path that runs only for a block of
-    /// StreamBytes and over, where the REP form changed four registers.
+    /// _streamBytes and over, where the REP form changed four registers.
     /// </summary>
     private void StreamCall(Instr i, string routine, MReg? n)
     {

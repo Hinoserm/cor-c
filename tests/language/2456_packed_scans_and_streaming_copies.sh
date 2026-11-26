@@ -74,7 +74,7 @@ for cpu in geode-lx 386; do
     if ! $corc compile "$here/2456_packed_scans_and_streaming_copies.cor" --asm --target x86 --cpu=$cpu $fpu > "$listing" 2> "$listing.err"; then
         fail "$cpu: the listing is printed"; head -5 "$listing.err"; continue
     fi
-    compares=$(grep -cE '^ +cmp [a-z0-9]+, (98304|393216|262144)$' "$listing")
+    compares=$(grep -cE '^ +cmp [a-z0-9]+, (98304|393216)$' "$listing")
     calls=$(grep -cE '^ +call m_Runtime_Stream(Copy|Fill)_' "$listing")
     if [ $cpu = geode-lx ]; then
         if grep -qE '^ +cmp [a-z0-9]+, 98304$' "$listing"; then pass "$cpu: a length is compared with 96 KB"; else fail "$cpu: a length is compared with 96 KB"; fi

@@ -205,7 +205,7 @@ public sealed class X86Cpu
     /// cache of a processor with nothing beyond it, the level-two and the
     /// board's level-three where the K6-III's family has one, and a share
     /// of a shared level three -- what a copy that runs past it would only
-    /// evict (the streaming copy's threshold, Selector.StreamBytes, is
+    /// evict (the streaming copy's threshold, Selector._streamBytes, is
     /// three quarters of it, glibc's per-thread rule for
     /// non_temporal_threshold). None of its own on the 386; the boards' of
     /// the 486, the Pentium, the 6x86MX and the K6 and K6-2, by the sizes
