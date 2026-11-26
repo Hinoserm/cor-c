@@ -4424,7 +4424,13 @@ public static partial class Runtime
     /// throw pays for a walk of the frame chain, not for a search of the
     /// image's function table per frame, which made every exception a
     /// program caught and forgot cost thousands of lookups.
-    public static nuint[] Frames(nuint from) {
+    public static nuint[] Frames(nuint from) { return Frames(from, 0); }
+
+    /// The same with `first` before them where it is not 0: the return
+    /// address of a call the walk does not pass -- a leaf stood for its
+    /// call (NullFault).
+    public static nuint[] Frames(nuint from, nuint first) {
+        int lead = first != 0 ? 1 : 0;
         int count = 0;
         nuint frame = from;
         while (count < TraceDepth) {
@@ -4434,10 +4440,11 @@ public static partial class Runtime
             frame = next;
         }
 
-        nuint[] frames = new nuint[count];
+        nuint[] frames = new nuint[count + lead];
+        if (lead != 0) { frames[0] = first; }
         frame = from;
         for (int i = 0; i < count; i++) {
-            frames[i] = Sys.ReadAddress(frame + WordSize.Bytes);
+            frames[i + lead] = Sys.ReadAddress(frame + WordSize.Bytes);
             frame = Sys.ReadAddress(frame);
         }
         return frames;
@@ -6025,16 +6032,11 @@ public static partial class Runtime
     {
         NullReferenceException e = new NullReferenceException();
         string? site = Frame(pc);
-        nuint[] frames = Frames(frame);
         nuint called = Sys.ReadAddress(Sys.FramePointer() + (nuint)WordSize.Bytes);
-        if (called != pc && called - 1 != pc)
-        {
-            nuint[] all = new nuint[frames.Length + 1];
-            all[0] = called;
-            for (int i = 0; i < frames.Length; i++) all[i + 1] = frames[i];
-            frames = all;
-        }
-        e.Placed$(site ?? "", frames);
+        // (One array either way, made by the walk itself: a second made here
+        // to put the caller's row first was an allocation the link could not
+        // see the end of, and a program that needed no collector kept one.)
+        e.Placed$(site ?? "", Frames(frame, called != pc && called - 1 != pc ? called : 0));
         throw e;
     }
 
