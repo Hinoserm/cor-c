@@ -25,6 +25,29 @@ internal static class ObjectData
     /// <summary>Constants naming another image, which the loader writes at every start: kept together by the linker (its RelocatedImports).</summary>
     public const string ImportConstantsSection = ".data.rel.ro.import";
 
+    /// <summary>
+    /// A placed function's jump tables, each its targets' absolute
+    /// addresses -- the function's label plus each target's offset (`at`)
+    /// -- a word each (`word` bytes, `absolute` the relocation of one), in
+    /// `tables`: read-only data, or, in a shared object whose loader
+    /// writes them, the relocated constants.
+    /// </summary>
+    public static void JumpTables<TTarget>(ObjectFile obj, Section tables, HashSet<string> defined, string function,
+        IEnumerable<(string Symbol, List<TTarget> Targets)> list, Func<TTarget, int> at, int word, RelocKind absolute)
+    {
+        foreach ((string symbol, List<TTarget> targets) in list)
+        {
+            Pad(tables, word, 0);
+            obj.Symbols.Add(new Symbol { Name = symbol, Section = tables, Offset = tables.Bytes.Count, Size = targets.Count * word, Global = false });
+            defined.Add(symbol);
+            foreach (TTarget target in targets)
+            {
+                tables.Relocs.Add(new Relocation(tables.Bytes.Count, function, at(target), absolute));
+                for (int z = 0; z < word; z++) tables.Bytes.Add(0);
+            }
+        }
+    }
+
     public static void Pad(Section s, int align, byte fill)
     {
         while (s.Bytes.Count % align != 0) s.Bytes.Add(fill);
@@ -63,11 +86,13 @@ internal static class ObjectData
     /// (`suppliedByAnother`), which a string literal has (the descriptor of
     /// `byte[]` is the runtime's). Such constants go in a section the
     /// loader relocates and then protects; those of them naming what this
-    /// module does not define, in a shared object, in one of their own
-    /// (`importConstants`): immutable relocations need the loader's
-    /// writes, not the collector's conservative reading as roots.
-    /// Writable data with no reference in it goes outside the roots
-    /// (`numbers`).
+    /// module does not define (its functions and its data, not the tables
+    /// every object carries), in a shared object, in one of their own
+    /// (ImportConstantsSection): immutable relocations need the loader's
+    /// writes, not the collector's conservative reading as roots. Writable
+    /// data with no reference in it goes outside the roots
+    /// (NumbersSection). Those two sections are made, aligned to the
+    /// target's `word`, only where an item goes in them.
     ///
     /// `release`: a placed item's bytes are the section's now, and were
     /// held twice over to the end of the compile -- a zero-filled one an
@@ -75,13 +100,24 @@ internal static class ObjectData
     /// the caller reads nothing of the module after this.
     /// </summary>
     public static void Place(Module module, ObjectFile obj, Section rodata, Section data, Section bss, Section relocatedConstants,
-        Func<Section> importConstants, Func<Section> numbers, RelocKind address, bool positionIndependent,
-        Func<string, bool> suppliedByAnother, Func<string, bool> moduleDefines, HashSet<string> defined, List<string> errors, bool release)
+        int word, RelocKind address, bool positionIndependent, Func<string, bool> suppliedByAnother, HashSet<string> defined,
+        List<string> errors, bool release)
     {
+        HashSet<string> moduleDefines = new(StringComparer.Ordinal);
+        foreach (Function f in module.Functions) moduleDefines.Add(f.Name);
+        foreach (DataItem d in module.Data) moduleDefines.Add(d.Name);
+        Section? imports = null, plain = null;
+        Section Made(ref Section? made, string name)
+        {
+            if (made is null) obj.Sections.Add(made = new Section(name, SectionKind.Data) { Align = word });
+            return made;
+        }
+        Section importConstants() => Made(ref imports, ImportConstantsSection);
+        Section numbers() => Made(ref plain, NumbersSection);
         foreach (DataItem d in module.Data)
         {
             bool loaderWrites = d.Relocs.Count > 0 && (positionIndependent || d.Relocs.Any(r => suppliedByAnother(r.Symbol)));
-            bool namesImport = loaderWrites && d.Relocs.Any(r => !moduleDefines(r.Symbol));
+            bool namesImport = loaderWrites && d.Relocs.Any(r => !moduleDefines.Contains(r.Symbol));
             Section s = d.Zero ? bss
                 : d.ReadOnly ? (loaderWrites ? (namesImport && positionIndependent ? importConstants() : relocatedConstants) : rodata)
                 : d.NoReferences ? numbers() : data;

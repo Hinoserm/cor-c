@@ -266,31 +266,7 @@ public sealed class X86Backend : IBackend
         Section rodata = new(".rodata", SectionKind.ReadOnlyData);
         Section data = new(".data", SectionKind.Data);
         Section relocatedConstants = new(".data.rel.ro", SectionKind.Data);
-        // Constants naming another image, which the loader writes at every
-        // start: kept together by the linker (Layout.RelocatedImports).
-        Section? importConstants = null;
-        Section ImportConstants()
-        {
-            if (importConstants is null)
-            {
-                importConstants = new Section(Corsac.Lang.Backends.ObjectData.ImportConstantsSection, SectionKind.Data);
-                obj.Sections.Add(importConstants);
-            }
-            return importConstants;
-        }
         Section bss = new(".bss", SectionKind.Uninitialised);
-        // Writable data that holds no reference (DataItem.NoReferences), in a
-        // section the linker places outside the statics read as roots.
-        Section? numbers = null;
-        Section Numbers()
-        {
-            if (numbers is null)
-            {
-                numbers = new Section(NumbersSection, SectionKind.Data);
-                obj.Sections.Add(numbers);
-            }
-            return numbers;
-        }
         obj.Sections.Add(text);
         obj.Sections.Add(rodata);
         obj.Sections.Add(data);
@@ -309,9 +285,7 @@ public sealed class X86Backend : IBackend
         // alive together: two copies of the unit's largest table after its
         // code. Now a site is its return, its registers and its words, and
         // the allocator's objects go with the function.
-        List<StackMapTable.Function> mapFunctions = new();
-        string? mapBase = null;
-        int mapBaseAt = 0;
+        Corsac.Lang.Backends.StackMapRecorder maps = new(StackMapLayout.I386);
         bool cardStub = false, barrierStub = false;
         // Each function's arguments as it takes them, and the first call of
         // each name passing them in registers and the first on the stack.
@@ -374,11 +348,6 @@ public sealed class X86Backend : IBackend
             ? new HashSet<string>(StringComparer.Ordinal)
             : Imported;
         bool IsImported(string name) => imported.Contains(name);
-        // What this module defines: a constant naming anything else names
-        // another image, or another unit of this one (ImportConstants).
-        HashSet<string> moduleDefines = new(StringComparer.Ordinal);
-        foreach (Function f in module.Functions) moduleDefines.Add(f.Name);
-        foreach (DataItem d in module.Data) moduleDefines.Add(d.Name);
 
         // THE SYMBOL QUESTIONS, AS DELEGATES MADE ONCE: written at each call
         // below, a local function became a new delegate for every function
@@ -497,18 +466,7 @@ public sealed class X86Backend : IBackend
                 encoder.ReleaseFunction();
                 continue;
             }
-            if (EmitLinkSummary && !PositionIndependent)
-            {
-                eligible.Clear();
-                foreach (Corsac.Lang.Ir.Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                    if (i.Op == Opcode.Call && i.Operands.Count == 0 && i.Dest?.Type == IrType.I32 && i.Callee is not null)
-                        eligible.Add(i.Callee!);
-                foreach ((MInstr call, int ret) in encoder.CallSites)
-                    if (call.Op == MOp.Call && call.CallReloc == RelocKind.Rel32
-                        && call.Operands[0] is MImm { Symbol: { } callee, Value: 0 } && eligible.Contains(callee))
-                        summary.Calls.Add(new DirectCall(start + ret - 4, callee));
-            }
+            if (EmitLinkSummary && !PositionIndependent) FamilyObject.DirectCalls(f, encoder, start, summary, eligible);
             FunctionSizes.Add((f.Name, size));
             // (A body under its own local name is this object's alone: copies
             // of one function in two units may have one this form and the
@@ -564,74 +522,27 @@ public sealed class X86Backend : IBackend
             if (entryFrame is { } stackEntryFrame) frames.Add(stackEntryFrame);
 
             if (StackMaps)
-            {
-                // A record only for a function with a call, from the first
-                // such function's start (the table's base), as EmitStackMaps
-                // made them from the sites.
-                StackMapTable.Function? record = null;
-                // Every IR slot word, where the liveness left the function whole: made once a function, and only then.
-                List<int> slotWords = m.SlotLiveness is null ? ObjectWords(m) : new List<int>();
-                foreach ((MInstr call, int ret) in encoder.CallSites)
-                {
-                    if (record is null)
-                    {
-                        if (m.Frame.Size > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
-                        if (mapBase is null) { mapBase = bodyName; mapBaseAt = start; }
-                        // Its IR frame slots are in each call's own map where
-                        // their liveness is known (FrameSlotLiveness), and
-                        // read whole at every call where it is not.
-                        record = StackMapRecords.Function(StackMapLayout.I386, start - mapBaseAt, m.Frame.Size, SavedMask(m), slotWords, m.SlotLiveness);
-                        mapFunctions.Add(record);
-                    }
-                    if (ret > 0x7FFFFF) throw new InvalidOperationException("a function over 8 MB has no stack map");
-                    record.Sites.Add(StackMapRecords.Site(StackMapLayout.I386, call, ret, m.Safepoints.GetValueOrDefault(call), slotWords, m.SlotLiveness));
-                }
-            }
+                maps.Function(bodyName, start, m.Frame.Size, FamilyObject.SavedMask(m), m.FramePointerFree, encoder.CallSites, m.Safepoints,
+                    m.Frame.SlotRanges(), m.SlotLiveness);
 
-            Section tables = PositionIndependent ? relocatedConstants : rodata;
-            foreach ((string sym, List<MBlock> targets) in encoder.Tables)
-            {
-                Corsac.Lang.Backends.ObjectData.Pad(tables, 4, 0);
-                obj.Symbols.Add(new Symbol { Name = sym, Section = tables, Offset = tables.Bytes.Count, Size = targets.Count * 4, Global = false });
-                defined.Add(sym);
-                foreach (MBlock t in targets)
-                {
-                    tables.Relocs.Add(new Relocation(tables.Bytes.Count, bodyName, t.Offset, RelocKind.Abs32));
-                    for (int z = 0; z < 4; z++) tables.Bytes.Add(0);
-                }
-            }
+            Corsac.Lang.Backends.ObjectData.JumpTables(obj, PositionIndependent ? relocatedConstants : rodata, defined, bodyName,
+                encoder.Tables, block => block.Offset, 4, RelocKind.Abs32);
             encoder.ReleaseFunction();
             if (ReleaseBodies) Corsac.Lang.Backends.ObjectData.Release(f);
         }
 
-        // THE FRAME TABLE, once every function's bytes are placed. It goes in
-        // .rodata, where it is mapped and readable, rather than a section of
-        // its own that every linker script would have to learn about -- and so
-        // a flat freestanding image carries it exactly as an ELF does.
-        if (frames.Count > 0)
-        {
-            // It holds one address, so in a shared object it holds a
-            // relocation, and a relocation may not land in a page the loader
-            // has to keep read-only. Jump tables move for the same reason.
-            Section frameSection = PositionIndependent ? relocatedConstants : rodata;
-            Corsac.Lang.Backends.ObjectData.Pad(frameSection, 4, 0);
-            int at = frameSection.Bytes.Count;
-            // Built straight into the section, never one array of its own.
-            FrameTable.Build(frameSection.Bytes, frames, out int fixup, out string baseSymbol);
-            obj.Symbols.Add(new Symbol
-            {
-                Name = FrameTable.Symbol, Section = frameSection, Offset = at, Size = frameSection.Bytes.Count - at, Global = false,
-            });
-            defined.Add(FrameTable.Symbol);
-            frameSection.Relocs.Add(new Relocation(at + fixup, baseSymbol, 0, RelocKind.Abs32));
-        }
+        // THE FRAME TABLE (FamilyObject). It holds one address, so in a
+        // shared object it holds a relocation, and a relocation may not land
+        // in a page the loader has to keep read-only: the relocated
+        // constants then. Jump tables move for the same reason.
+        FamilyObject.PlaceFrameTable(obj, PositionIndependent ? relocatedConstants : rodata, frames, defined, pcRelative: false);
 
         spills?.Table(module, pointerBytes: 4, errors);
 
         // The data, each item into its section, and the float constants the
         // code reads (ObjectData, both backends').
-        Corsac.Lang.Backends.ObjectData.Place(module, obj, rodata, data, bss, relocatedConstants, ImportConstants, Numbers, RelocKind.Abs32,
-            PositionIndependent, imported.Contains, moduleDefines.Contains, defined, errors, ReleaseBodies);
+        Corsac.Lang.Backends.ObjectData.Place(module, obj, rodata, data, bss, relocatedConstants, 4, RelocKind.Abs32,
+            PositionIndependent, imported.Contains, defined, errors, ReleaseBodies);
         Corsac.Lang.Backends.ObjectData.PlaceFloatPool(obj, text, rodata, FloatPoolPrefix, defined);
 
         // A CALL AND ITS FUNCTION DISAGREEING ON WHERE THE ARGUMENTS ARE
@@ -849,10 +760,13 @@ public sealed class X86Backend : IBackend
                 defined.Add(stub);
         }
 
-        if (StackMaps)
-        {
-            EmitStackMaps(obj, mapFunctions, mapBase, defined, PositionIndependent);
-        }
+        // The stack-map table, one an object: read by the collector to know,
+        // at each call a frame is stopped in, which of its words and saved
+        // registers hold live references (StackMapTable has the layout,
+        // runtime/src/core/gc.cor's MapSite reads it). Its base is the first
+        // function with a call's address, a word the loader writes in a
+        // shared object.
+        if (StackMaps) maps.Emit(obj, defined, StackMapSection, StackMapStart, StackMapEnd, pcRelative: false, RelocKind.Abs32, PositionIndependent);
 
         Corsac.Lang.Backends.ObjectData.DeclareUndefined(obj, module.Imports, defined);
         if (EmitLinkSummary && !PositionIndependent)
@@ -1043,98 +957,5 @@ public sealed class X86Backend : IBackend
             return null;
         }
         return m;
-    }
-
-    /// <summary>
-    /// The callee-saved registers a function's prologue pushes, by hardware
-    /// number: after `push ebp; mov ebp, esp; sub esp, FrameSize` they are
-    /// pushed in the order EBX, ESI, EDI, so the k-th of them present is at
-    /// EBP - FrameSize - 4(k+1). The collector reads them to find where a
-    /// caller's register value was kept, and so which saved words are values
-    /// some frame still holds live and which are stale copies. Only a
-    /// function with calls has records the collector reads: a leaf, which
-    /// has no frame and may save EBP first (MFunction.Frameless), has none.
-    /// </summary>
-    private static uint SavedMask(MFunction m)
-    {
-        uint mask = 0;
-        foreach (Gpr g in m.SavedRegs)
-        {
-            mask |= 1u << (int)g;
-        }
-        return mask;
-    }
-
-    /// <summary>
-    /// Every word of a function's IR frame slots, as EBP offsets: what the
-    /// collector reads as it is, beside the live spill slots a map names.
-    /// </summary>
-    private static List<int> ObjectWords(MFunction m)
-    {
-        // Gathered, sorted and made unique in one list: what a SortedSet
-        // copied out to a list gave, without the set's node per word.
-        List<int> words = new();
-        foreach ((int offset, int bytes) in m.Frame.SlotRanges())
-        {
-            for (int at = offset & ~3; at < offset + bytes; at += 4)
-            {
-                if (at < 0) words.Add(at);
-            }
-        }
-        words.Sort();
-        int unique = 0;
-        for (int k = 0; k < words.Count; k++)
-        {
-            if (unique == 0 || words[k] != words[unique - 1]) words[unique++] = words[k];
-        }
-        words.RemoveRange(unique, words.Count - unique);
-        return words;
-    }
-
-    /// <summary>
-    /// The stack-map table: one per object, read by the collector to know,
-    /// at each call a frame is stopped in, which of its words and saved
-    /// registers hold live references.
-    ///
-    /// VARINTS AND SHARED BITMAPS: the layout is StackMapTable's,
-    /// in the linker's object model, where it is written down in full; the
-    /// link decodes and re-encodes it with the same code when it cuts
-    /// duplicate bodies, and runtime/src/core/gc.cor (MapSite) reads it. In
-    /// short: a header, a checkpoint every thirty-two call sites for the
-    /// binary search, then per function its start, frame size, saved
-    /// registers and frame-slot bitmap, and per call site its return address
-    /// from the one before and its live registers and spill-slot bitmap, all
-    /// as varints; a bitmap of up to sixteen words is held inline, a larger
-    /// one once in a pool, the most used first.
-    ///
-    /// ONE RELOCATION, NOT ONE PER ENTRY. Every function of this object is in
-    /// its one text section, so the distance from the first function with a
-    /// call site to any call is known here, and is what is written; a reader
-    /// adds the base, exactly as the frame table's reader does. A shared
-    /// object then has one loader-written word in the table, not one a call.
-    /// </summary>
-    private static void EmitStackMaps(ObjectFile obj, List<StackMapTable.Function> functions, string? baseFunction, HashSet<string> defined, bool pic)
-    {
-        // The base is a relocation, so in a shared object the page holding
-        // the header is written by the loader; writable in that mode, as the
-        // frame table and the jump tables are.
-        Section s = new(pic ? ".data.rel.ro" + StackMapSection : StackMapSection,
-            pic ? SectionKind.Data : SectionKind.ReadOnlyData) { Align = 4 };
-        obj.Sections.Add(s);
-
-        // The records were made in code order as each function was encoded
-        // (Generate), a function's sites together, starts from the first
-        // function with a call: the base the relocation names.
-        StackMapTable.Encode(functions, s.Bytes);
-        if (baseFunction is not null) s.Relocs.Add(new Relocation(StackMapTable.BaseOffset, baseFunction, 0, RelocKind.Abs32));
-
-        // Each independently compiled object owns a complete table. These
-        // boundaries must not collide or bind another object's table. A future
-        // image-wide precise collector needs a directory of tables, not one
-        // arbitrarily selected global definition.
-        obj.Symbols.Add(new Symbol { Name = StackMapStart, Section = s, Offset = 0, Size = s.Bytes.Count, Global = false });
-        obj.Symbols.Add(new Symbol { Name = StackMapEnd, Section = s, Offset = s.Bytes.Count, Size = 0, Global = false });
-        defined.Add(StackMapStart);
-        defined.Add(StackMapEnd);
     }
 }
