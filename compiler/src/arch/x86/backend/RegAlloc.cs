@@ -5,12 +5,12 @@ using Corsac.Lang.RegAlloc;
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// i386 REGISTER ALLOCATION: the function's dead wide halves pruned, then
+/// i386 REGISTER ALLOCATION: the function's unused values pruned, then
 /// lowered into the one allocator's form (X86Target) and allocated there
-/// (Corsac.Lang.RegAlloc.Allocator), which knows no instruction set; this
-/// file holds what is i386's alone, the pruning. Which registers an
-/// instruction names and which of its operands may be memory or an
-/// immediate is the family's (Roles.RegsOf, Foldable, FoldableImm).
+/// (Corsac.Lang.RegAlloc.Allocator), which knows no instruction set. The
+/// pruning is the family's, long mode's too (X64.Allocator), as is which
+/// registers an instruction names and which of its operands may be memory
+/// or an immediate (Roles.RegsOf, Foldable, FoldableImm).
 /// </summary>
 internal static class Allocator
 {
@@ -21,18 +21,28 @@ internal static class Allocator
         Corsac.Lang.RegAlloc.Allocator.Run(target.Lower());
     }
 
-    private static void PruneUnusedValues(MFunction m)
+    /// <summary>
+    /// VALUES NOTHING READS, DROPPED BEFORE THE ALLOCATOR SEES THEM, in both
+    /// modes: selection may make a value unused -- one half of a wide value
+    /// on i386, a float constant's own load where every reader took the
+    /// pool's word itself (Select.Sse's XSource), a copy whose readers were
+    /// folded away -- and its dead copies would be spill traffic. A virtual
+    /// register's alone (a machine register's write is somebody's argument
+    /// or result, whether or not an instruction here says so). MOV changes
+    /// no flags, and only register and immediate sources qualify: a memory
+    /// read can be observable -- but the float pool's, read-only words.
+    /// Arithmetic whose flags nothing reads goes with its result, at the
+    /// width of a whole register write (four bytes, and long mode's eight).
+    /// </summary>
+    internal static void PruneUnusedValues(MFunction m)
     {
-        // Selection may make one half of a wide value unused. Do not create
-        // spill traffic for its dead copies. MOV changes no flags, and only
-        // register/immediate sources qualify: memory reads can be observable.
         bool changed;
         List<(MReg Reg, Role Role, int Operand, bool InMem)> regs = new();
         // The sets and the predicate are made once and emptied each round,
         // not made again for every round and every block.
         HashSet<MInstr> deadFlags = new();
         HashSet<int> used = new();
-        Predicate<MInstr> unused = i => i.Operands.Count > 0 && i.Operands[0] is MReg dest && !dest.IsPhys
+        Predicate<MInstr> unused = i => i.Operands.Count > 0 && i.Operands[0] is MReg dest && !dest.IsMachine
             && !used.Contains(dest.Id) && (deadFlags.Contains(i)
                 || (i.Op == MOp.Mov && !i.Lock && i.Operands.Count == 2 && i.Operands[1] is not MMem)
                 // An XMM copy, or a load of the float pool's read-only words --
@@ -56,7 +66,7 @@ internal static class Allocator
                     // no flag, and its sources are registers or memory that
                     // cannot fault (IfConvert). Read only by itself -- the half
                     // of a long nothing reads, kept by cmov after cmov -- it goes.
-                    if (i.Op == MOp.Cmov && !i.Lock && i.Operands[0] is MReg { IsPhys: false }) deadFlags.Add(i);
+                    if (i.Op == MOp.Cmov && !i.Lock && i.Operands[0] is MReg { IsMachine: false }) deadFlags.Add(i);
                     // Fucomipp and UcomiF write every status flag, as cmp does: ZF, PF and CF
                     // from the comparison, OF, SF and AF cleared.
                     // BSF and BSR leave ZF and every other flag undefined; POPFD
@@ -84,8 +94,8 @@ internal static class Allocator
         } while (changed);
     }
 
-    private static bool PureArithmetic(MInstr i) => !i.Lock && i.Width == 4
-        && i.Operands.Count > 0 && i.Operands[0] is MReg d && !d.IsPhys
+    private static bool PureArithmetic(MInstr i) => !i.Lock && (i.Width == 4 || i.Width == X86Mode.Word)
+        && i.Operands.Count > 0 && i.Operands[0] is MReg d && !d.IsMachine
         && RegistersAndImmediates(i)
         && i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor
             or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Not or MOp.Shl or MOp.Shr or MOp.Sar
