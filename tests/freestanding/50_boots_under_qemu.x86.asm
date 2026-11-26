@@ -25,6 +25,13 @@ multiboot:
 
 start32:
     mov esp, stack_top
+    ; The FPU present and in its initial state (EM clear, MP set): the
+    ; loader says nothing of CR0 but protection.
+    mov eax, cr0
+    and eax, 0xfffffffb
+    or eax, 2
+    mov cr0, eax
+    fninit
     call corc_start
 halt:
     hlt

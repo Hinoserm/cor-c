@@ -937,7 +937,7 @@ internal sealed partial class Selector
     /// block starts, on any path there (null where the function has none):
     /// what SelectPackedOp leaves, until an instruction empties them.
     /// </summary>
-    private static Dictionary<Block, bool>? PackedDirty(Function f)
+    private static Dictionary<Block, bool>? PackedDirty(Function f, Dictionary<Block, int>? regions)
     {
         if (!f.Blocks.Any(b => b.Instrs.Any(PackedOpCall))) return null;
         Dictionary<Block, bool> at = new(ReferenceEqualityComparer.Instance) { [f.Entry] = false };
@@ -947,9 +947,20 @@ internal sealed partial class Selector
         // a throw or a fault in a callee that never touches the FPU's state
         // (FpuFree), called with them there and no EMMS before it, lands here
         // as they were -- so a pad starts as one that may hold them, and its
-        // float code empties them first (an EMMS on a cold path).
+        // float code empties them first (an EMMS on a cold path). BUT NOT A
+        // PAD OUTSIDE EVERY PACKED BLOCK in code that owns no state (the
+        // regions known: !AutomaticPacked): there every packed operation is
+        // inside a block, and every way out of one -- a throw's too, through
+        // the block's finally -- gives the saved state back, so no lane is
+        // left; the state is the caller's, which an EMMS would write and the
+        // encoder refuses.
         foreach (Block b in f.Blocks)
-            if (b.IsLandingPad) { at[b] = true; work.Push(b); }
+            if (b.IsLandingPad)
+            {
+                bool mayHold = regions is null || regions.GetValueOrDefault(b) != 0;
+                at[b] = mayHold;
+                work.Push(b);
+            }
         while (work.Count > 0)
         {
             Block b = work.Pop();
@@ -1464,7 +1475,10 @@ internal sealed partial class Selector
         LoadParams();
 
         Dictionary<Block, int>? packedIn = longMode || _automaticPacked ? null : PackedRegions(_f);
-        Dictionary<Block, bool>? dirtyIn = longMode ? null : PackedDirty(_f);
+        // (A $inside copy runs in its caller's block from its first
+        // instruction: every pad of it may hold lanes, as in code that owns
+        // its state.)
+        Dictionary<Block, bool>? dirtyIn = longMode ? null : PackedDirty(_f, _packedBase != 0 ? null : packedIn);
         foreach (Block b in _f.Blocks)
         {
             _cur = _heads[b];
@@ -1509,14 +1523,7 @@ internal sealed partial class Selector
                 PackedRegistersBefore(i);
                 if (_mmxDirty && WantsX87(i))
                 {
-                    // OUTSIDE A PACKED BLOCK, in code that owns no state
-                    // (!AutomaticPacked), no lane can be in the MMX registers:
-                    // every packed operation is inside a block, and every way
-                    // out of one gives the saved state back -- a landing pad
-                    // too, whose finally restores it before going on. The
-                    // state there is the caller's, which an EMMS would write
-                    // (and the encoder refuses): nothing to empty.
-                    if (_automaticPacked || _packedNow != 0) Emit(new MInstr(MOp.Emms) { Probed = true });
+                    Emit(new MInstr(MOp.Emms) { Probed = true });
                     _mmxDirty = false;
                 }
                 else if (_mmxDirty && EmptiesMmx(i)) _mmxDirty = false;

@@ -129,8 +129,10 @@ static class Program
         object? kept = Interlocked.CompareExchange(ref compared.Value, "never", "l");
         Host.Line("compare " + seen + " " + compared.Value + (kept == (object)"m" ? " n" : " wrong"));
 
-        // Each stub's report taken: Marking set outside any cycle, which the
-        // collector's barrier answers by logging into a ring it does not have.
+        // Each stub's report taken: Marking set outside any cycle. The
+        // collector's barrier finds no segment of a cycle and, with nobody
+        // collecting to stock the pool, takes the reserve's, and past it
+        // counts the report lost (Gc.WaitForSegment).
         Runtime.Marking = 1;
         Cell marked = new Cell("x");
         Store(marked, "o");

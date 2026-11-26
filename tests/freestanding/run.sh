@@ -254,14 +254,14 @@ for source in "$here"/[0-9]*.cor; do
         if [ -n "$want_error" ]; then
             wrong=""
             # shellcheck disable=SC2086
-            if "$corc" compile --target "$target" --freestanding $flags $with $sources $host "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
+            if "$corc" compile --target "$target" --freestanding $flags $with $sources ${host:+"$host"} "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
                 wrong="compiled; expected the error: $want_error"
             elif ! grep -qF -- "$want_error" "$work/$name.$target.log"; then
                 wrong="refused, but not with: $want_error"
             elif [ "$(header "$source" apart)" = yes ]; then
                 object="$work/$name.$target.apart.o"
                 # shellcheck disable=SC2086
-                if ! "$corc" compile --target "$target" --freestanding $flags $with $sources $host "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
+                if ! "$corc" compile --target "$target" --freestanding $flags $with $sources ${host:+"$host"} "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
                     wrong="did not compile to an object"
                 elif "$corc" link --closed "$object" -o "$exe.apart" >> "$work/$name.$target.apart.log" 2>&1; then
                     wrong="its object linked; expected the error: $want_error"
@@ -277,7 +277,7 @@ for source in "$here"/[0-9]*.cor; do
             continue
         fi
         # shellcheck disable=SC2086
-        if ! "$corc" compile --target "$target" --freestanding $flags $with $sources $host "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
+        if ! "$corc" compile --target "$target" --freestanding $flags $with $sources ${host:+"$host"} "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
             sed 's/^/    /' "$work/$name.$target.log" | head -n 20
             failed=$((failed + 1)); failed_names="$failed_names $label"; echo "FAIL $label (did not compile)"; continue
         fi
@@ -352,8 +352,9 @@ for source in "$here"/[0-9]*.cor; do
             wrong="readelf does not show '$readelf_want'"
         fi
 
-        if [ -z "$wrong" ] && [ "$boot" = qemu ]; then
+        if [ -z "$wrong" ] && [ "$boot" = qemu ] && [ "$run" != no ]; then
             machine=qemu-system-x86_64; [ "$target" = x86 ] && machine=qemu-system-i386
+            if ! command -v "$machine" > /dev/null; then echo "SKIP $label ($machine is not installed)"; continue; fi
             timeout 60 "$machine" -kernel "$exe" -m 128 -display none -serial stdio -monitor none \
                 -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot < /dev/null > "$work/$name.$target.out" 2> "$work/$name.$target.qemu.log"
             status=$?
@@ -381,7 +382,7 @@ for source in "$here"/[0-9]*.cor; do
         if [ -z "$wrong" ] && [ "$(header "$source" apart)" = yes ]; then
             object="$work/$name.$target.apart.o"
             # shellcheck disable=SC2086
-            if ! "$corc" compile --target "$target" --freestanding $flags $with $sources $host "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
+            if ! "$corc" compile --target "$target" --freestanding $flags $with $sources ${host:+"$host"} "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
                 wrong="did not compile to an object"
             elif ! "$corc" link --closed "$object" -o "$exe.apart" >> "$work/$name.$target.apart.log" 2>&1; then
                 wrong="its object did not link: $(grep -m 2 -i 'error\|undefined' "$work/$name.$target.apart.log" | tr '\n' ' ')"

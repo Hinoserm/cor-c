@@ -7,7 +7,7 @@
 // expect-output:
 // booted
 // list 200000 sum 19999900000
-// collected 0
+// collected yes freed yes
 // kept 9999900000
 //
 // THE BARE-METAL RUNTIME ON A MACHINE, NOT AS A PROCESS: QEMU's multiboot
@@ -69,12 +69,16 @@ static class Program
         foreach (Box b in boxes) sum += b.Value;
         Line("list " + boxes.Count + " sum " + sum);
 
-        // Half of them let go, and the collector run: what is kept is whole.
+        // Half of them let go, and the collector run: it ran, the heap's
+        // live bytes went down, and what is kept is whole.
         List<Box> kept = new List<Box>();
         for (int i = 0; i < boxes.Count; i += 2) kept.Add(boxes[i]);
+        int runs = System.GC.CollectionCount(0);
+        long live = System.GC.GetTotalMemory(true);
         boxes = new List<Box>();
         System.GC.Collect();
-        Line("collected " + boxes.Count);
+        long after = System.GC.GetTotalMemory(false);
+        Line("collected " + (System.GC.CollectionCount(0) > runs ? "yes" : "no") + " freed " + (after < live ? "yes" : "no"));
         long left = 0;
         foreach (Box b in kept) left += b.Value;
         Line("kept " + left);

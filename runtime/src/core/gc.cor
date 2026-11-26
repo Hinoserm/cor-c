@@ -15699,17 +15699,18 @@ public static class Gc
         bool counted = false;
         while (SegmentsLeft() <= (nuint)StockReserve)
         {
-            // NOBODY COLLECTING: nothing will stock the pool, and a wait for
-            // it never ends -- a program of one thread, whose collection runs
-            // on itself, with Marking set and no cycle of its own. No more is
-            // coming (-1): the reserve, and past it a report counted lost,
-            // which gives the cycle up as any lost report does.
-            if (Sys.ReadAddress(ctl + GcLock.Collector) == 0) return -1;
             // THE BUDGET SPENT or the platform out of memory: no more is
             // coming, and the reserve is the last there is -- spent here
             // before a report is lost (-1, as a refusal).
             if (Sys.Read32(ctl + GcLock.BarrierSpent) != 0) return -1;
             if (Runtime.Marking != 1) return 0;
+            // MARKING AND NOBODY COLLECTING: nothing will stock the pool, and
+            // a wait for it never ends. No cycle of the collector's is so --
+            // it sets Collector before Marking and clears it after (a cycle
+            // just ended answered 0 above) -- but Marking set by hand is (a
+            // test's, freestanding 09). No more is coming (-1): the reserve,
+            // and past it a report counted lost.
+            if (Sys.ReadAddress(ctl + GcLock.Collector) == 0) return -1;
             // At every turn of the wait: the pool is low, and this thread
             // may wake the collector for it (AskForStock).
             AskForStock(true);

@@ -54,15 +54,20 @@ fill:
     jz no_long_mode
     mov eax, pml4 - KERNEL
     mov cr3, eax
+    ; CR4: PAE, and SSE's state and exceptions the operating system's
+    ; (OSFXSR, OSXMMEXCPT): long mode's floats and copies are SSE2, which
+    ; raises #UD without them (AMD 24593, 11.3).
     mov eax, cr4
-    or eax, 0x20
+    or eax, 0x620
     mov cr4, eax
     mov ecx, 0xc0000080
     rdmsr
     or eax, 0x100
     wrmsr
+    ; CR0: paging and protection, the FPU present (EM clear, MP set).
     mov eax, cr0
-    or eax, 0x80000001
+    and eax, 0xfffffffb
+    or eax, 0x80000003
     mov cr0, eax
     lgdt [gdtr - KERNEL]
     jmp 0x08:long64 - KERNEL
@@ -80,6 +85,7 @@ long64:
     mov rax, higher_half
     jmp rax
 higher_half:
+    fninit
     call corc_start
 halt:
     hlt
