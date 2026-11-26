@@ -18335,6 +18335,15 @@ public static class HeapChunks
             if (spare != 0) Reuses = Reuses - 1; else Maps = Maps - 1;
             return 0;
         }
+        // NO CYCLE'S START TABLE YET, said in so many words, as a page's is
+        // (ClearStarts at its layout): a chunk made now holds only
+        // newcomers until a cycle's walk writes its starts. Left to the
+        // mapping's zeros, a table whose memory came back with an earlier
+        // table's words in it -- its cycle this cycle's number, the bit at a
+        // dedicated chunk's one block set as every such table's is -- passed
+        // the chunk as walked, its block as an old object nothing had marked,
+        // and the sweep gave the chunk back under the thread just handed it.
+        Sys.WriteAddress(Starts(raw), NoCycle - 1);
         Sys.WriteAddress(raw + ChunkPrevious, 0);
         if (_chunks != 0) Sys.WriteAddress(_chunks + ChunkPrevious, raw);
         Sys.WriteAddress(raw + ChunkHeap, Gc.WorkingHeap);
