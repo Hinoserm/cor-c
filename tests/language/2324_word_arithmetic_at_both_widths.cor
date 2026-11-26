@@ -1,6 +1,7 @@
 // test: word_arithmetic_at_both_widths
 // expect-exit: 0
 // expect-output:
+// 3797013221
 // 3471434943
 // 4274300173
 // 1205641378
@@ -134,8 +135,36 @@ static class Program
         return h;
     }
 
+    // A value multiplied where it is: the source's register is the result's.
+    static uint InPlace()
+    {
+        uint h = 2166136261u;
+        foreach (int start in Ints)
+        {
+            unchecked
+            {
+                int v = start;
+                v *= 31; h = Hash(h, v); v *= 7; h = Hash(h, v); v *= 17; h = Hash(h, v); v *= 127; h = Hash(h, v); v *= -15; h = Hash(h, v);
+                v *= 33; h = Hash(h, v); v *= 11; h = Hash(h, v); v *= 73; h = Hash(h, v); v *= 24; h = Hash(h, v); v *= 65; h = Hash(h, v);
+                v *= 9; h = Hash(h, v); v *= -1; h = Hash(h, v); v *= 1000003; h = Hash(h, v);
+            }
+        }
+        foreach (long start in Longs)
+        {
+            unchecked
+            {
+                long v = start;
+                v *= 31; h = Hash(h, v); v *= 7; h = Hash(h, v); v *= 17; h = Hash(h, v); v *= 127; h = Hash(h, v); v *= -15; h = Hash(h, v);
+                v *= 33; h = Hash(h, v); v *= 11; h = Hash(h, v); v *= 73; h = Hash(h, v); v *= 24; h = Hash(h, v); v *= 65; h = Hash(h, v);
+                v *= 9; h = Hash(h, v); v *= -1; h = Hash(h, v); v *= 1000003; h = Hash(h, v);
+            }
+        }
+        return h;
+    }
+
     static int Main()
     {
+        Console.WriteLine(InPlace());
         Console.WriteLine(MulInts());
         Console.WriteLine(MulLongs());
         Console.WriteLine(Shifts(70));

@@ -2315,8 +2315,9 @@ internal sealed partial class Selector
     /// 19, 21, 25, 37, 41, 73); 2^j - 1 (a move, a shift and a subtract);
     /// 2^j + 1 (a move, a shift and an add); the shift by k last, and a
     /// negation for a negative factor. A source that is the destination is
-    /// copied first where the recipe reads it after writing the destination,
-    /// and the copy counts.
+    /// copied first where the recipe reads it after writing the destination:
+    /// before the two LEAs of 1 + b * a, where the copy is one instruction
+    /// more, and in place of the move of 2^j +- 1, where it is not.
     /// </summary>
     private void MulByConstant(MReg dest, MReg src, int factor, int width)
     {
@@ -2352,7 +2353,11 @@ internal sealed partial class Selector
         }
         // The recipes that read the source after writing the destination.
         bool copies = dest.Id == src.Id && kind >= 3;
-        int cost = body == int.MaxValue ? int.MaxValue : body + (k > 0 ? 1 : 0) + (negate ? 1 : 0) + (copies ? 1 : 0);
+        // (Two LEAs with the source's copy before them are three instructions.
+        // A move, a shift and an add are three whichever register is moved:
+        // the source's copy takes the place of the move into the destination,
+        // which holds the source already.)
+        int cost = body == int.MaxValue ? int.MaxValue : body + (k > 0 ? 1 : 0) + (negate ? 1 : 0) + (copies && kind == 3 ? 1 : 0);
         // LONG MODE'S PROCESSORS, BY LATENCY: each step waits on the last, so
         // a recipe is its steps' clocks added, and it replaces IMUL only
         // where that is less than IMUL's. The K8 (and the baseline tuned as
@@ -2410,16 +2415,14 @@ internal sealed partial class Selector
                 EmitW(MOp.Lea, width, dest, Scaled(src, dest, b));
                 break;
             // (The source copied because it is the destination: the
-            // destination holds it already, and long mode leaves the move
-            // out. i386 still writes it, and counts it: taking it out there
-            // changes i386's code, a change of its own with its own checks.)
+            // destination holds it already, and no move is written into it.)
             case 4:
-                if (!(copies && X86Mode.Long)) MovW(dest, src, width);
+                if (!copies) MovW(dest, src, width);
                 EmitW(MOp.Shl, width, dest, Imm(j));
                 EmitW(MOp.Sub, width, dest, src);
                 break;
             case 5:
-                if (!(copies && X86Mode.Long)) MovW(dest, src, width);
+                if (!copies) MovW(dest, src, width);
                 EmitW(MOp.Shl, width, dest, Imm(j));
                 EmitW(MOp.Add, width, dest, src);
                 break;
