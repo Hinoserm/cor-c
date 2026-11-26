@@ -24,8 +24,29 @@ internal static partial class Peephole
         foreach (MBlock b in m.Blocks)
         {
             DropZeroExtensions(b.Instrs);
+            SignExtendOnce(b.Instrs);
         }
         DropUnreadZeroExtensions(m);
+    }
+
+    /// <summary>
+    /// A BYTE OR A WORD SIGN-EXTENDED TO AN INT AND THE INT AT ONCE TO A
+    /// LONG, in one register -- `movsx eax, dil ; movsxd rax, eax`, what
+    /// `(long)(sbyte)x` is in two steps of the IR -- is one MOVSX through
+    /// the whole register: the sign the first carried to bit 31 is the sign
+    /// the second carried on.
+    /// </summary>
+    private static void SignExtendOnce(List<MInstr> s)
+    {
+        for (int k = 0; k + 1 < s.Count; k++)
+        {
+            MInstr narrow = s[k], wide = s[k + 1];
+            if (narrow is not { Op: MOp.Movsx, To32: true, Width: 1 or 2, Lock: false } || narrow.Operands[0] is not MReg { IsFloat: false } made) continue;
+            if (wide is not { Op: MOp.Movsx, Width: 4, Lock: false } || wide.Operands[0] is not MReg to || wide.Operands[1] is not MReg from) continue;
+            if (to.Id != made.Id || from.Id != made.Id) continue;
+            s[k] = new MInstr(MOp.Movsx, narrow.Operands[0], narrow.Operands[1]) { Width = narrow.Width, Line = narrow.Line };
+            s.RemoveAt(k + 1);
+        }
     }
 
     private static void DropJumpsToNext(MFunction m)
