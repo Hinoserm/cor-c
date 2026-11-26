@@ -1152,6 +1152,53 @@ internal sealed partial class Selector
             case Corsac.Lang.X86.MachineIntrinsics.StreamEnd:
                 Emit(new MInstr(MOp.Sfence) { Probed = true });
                 return;
+            // THE RUNTIME'S SCANS (Runtime.PackedStringFind and its kin), which
+            // i386 makes on the MMX registers: long mode's on XMM registers
+            // the allocator gives, by SSE2, with no state to leave after.
+            // FOUR UNITS against the four at the pattern: PCMPEQW on the
+            // low halves, the words packed to bytes, the four bytes out by
+            // MOVD -- a byte 0xFF for each unit that is equal, as i386's.
+            // EIGHT: sixteen bytes of the string against the pattern
+            // doubled (PUNPCKLQDQ), the words packed to bytes, a bit of
+            // each by PMOVMSKB -- the low eight are the units'.
+            case Corsac.Lang.X86.MachineIntrinsics.PackedFindChar4:
+            case Corsac.Lang.X86.MachineIntrinsics.PackedFindChar8:
+            {
+                if (i.Dest is null) return;
+                bool eight = name == Corsac.Lang.X86.MachineIntrinsics.PackedFindChar8;
+                MReg units = XTemp(), pattern = XTemp();
+                MovF(units, new MMem(RL(i.Operands[0]), 0), eight ? 16 : 8);
+                MovF(pattern, new MMem(RL(i.Operands[1]), 0), 8);
+                if (eight) Emit(new MInstr(MOp.XmmOpV, Imm(0x66), Imm(0x6C), pattern, pattern) { Probed = true });
+                Emit(new MInstr(MOp.XmmOpV, Imm(0x66), Imm(0x75), units, pattern) { Probed = true });
+                Emit(new MInstr(MOp.XmmOpV, Imm(0x66), Imm(0x63), units, units) { Probed = true });
+                if (eight)
+                {
+                    Emit(new MInstr(MOp.XmmMaskV, V(i.Dest), units) { Probed = true });
+                    EmitW(MOp.And, 4, V(i.Dest), Imm(0xFF));
+                }
+                else EmitW(MOp.MovGx, 4, V(i.Dest), units);
+                return;
+            }
+            // EIGHT BYTES ALIKE (-1) OR NOT (0): a word of each, no packed
+            // register at all. The words' difference negated carries where
+            // they differ; SBB spreads the carry, NOT turns it round.
+            case Corsac.Lang.X86.MachineIntrinsics.PackedEqual8:
+            {
+                if (i.Dest is null) return;
+                MReg a = RL(i.Operands[0]), b = RL(i.Operands[1]), word = Temp();
+                MovL(V(i.Dest), Imm(0), 4);
+                MovL(word, new MMem(a, 0), 8);
+                EmitW(MOp.Xor, 8, word, new MMem(b, 0));
+                EmitW(MOp.Neg, 8, word);
+                EmitW(MOp.Sbb, 4, V(i.Dest), V(i.Dest));
+                EmitW(MOp.Not, 4, V(i.Dest));
+                return;
+            }
+            // (The MMX registers' leave, EMMS or FEMMS: nothing to leave here.)
+            case Corsac.Lang.X86.MachineIntrinsics.PackedEnd:
+            case Corsac.Lang.X86.MachineIntrinsics.PackedEndFast:
+                return;
             case Corsac.Lang.X86.MachineIntrinsics.GetGs:
                 // Nothing where nothing reads it, as i386's.
                 if (i.Dest is not null) Emit(MOp.GetGs, V(i.Dest));

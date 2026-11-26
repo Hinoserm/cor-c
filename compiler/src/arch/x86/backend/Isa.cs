@@ -56,7 +56,7 @@ internal static class Isa
         MOp.MmxOp or MOp.MmxShiftImm => X86Feature.Mmx,
         MOp.MmxShuffleW or MOp.MmxExtractW or MOp.MmxInsertW => X86Feature.Mmx | X86Feature.MmxExtensions,
         MOp.XmmLoad or MOp.XmmStore or MOp.XmmLoadLow or MOp.XmmStoreLow or MOp.XmmOp or MOp.XmmOpRR or MOp.XmmOpV or MOp.XmmOpVDef => X86Feature.Sse,
-        MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV or MOp.XmmStoreNtV or MOp.Movnti => X86Feature.Sse | X86Feature.Sse2,
+        MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV or MOp.XmmStoreNtV or MOp.Movnti or MOp.XmmMaskV => X86Feature.Sse | X86Feature.Sse2,
         MOp.XmmShiftImm or MOp.XmmExtractW or MOp.XmmInsertW => X86Feature.Sse | X86Feature.Sse2,
         MOp.ThreeDNowOp => X86Feature.Mmx | X86Feature.ThreeDNow,
         // FXSAVE with LDMXCSR: the SSE state's.
@@ -106,7 +106,7 @@ internal static class Isa
     /// <summary>The scalar SSE forms, which neither read nor write a flag (UCOMISS, which writes them, is not one).</summary>
     public static bool FlagNeutralScalar(MOp op) => op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF
         or MOp.CvtFToF or MOp.CvtIntToF or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si
-        or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV;
+        or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV or MOp.XmmMaskV;
 
     /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code whose thread owns its state (X86Backend.AutomaticPacked: Linux, Windows), or code inside a state FXSAVE keeps (MInstr.OwnsState 2), may use.</summary>
     public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0

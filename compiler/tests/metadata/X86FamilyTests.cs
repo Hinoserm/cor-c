@@ -295,6 +295,8 @@ public static class X86FamilyTests
             Same("prefetchnta [rdi]", new MInstr(MOp.PrefetchNta, new MMem(MReg.Of(Gpr.Rdi), 0)) { Probed = true }, 0x0F, 0x18, 0x07);
             Same("prefetchw [r9]", new MInstr(MOp.PrefetchWrite, new MMem(MReg.Of(Gpr.R9), 0)) { Probed = true }, 0x41, 0x0F, 0x0D, 0x09);
             Same("sfence", new MInstr(MOp.Sfence) { Probed = true }, 0x0F, 0xAE, 0xF8);
+            Same("pmovmskb eax, xmm9", new MInstr(MOp.XmmMaskV, MReg.Of(Gpr.Rax), MReg.Xmm(9)) { Probed = true }, 0x66, 0x41, 0x0F, 0xD7, 0xC1);
+            Same("pmovmskb r10d, xmm2", new MInstr(MOp.XmmMaskV, MReg.Of(Gpr.R10), MReg.Xmm(2)) { Probed = true }, 0x66, 0x44, 0x0F, 0xD7, 0xD2);
             Same("movaps xmm9, [rbp - 32], the slot aligned",
                 new MInstr(MOp.MovF, MReg.Xmm(9), new MMem(MReg.Of(Gpr.Rbp), -32) { IsSpill = true }.AsAligned()) { Width = 16, Probed = true }, 0x44, 0x0F, 0x28, 0x4D, 0xE0);
             Same("movups [rbp - 24], xmm9, the slot not",

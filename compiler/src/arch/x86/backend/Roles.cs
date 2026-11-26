@@ -142,6 +142,7 @@ public static class Roles
             case MOp.MovdFromX:
             case MOp.CallerReg:
             case MOp.XmmExtractV:
+            case MOp.XmmMaskV:
             case MOp.MovGx:
             case MOp.CvtFToInt:
                 return operand == 0 ? Role.Def : Role.Use;

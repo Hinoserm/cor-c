@@ -3002,10 +3002,12 @@ public class ManualResetEventSlim : IDisposable
 }
 
 // THE BULK AND SCANNING ROUTINES, hosted code's (a freestanding image never
-// runs these). THE COPY AND THE FILL AROUND THE CACHES are both modes':
-// i386's through the MMX registers (MOVNTQ), long mode's through a general
-// register (MOVNTI), which leaves no state behind it. THE SCANS are i386's
-// alone, on the MMX registers: what owns the x87 state may borrow it. Each
+// runs these), both modes' by one source. THE COPY AND THE FILL AROUND THE
+// CACHES: i386's through the MMX registers (MOVNTQ), long mode's through a
+// general register (MOVNTI). THE SCANS: i386's on the MMX registers -- what
+// owns the x87 state may borrow it -- long mode's by SSE2 on XMM registers
+// (Sys.PackedFindChar4, PackedFindChar8) and a plain word (PackedEqual8),
+// which leave no state behind them: its PackedEnd is nothing. Each
 // asks Processor first, whatever --cpu the image was made for -- one image
 // runs on the 486 and the K8 alike -- and takes the ordinary way where the
 // processor has not the instructions, or the work is too short to pay for
@@ -3024,10 +3026,12 @@ public static partial class Runtime
 {
     /// THE COPY AROUND THE CACHES of a block too long to be read again soon
     /// (Selector.StreamBytes and over, a length known only as it runs):
-    /// movntq stores whole cache lines, each line read ahead by prefetchnta,
-    /// so the copy neither evicts the caches' working set nor reads the
-    /// destination's lines in first only to overwrite them. The MMX
-    /// extensions' (the Pentium III, the Athlon, every K8). Not where the two
+    /// movntq (long mode's movnti) stores whole cache lines, each line read
+    /// ahead by prefetchnta, so the copy neither evicts the caches' working
+    /// set nor reads the destination's lines in first only to overwrite
+    /// them. The MMX extensions' on i386 (the Pentium III, the Athlon, every
+    /// K8); SSE2's in long mode, which every processor of it has -- the
+    /// question asked of Processor below is always yes there. Not where the two
     /// blocks overlap, either way: Sys.MemoryCopy's forward order, a word at
     /// a time, is then the copy.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -3091,7 +3095,6 @@ public static partial class Runtime
         Sys.MemorySet(to, value, count & 63);
     }
 
-#if !TARGET_64BIT
     /// The span under which a scan stays scalar: leaving the MMX registers
     /// (EMMS) costs what a few dozen units compared one at a time do.
     const int PackedUnits = 32;
@@ -3319,5 +3322,4 @@ public static partial class Runtime
         PackedDone();
         return i;
     }
-#endif
 }

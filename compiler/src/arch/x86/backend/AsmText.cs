@@ -730,6 +730,9 @@ internal static class AsmText
             case MOp.Cwd:
                 lines.Add(i.Width == 8 ? "cqo" : "cdq");
                 return lines;
+            case MOp.XmmMaskV:
+                lines.Add($"pmovmskb {O(0, 4)}, {O(1, 16)}");
+                return lines;
             case MOp.RepMovsq: lines.Add("rep movsq"); return lines;
             case MOp.RepStosq: lines.Add("rep stosq"); return lines;
             case MOp.Syscall: lines.Add("syscall"); return lines;

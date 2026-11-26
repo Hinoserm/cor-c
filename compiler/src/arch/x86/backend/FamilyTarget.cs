@@ -474,7 +474,7 @@ internal abstract class FamilyTarget
             MOp.MovF or MOp.MovGx or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.XorF or MOp.XorPs
                 or MOp.CvtFToF or MOp.CvtIntToF or MOp.CvtFToInt or MOp.Cvttss2si or MOp.Cvttsd2si
                 or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX
-                or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV => Effect.None,
+                or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV or MOp.XmmMaskV => Effect.None,
             MOp.UcomiF => Effect.WritesFlags,
             _ => Effect.Barrier,
         };

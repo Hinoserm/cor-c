@@ -1659,7 +1659,7 @@ internal static partial class Peephole
     private static bool XmmSpillTransparent(MOp op) => SpillTransparent(op)
         || op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.CvtIntToF
             or MOp.XorPs or MOp.XorF or MOp.MovGx or MOp.CvtFToInt or MOp.MovdToX or MOp.MovdFromX or MOp.Punpckldq
-            or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV;
+            or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV or MOp.XmmMaskV;
 
     private static bool SpillTransparent(MOp op) => op is MOp.Mov or MOp.Movsx or MOp.Movzx
         or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor

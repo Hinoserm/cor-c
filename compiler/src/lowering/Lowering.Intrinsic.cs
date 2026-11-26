@@ -900,11 +900,12 @@ public sealed partial class Lowering
             case "StreamPrefetch" or "StreamPrefetchLine" or "StreamCopy64" or "StreamFill64" or "StreamEnd"
                 or "PackedFindChar4" or "PackedFindChar8" or "PackedEqual8" or "PackedEnd" or "PackedEndFast":
             {
-                // Long mode has the streaming four -- by MOVNTI, a general
-                // register's word around the caches, with no MMX state to
-                // leave (Selector.SelectMachineIntrinsicL) -- and none of
-                // the MMX registers' scans.
-                if (_t.WordSize != 4 && name is not ("StreamPrefetch" or "StreamCopy64" or "StreamFill64" or "StreamEnd"))
+                // Long mode has its own form of each (Selector.
+                // SelectMachineIntrinsicL): the streaming ones by MOVNTI, a
+                // general register's word around the caches; the scans by
+                // SSE2 on XMM registers; and no MMX state to leave, so the
+                // two leaves are nothing there. Not 3DNow!'s prefetch.
+                if (_t.WordSize != 4 && name == "StreamPrefetchLine")
                 {
                     Error(call, $"Sys.{name} is an i386 instruction; long mode has its own");
                     return Void();
@@ -1486,7 +1487,7 @@ public sealed partial class Lowering
         _e.SetBlock(done);
     }
 
-    /// <summary>The runtime's routines with a packed form (Runtime.Packed*), hosted i386 code's to call instead.</summary>
+    /// <summary>The runtime's routines with a packed form (Runtime.Packed*), hosted code's to call instead.</summary>
     private static readonly HashSet<string> PackedForms = new(StringComparer.Ordinal)
         { "StringFind", "StringFindReverse", "StringSearch", "StringEqual", "StringCompare", "BytesEqual" };
 
@@ -1498,10 +1499,11 @@ public sealed partial class Lowering
     private VReg RuntimeFallback(CallExpr call, MethodSymbol target)
     {
         MethodSymbol? rt = RuntimeMethod(target.Name, target.Params.Count, target.Params);
-        // THE MMX REGISTERS' FORM where a runtime that owns its FPU state has
+        // THE PACKED FORM (the MMX registers' on i386, SSE2's in long mode)
+        // where the code is an operating system's guest and the runtime has
         // one: it asks Processor itself, and takes the scalar routine for a
         // short span.
-        if (OwnsFpuState && _t.WordSize == 4 && PackedForms.Contains(target.Name)
+        if (OwnsFpuState && PackedForms.Contains(target.Name)
             && RuntimeMethod("Packed" + target.Name, target.Params.Count, target.Params) is MethodSymbol packed)
             rt = packed;
         if (rt is null)

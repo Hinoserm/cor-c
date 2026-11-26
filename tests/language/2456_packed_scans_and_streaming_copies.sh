@@ -4,7 +4,9 @@
 # length known only as it runs goes the runtime's streaming way at 256 KB
 # and over, in BOTH modes -- i386's by MOVNTQ through an MMX register, long
 # mode's by MOVNTI of a general register (it had none: every such block
-# went by REP MOVS, through the caches).
+# went by REP MOVS, through the caches); and that the string scans go the
+# runtime's packed way in both -- long mode's by SSE2, where it scanned a
+# unit at a time.
 #
 #     tests/language/2456_packed_scans_and_streaming_copies.sh
 set -u
@@ -44,6 +46,21 @@ for target in x86 x86-64; do
         # Not from inside itself: its own short and overlapping blocks go the ordinary way.
         if echo "$code" | grep -qE "^call m_Runtime_${routine}_"; then fail "$target: Runtime.$routine never calls itself"; else pass "$target: Runtime.$routine never calls itself"; fi
     done
+    # THE SCANS: both modes call the runtime's packed forms; long mode's
+    # search compares eight units a step in an XMM register (PCMPEQW,
+    # PMOVMSKB) and touches no MMX register, i386's goes through MM0.
+    if grep -qE '^ +call m_Runtime_PackedString(Find|Search|Equal|Compare)' "$listing"; then pass "$target: a scan calls the runtime's packed form"; else fail "$target: a scan calls the runtime's packed form"; fi
+    find=$(body "$listing" "m_Runtime_PackedStringFindLong_")
+    if [ $target = x86-64 ]; then
+        if echo "$find" | grep -qE '^pmovmskb e[a-z]+, xmm[0-9]+$|^pmovmskb r[0-9]+d, xmm[0-9]+$' && echo "$find" | grep -qE '^sse 66 0f 75, xmm[0-9]+, xmm[0-9]+$'
+        then pass "$target: the search compares in an XMM register and takes a bit of each unit"; else fail "$target: the search compares in an XMM register and takes a bit of each unit"; echo "$find" | head -60; fi
+        if echo "$find" | grep -qE 'emms|[^x]mm[0-7]'; then fail "$target: the search uses no MMX register"; else pass "$target: the search uses no MMX register"; fi
+        alike=$(body "$listing" "m_Runtime_Packed8Alike_")
+        [ -n "$alike" ] || alike=$(body "$listing" "m_Runtime_PackedStringEqualLong_")
+        if echo "$alike" | grep -qE '^sbb ' && ! echo "$alike" | grep -qE 'emms|mm[0-7]'; then pass "$target: eight bytes are compared as a word, with no packed register"; else fail "$target: eight bytes are compared as a word, with no packed register"; echo "$alike" | head -40; fi
+    else
+        if echo "$find" | grep -qE 'emms'; then pass "$target: the search leaves the MMX registers at its end"; else fail "$target: the search leaves the MMX registers at its end"; fi
+    fi
     # The call is on the far side of a compare with 256 KB.
     if grep -qE '^ +cmp [a-z0-9]+, 262144$' "$listing"; then pass "$target: a length is compared with 256 KB"; else fail "$target: a length is compared with 256 KB"; fi
 done

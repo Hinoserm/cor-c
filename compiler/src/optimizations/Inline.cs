@@ -1514,7 +1514,7 @@ public sealed class Inline : IParallelModulePass
             Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange);
             Reach(Corsac.Lang.X86.X86Backend.Atomics386Lock);
         }
-        // AND THE STREAMING COPY AND FILL the i386 backend calls for a long
+        // AND THE STREAMING COPY AND FILL a backend calls for a long
         // block (Runtime.StreamCopy, StreamFill): no IR names them.
         if (m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamCopy)) Reach(Corsac.Lang.Lto.RuntimeAbi.StreamCopy);
         if (m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill)) Reach(Corsac.Lang.Lto.RuntimeAbi.StreamFill);

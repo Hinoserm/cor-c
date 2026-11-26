@@ -314,6 +314,10 @@ internal sealed partial class Encoder
                 SseL(0x66, false, Hw(i.Operands[0]), i.Operands[1], 0xC5);
                 _out.Add((byte)((MImm)i.Operands[2]).Value);
                 return true;
+            case MOp.XmmMaskV:
+                // pmovmskb r32, xmm: 66 0F D7 /r, the general register the reg field.
+                SseL(0x66, false, Hw(i.Operands[0]), i.Operands[1], 0xD7);
+                return true;
             case MOp.XmmInsertV:
                 // pinsrw xmm, r32, ib: 66 0F C4 /r, the general register the r/m field.
                 B(0x66);

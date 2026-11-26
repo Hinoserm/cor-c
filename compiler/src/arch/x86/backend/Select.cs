@@ -107,9 +107,11 @@ internal sealed partial class Selector
 
     /// <summary>
     /// The runtime's copy and fill around the caches (Runtime.StreamCopy,
-    /// StreamFill), where the image has them and this code owns the x87
-    /// state they borrow: a copy or fill whose length is known only as it
-    /// runs calls them at StreamBytes and over (StreamedOr). Null otherwise.
+    /// StreamFill), where the image has them and this code is an operating
+    /// system's guest (i386's borrow the x87's state, which only such code
+    /// owns; long mode's borrow nothing and follow the same rule): a copy
+    /// or fill of StreamBytes and over calls them -- behind a compare where
+    /// its length is known only as it runs (StreamedOr). Null otherwise.
     /// </summary>
     private string? _streamCopy, _streamFill;
 
@@ -117,7 +119,8 @@ internal sealed partial class Selector
     /// The streaming length: beyond what a K7's or a K8's level-two cache
     /// (256 KB to 1 MB) would keep of the block anyway. A shorter one is read
     /// again soon, and stored around the cache it would be fetched back from
-    /// memory; the inline REP MOVSD is the copy for it.
+    /// memory; the inline REP MOVS is the copy for it. (One length for every
+    /// processor of both modes today: by --cpu's cache is the TODO list's.)
     /// </summary>
     private const int StreamBytes = 256 * 1024;
 
@@ -3990,7 +3993,7 @@ internal sealed partial class Selector
     // shows it; the board was asked and said so.
     private void SelectMemSet(Instr i)
     {
-        if (i.Operands[2] is not ImmOperand && _streamFill is { } fill) StreamedOr(i, fill, () => InlineMemSet(i));
+        if (_streamFill is { } fill) StreamedOr(i, fill, () => InlineMemSet(i));
         else InlineMemSet(i);
     }
 
@@ -4005,6 +4008,14 @@ internal sealed partial class Selector
     private void StreamedOr(Instr i, string routine, Action inline)
     {
         bool longMode = X86Mode.Long;
+        // A LENGTH KNOWN HERE asks nothing as it runs: under StreamBytes
+        // the inline form alone, at it and over the call alone.
+        if (i.Operands[2] is ImmOperand { Value: var known })
+        {
+            if (known < StreamBytes) inline();
+            else StreamCall(i, routine, longMode ? RL(i.Operands[2]) : null);
+            return;
+        }
         MReg n = Temp();
         if (longMode)
         {
@@ -4022,6 +4033,22 @@ internal sealed partial class Selector
         inline();
         Jmp(done);
         _cur = big;
+        StreamCall(i, routine, n);
+        Jmp(done);
+        _cur = done;
+    }
+
+    /// <summary>
+    /// The call of a stream routine: the destination, the source or the
+    /// fill value, and the length (`n`, where it is in a register already;
+    /// else the instruction's own operand). A CALL LIKE ANY OTHER to the
+    /// allocator: in long mode it changes every XMM register and the
+    /// general ones a call may, on a path that runs only for a block of
+    /// StreamBytes and over, where the REP form changed four registers.
+    /// </summary>
+    private void StreamCall(Instr i, string routine, MReg? n)
+    {
+        bool longMode = X86Mode.Long;
         // Its three words in the registers the convention gives a call's
         // first three (Conventions.Current: EAX, EDX, ECX; RDI, RSI, RDX).
         ArgPlace[] places = Conventions.Current.Arguments(StreamWords).Places;
@@ -4032,18 +4059,16 @@ internal sealed partial class Selector
             MReg to = RL(i.Operands[0]), other = RL(i.Operands[1]);
             MovL(first, to);
             MovL(second, other);
-            MovL(third, n);
+            MovL(third, n!);
             Emit(new MInstr(MOp.Call, MImm.Sym(routine, 0)) { IntArgs = 3 });
         }
         else
         {
             Mov(first, RM(i.Operands[0]));
             Mov(second, RM(i.Operands[1]));
-            Mov(third, n);
+            Mov(third, n is not null ? n : RM(i.Operands[2]));
             Emit(new MInstr(MOp.Call, SymbolAddress(routine, 0), first, second, third) { CallReloc = RelocKind.Rel32 });
         }
-        Jmp(done);
-        _cur = done;
     }
 
     /// <summary>The stream routines' three arguments as the convention places them: three words (a long mode word's place is an int's too).</summary>
@@ -4130,13 +4155,13 @@ internal sealed partial class Selector
         if (X86Mode.Long)
         {
             if (SmallCopyL(i)) return;
-            if (i.Operands[2] is not ImmOperand && _streamCopy is { } streamed) StreamedOr(i, streamed, () => InlineMemCopy(i));
+            if (_streamCopy is { } streamed) StreamedOr(i, streamed, () => InlineMemCopy(i));
             else InlineMemCopy(i);
             return;
         }
         if (SelectMmxFrameCopy(i)) return;
         if (SelectSmallCopy(i)) return;
-        if (i.Operands[2] is not ImmOperand && _streamCopy is { } copy) StreamedOr(i, copy, () => InlineMemCopy(i));
+        if (_streamCopy is { } copy) StreamedOr(i, copy, () => InlineMemCopy(i));
         else InlineMemCopy(i);
     }
 

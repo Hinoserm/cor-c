@@ -8,8 +8,10 @@
 // overlap up 0 wrong down 0 wrong
 // concat 0 wrong
 // clear 0 wrong fill 0 wrong
+// known 0 wrong
 //
-// The MMX registers' routines (Runtime.PackedStringFind, PackedStringEqual,
+// The runtime's packed routines -- the MMX registers' on i386, SSE2's and
+// MOVNTI's in long mode -- (Runtime.PackedStringFind, PackedStringEqual,
 // PackedStringCompare; StreamCopy, StreamFill for a block of 256 KB and more)
 // against plain loops in this program: every place a character can be found
 // in strings of 1 to 200, below and above the packed span, the scalar tail
@@ -100,6 +102,19 @@ static class P
         int fillWrong = 0;
         for (int i = 0; i < Big; i++) if (filled[i] != (i >= 7 && i < Big - 2 ? 0xA5 : 0)) fillWrong++;
         Console.WriteLine("clear " + clearWrong + " wrong fill " + fillWrong + " wrong");
+
+        // A LENGTH WRITTEN IN THE SOURCE, at 256 KB and over: the call with
+        // no compare before it; under it, the inline form alone.
+        byte[] known = new byte[Big];
+        Sys.MemoryCopy(Sys.ArrayData(known) + 1, Sys.ArrayData(source), 300000);
+        Sys.MemorySet(Sys.ArrayData(known) + 300001, 0x5A, 400000);
+        Sys.MemoryCopy(Sys.ArrayData(known) + 700001, Sys.ArrayData(source) + 5, 1000);
+        int knownWrong = known[0] == 0 ? 0 : 1;
+        for (int i = 0; i < 300000; i++) if (known[i + 1] != source[i]) knownWrong++;
+        for (int i = 300001; i < 700001; i++) if (known[i] != 0x5A) knownWrong++;
+        for (int i = 0; i < 1000; i++) if (known[700001 + i] != source[i + 5]) knownWrong++;
+        if (known[701001] != 0) knownWrong++;
+        Console.WriteLine("known " + knownWrong + " wrong");
         return 0;
     }
 }

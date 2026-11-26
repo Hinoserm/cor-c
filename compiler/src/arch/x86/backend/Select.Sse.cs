@@ -49,7 +49,10 @@ internal sealed partial class Selector
     {
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal) && XmmValueOp(c, out _))
+                if (i.Op == Opcode.Call && i.Callee is { } c
+                    && (c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal) && XmmValueOp(c, out _)
+                        // The runtime's scans, whose long forms compare in XMM registers too.
+                        || c is MachineIntrinsics.PackedFindChar4 or MachineIntrinsics.PackedFindChar8))
                     return true;
         return false;
     }

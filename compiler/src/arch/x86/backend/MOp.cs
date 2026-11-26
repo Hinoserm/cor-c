@@ -94,6 +94,8 @@ public enum MOp : byte
     XmmInsertV,
     /// <summary>movntdq m128, xmm: operands the memory, the register.</summary>
     XmmStoreNtV,
+    /// <summary>pmovmskb r32, xmm (SSE2): a bit of each byte's top -- operands the general register (written), the XMM one. Long mode's scans (Selector.SelectMachineIntrinsicL).</summary>
+    XmmMaskV,
     /// <summary>movnti m, r (SSE2): a word stored around the caches -- operands the memory, the general register; Width 8 in long mode (a Packed64's whole), or 4.</summary>
     Movnti,
     // odds and ends

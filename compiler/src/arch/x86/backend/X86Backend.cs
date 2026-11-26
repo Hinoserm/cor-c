@@ -250,8 +250,7 @@ public sealed class X86Backend : IBackend
         // The runtime's streaming copy and fill, where the module has them to
         // call (Module.RuntimeHelpers: lowering kept them) and its code owns
         // the x87 state (Selector.StreamedOr).
-        _streamCopy = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamCopy) ? Corsac.Lang.Lto.RuntimeAbi.StreamCopy : null;
-        _streamFill = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill) ? Corsac.Lang.Lto.RuntimeAbi.StreamFill : null;
+        FindStreams(module);
         ObjectFile obj = new();
         (Target.X86Profile.Contract with { AutomaticPacked = AutomaticPacked }).Attach(obj);
         // FACTS FROM EVERY FREESTANDING UNIT, the rule kept or not
@@ -1013,12 +1012,18 @@ public sealed class X86Backend : IBackend
         return obj;
     }
 
+    /// <summary>The runtime's streaming copy and fill, where the module has them to call (Module.RuntimeHelpers: lowering kept them) and its code owns the x87 state (Selector.StreamedOr).</summary>
+    private void FindStreams(Module module)
+    {
+        _streamCopy = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamCopy) ? Corsac.Lang.Lto.RuntimeAbi.StreamCopy : null;
+        _streamFill = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill) ? Corsac.Lang.Lto.RuntimeAbi.StreamFill : null;
+    }
+
     public string Assembly(Module module)
     {
         X86Mode.Long = false;
         // As Generate compiles it: the streaming routines where the module has them.
-        _streamCopy = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamCopy) ? Corsac.Lang.Lto.RuntimeAbi.StreamCopy : null;
-        _streamFill = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill) ? Corsac.Lang.Lto.RuntimeAbi.StreamFill : null;
+        FindStreams(module);
         _fpuFree = FpuFree.Compute(module, SafepointPolls, out _fpuDefined);
         _fpuDeferred = null;
         StringBuilder sb = new();

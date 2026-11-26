@@ -108,9 +108,12 @@ internal static class MachineIntrinsics
     /// <summary>A 64-bit compare-exchange on i386: lock cmpxchg8b (Sys.Cas64).</summary>
     public const string Cas64 = Prefix + "cas64";
     /// <summary>
-    /// The MMX registers' bulk and scanning instructions, for the hosted
-    /// runtime's routines that reach them only after Processor says the
-    /// processor has them (Runtime.StreamCopy, PackedStringFind): i386 only.
+    /// The bulk and scanning instructions, for the hosted runtime's
+    /// routines that reach them only after Processor says the processor
+    /// has them (Runtime.StreamCopy, PackedStringFind): the MMX registers'
+    /// on i386; in long mode MOVNTI for the streaming ones and SSE2 on XMM
+    /// registers for the scans (Selector.SelectMachineIntrinsicL), all but
+    /// 3DNow!'s prefetch.
     /// </summary>
     public const string StreamPrefetch = Prefix + "prefetchnta";
     public const string StreamPrefetchLine = Prefix + "prefetch";
