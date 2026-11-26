@@ -163,7 +163,7 @@ public sealed class Frame
     /// The IR frame slots -- objects the lifetime passes put in the frame, the
     /// lowering's temporaries -- as (offset, bytes): the words of the frame a
     /// stack map does not describe, which the collector reads as they are
-    /// (X86Backend.EmitStackMaps). Spill slots are the map's; floating-point
+    /// (Backends.StackMapRecorder). Spill slots are the map's; floating-point
     /// homes and the scratch hold no reference.
     /// </summary>
     public IEnumerable<(int Offset, int Bytes)> SlotRanges()

@@ -254,11 +254,11 @@ public static class Platform
     /// region below is only what was handed out before they existed.
     // HOOKS: a method's address (Sys.AddressOf) called by Sys.Call, so each
     // declares (nuint, nuint, nuint) and answers a nuint -- a word an argument.
-    // MapHook(bytes, pieces, 0) -> address; UnmapHook(at, bytes, 0).
-    // `pieces` says how the mapping comes back (MapPieces): its low bit set
-    // is this runtime saying -- 1 alone, given back whole; a page multiple
-    // with the bit, given back in pieces of that size -- and 0 is an older
-    // runtime's, which says nothing (the kernel takes it at page grain).
+    // MapHook(bytes, piece | 1, 0) -> address (Map: 1, whole; MapPieces);
+    // UnmapHook(at, bytes, 0). The second word's low bit set is this
+    // runtime saying how the mapping comes back -- 1 alone whole, a page
+    // multiple with the bit in pieces of that size; an older runtime's 0
+    // says nothing (the kernel takes it at page grain).
     public static nuint MapHook;
     public static nuint UnmapHook;
 
@@ -404,35 +404,59 @@ public static class Platform
     /// none: the region's given back (Unmap) first, then the kernel's once
     /// it has installed MapHook, and the bump region's until then -- every
     /// piece of the region whole pages (RegionPage). Given back whole.
-    public static nuint Map(nuint bytes) { return MapPieces(bytes, 0); }
-
-    /// As Map, for memory given back in pieces of `piece` bytes (a page
-    /// multiple: HeapChunks.TakePages' batch, each page given back alone),
-    /// which the kernel's MapHook is told so that it checks each give-back
-    /// against the mapping it made; 0 is whole.
-    public static nuint MapPieces(nuint bytes, nuint piece)
+    ///
+    /// EACH CALLS THE HOOK ITSELF (Map, MapPieces), never one through the
+    /// other: the kernel names who asked for a range by counting frames up
+    /// from its hook, and a frame between them would name this one. NOT
+    /// INLINED, nor is MapPieces: the kernel's record of a range names two
+    /// callers counted in frames up from its hook -- the return into this,
+    /// and the return into whoever asked.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static nuint Map(nuint bytes)
     {
         // NO SIZE PAST THE LAST PAGE: rounded up, it would wrap to nothing
         // on i386, and the free ranges hand out their first for nothing.
         if (bytes == 0 || bytes > PageMask) return 0;
-        // The region's own given back first (Unmap), whoever maps the rest.
-        if (_freeRanges != 0)
-        {
-            nuint want = (bytes + RegionPage - 1) & PageMask;
-            uint reusing = LockRegion();
-            nuint reused = TakeRange(want);
-            UnlockRegion(reusing);
-            if (reused != 0)
-            {
-                Zero(reused, want);
-                return reused;
-            }
-        }
-        if (MapHook != 0)
-        {
-            return Sys.Call(MapHook, bytes, piece | 1, 0);
-        }
+        nuint reused = TakeFreed(bytes);
+        if (reused != 0) return reused;
+        if (MapHook != 0) return Sys.Call(MapHook, bytes, 1, 0);
+        return MapBump(bytes);
+    }
 
+    /// As Map, for memory given back in pieces of `piece` bytes (a page
+    /// multiple: HeapChunks.TakePages' batch, each page given back alone),
+    /// which the kernel's MapHook is told so that it checks each give-back
+    /// against the mapping it made. (A range the region takes back again,
+    /// TakeFreed's, is the region's whatever comes back of it: Unmap gives
+    /// its pieces to Release, never to the hook.) A piece that is no whole
+    /// number of pages is no grain the kernel could check by: the word is
+    /// then 0, an older runtime's, which says nothing.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static nuint MapPieces(nuint bytes, nuint piece)
+    {
+        // No size past the last page, as Map.
+        if (bytes == 0 || bytes > PageMask) return 0;
+        nuint reused = TakeFreed(bytes);
+        if (reused != 0) return reused;
+        if (MapHook != 0) return Sys.Call(MapHook, bytes, (piece & (nuint)(RegionPage - 1)) == 0 ? piece | 1 : 0, 0);
+        return MapBump(bytes);
+    }
+
+    /// The region's own given back (Unmap), zeroed, whoever maps the rest; 0 where none fits.
+    private static nuint TakeFreed(nuint bytes)
+    {
+        if (_freeRanges == 0) return 0;
+        nuint want = (bytes + RegionPage - 1) & PageMask;
+        uint reusing = LockRegion();
+        nuint reused = TakeRange(want);
+        UnlockRegion(reusing);
+        if (reused != 0) Zero(reused, want);
+        return reused;
+    }
+
+    /// The bump region's next pages, before a kernel maps: 0 where they are spent.
+    private static nuint MapBump(nuint bytes)
+    {
         if (_limit == 0)
         {
             // Nobody said where memory is, and on bare metal nobody can
@@ -666,7 +690,9 @@ public static class Platform
     /// (Gc.StartGenerations): a kernel's routine that hands out addresses and
     /// makes each page when it is first touched (ring 0's KernelMapLazy), or,
     /// with none, an ordinary Map -- a ring-1 kernel's, which its kernel
-    /// commits on touch already.
+    /// commits on touch already. What it hands out comes back whole through
+    /// UnmapHook (Unmap), as a mapping of MapHook's does: the collector's
+    /// card tables, where its other tables could not be made.
     public static nuint MapLazyHook;         // MapLazyHook(bytes, 0, 0) -> address
 
     public static nuint MapLazy(nuint bytes)

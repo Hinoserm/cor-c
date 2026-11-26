@@ -1,7 +1,7 @@
 namespace Corsac.Lang.Ir;
 
 /// <summary>
-/// THE STACK-MAP TABLE, written by the code generator (X86Backend.EmitStackMaps),
+/// THE STACK-MAP TABLE, written by the code generator (Backends.StackMapRecorder),
 /// rewritten by the link when it cuts duplicate code (Lto.DuplicateCutter), and
 /// read by the collector (Gc.MapSite in runtime/src/core/gc.cor). One codec for
 /// the two writers, so they cannot disagree; the runtime's reader is the third
