@@ -90,6 +90,9 @@ internal sealed partial class Selector
     /// </summary>
     private bool _positionIndependent;
 
+    /// <summary>Whether the barrier's slow path calls the runtime rather than the object's stub (MachineIntrinsics.Barrier, CardMark): in a position-independent object, either mode.</summary>
+    private bool _barrierCallsRuntime;
+
     /// <summary>A Windows image: the thread block is in a TLS slot of the TEB, not behind GS.</summary>
     private bool _windowsTls;
 
@@ -1132,7 +1135,7 @@ internal sealed partial class Selector
         if (!automaticPacked && x87 is not null) x87.Add(f, floats: !f.SystemCode && !f.Name.StartsWith("__", StringComparison.Ordinal));
         Selector s = new(f, errors, automaticPacked, automaticPacked)
         {
-            _positionIndependent = positionIndependent, _windowsTls = windowsTls,
+            _positionIndependent = positionIndependent, _barrierCallsRuntime = positionIndependent, _windowsTls = windowsTls,
             _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null,
         };
         s.Select();
@@ -4494,7 +4497,7 @@ internal sealed partial class Selector
         bool longMode = X86Mode.Long;
         if (LandingPadHead(i)) return;
 
-        if (_positionIndependent && i.Op == Opcode.Call && i.Callee is MachineIntrinsics.CardMark or MachineIntrinsics.Barrier)
+        if (_barrierCallsRuntime && i.Op == Opcode.Call && i.Callee is MachineIntrinsics.CardMark or MachineIntrinsics.Barrier)
         {
             Instr routine = new()
             {

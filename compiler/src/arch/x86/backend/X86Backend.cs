@@ -119,7 +119,7 @@ public sealed class X86Backend : IBackend
     /// <summary>Each object's card-marking stub, and the table it reads (Runtime.Cards).</summary>
     public const string CardStub = "__corsac_cardmark", CardTable = "s_Runtime_Cards_t$V$NUInt";
 
-    /// <summary>Each object's barrier stub, and the runtime routine it calls (Runtime.WriteBarrier).</summary>
+    /// <summary>Each object's barrier stub, and the runtime routine it calls (Runtime.WriteBarrier): i386's written here, long mode's by X64Backend.EmitBarrierStub, under the one name.</summary>
     public const string BarrierStub = "__corsac_barrier", BarrierRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
     public const string StackMapEnd = "__corsac_stackmaps_end";
 

@@ -35,7 +35,7 @@ public sealed class MFunction
     /// <summary>Whether a card mark calls the object's stub (X86Backend.CardStub).</summary>
     public bool UsesCardStub { get; set; }
 
-    /// <summary>Whether a barrier's slow path calls the object's stub (X86Backend.BarrierStub).</summary>
+    /// <summary>Whether a barrier's slow path calls the object's stub (X86Backend.BarrierStub; long mode's written by X64Backend.EmitBarrierStub).</summary>
     public bool UsesBarrierStub { get; set; }
 
     /// <summary>

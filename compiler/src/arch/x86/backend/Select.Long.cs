@@ -69,12 +69,16 @@ internal sealed partial class Selector
     /// in a dynamically linked program what its libraries supply -- which is
     /// reached through its GOT slot rather than at its own address.
     /// </summary>
-    public static MFunction RunLong(Function f, List<string> errors, Func<string, bool>? isExternal = null, string? streamCopy = null, string? streamFill = null)
+    public static MFunction RunLong(Function f, List<string> errors, Func<string, bool>? isExternal = null, string? streamCopy = null, string? streamFill = null,
+        bool positionIndependent = false)
     {
         if (!X86Mode.Long) throw new InvalidOperationException("long mode's selector was asked for a function outside long mode");
         // (Not in the stream routines themselves, as i386's: Selector.Run.)
         bool stream = f.Name != streamCopy && f.Name != streamFill;
-        Selector s = new(f, errors, isExternal) { _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null };
+        // (Position-independent: the barrier's slow path calls the runtime, not
+        // the object's stub; SelectCall. Not _positionIndependent, which is
+        // i386's GOT register's question: long mode reaches its pool RIP-relative.)
+        Selector s = new(f, errors, isExternal) { _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null, _barrierCallsRuntime = positionIndependent };
         s.Select();
         return s._m;
     }
