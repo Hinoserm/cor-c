@@ -13,10 +13,12 @@ using Block = Corsac.Lang.Ir.Block;
 /// each float value a virtual register of the allocator's XMM class
 /// (MFunction.XmmRegs), worked on by the scalar instructions -- ADDSS and its
 /// kin -- in registers across instructions and blocks, where the x87 path
-/// loads every operand from its home and stores every result back. What the
-/// scalar set has no instruction for (a 64-bit integer's conversion, an
-/// unsigned one, a call's result in ST0) goes through the x87 as before, the
-/// value moved between the two through a slot of the frame (Fld, Fstp).
+/// loads every operand from its home and stores every result back. What
+/// i386's scalar set has no instruction for (a 64-bit integer's conversion,
+/// an unsigned integer made a float, a call's result in ST0) goes through
+/// the x87 as before, the value moved between the two through a slot of the
+/// frame (Fld, Fstp); long mode has the instructions, and its own methods
+/// for those (Select.Long.cs).
 ///
 /// A function with a packed operation too (MachineIntrinsics.PackedOpPrefix):
 /// its Packed128 values in the class where they can be (Select.PackedValues);
@@ -264,8 +266,9 @@ internal sealed partial class Selector
     /// A FLOAT TO A SIGNED 32-BIT INTEGER, the way .NET's JIT has it: CVTTSS2SI
     /// answers the truncation of every value in range; 0x80000000 -- the
     /// "integer indefinite" of a NaN or an overflow, and int.MinValue itself
-    /// -- sends the value to the classification (SelectFloatToInt) for NaN to
-    /// 0 and the limits, which answers int.MinValue again for itself.
+    /// -- sends the value to the classification (the x87's SelectFloatToInt on
+    /// i386, long mode's SelectFloatToInteger from the bits) for NaN to 0 and
+    /// the limits, which answers int.MinValue again for itself.
     /// </summary>
     private void SseToInt(Instr i)
     {

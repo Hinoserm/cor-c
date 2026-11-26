@@ -29,7 +29,6 @@ using Block = Corsac.Lang.Ir.Block;
 // sixteen-byte aligned at every call.
 internal sealed partial class Selector
 {
-
     internal static Gpr[] IntArgRegs => LongAbi.IntArgRegs;
     internal const int FloatArgRegs = LongAbi.FloatArgRegs;
 
@@ -576,8 +575,11 @@ internal sealed partial class Selector
     /// on every machine: NaN is zero, a value beyond the destination's range
     /// is its limit, and a negative value into an unsigned destination is
     /// zero -- the i386 backend's rule, decided the same way, from the IEEE
-    /// bits before any conversion instruction runs. In range, the truncating
-    /// conversion below answers.
+    /// bits; in range, the truncating conversion below answers. For a
+    /// destination of sixty-four bits this is the whole conversion. For one
+    /// of thirty-two it is only the classification, reached where the XMM
+    /// class's truncation answered "indefinite" (SseToInt): the truncation
+    /// has run by then, and the same register gets the answer.
     /// </summary>
     private void SelectFloatToInteger(Instr i)
     {

@@ -125,6 +125,10 @@ internal static class Allocator
             case MOp.CvtIntToF:
             case MOp.CvtFToInt:
             case MOp.CvtFToF:
+            // (The family's truncations, which a float's conversion to
+            // thirty-two bits is: xmm/m32 or xmm/m64 as their source.)
+            case MOp.Cvttss2si:
+            case MOp.Cvttsd2si:
                 return operand == 1;
             case MOp.MovF:
                 return true;

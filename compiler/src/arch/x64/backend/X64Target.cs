@@ -288,7 +288,7 @@ internal sealed class X64Target : ITarget
         {
             MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Not or MOp.Bswap or MOp.Cwd
                 or MOp.MovF or MOp.MovGx or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.XorF or MOp.XorPs
-                or MOp.CvtIntToF or MOp.CvtFToInt or MOp.CvtFToF => Effect.None,
+                or MOp.CvtIntToF or MOp.CvtFToInt or MOp.CvtFToF or MOp.Cvttss2si or MOp.Cvttsd2si => Effect.None,
             MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg
                 or MOp.Imul or MOp.Imul3 or MOp.MulWide or MOp.ImulWide or MOp.UcomiF => Effect.WritesFlags,
             MOp.Adc or MOp.Sbb => Effect.ReadsFlags | Effect.WritesFlags,

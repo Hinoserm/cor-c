@@ -160,12 +160,8 @@ public sealed class MInstr : MOperandList
     /// </summary>
     public MInstr WithOperands(IReadOnlyList<MOperand> operands)
     {
-        MInstr made = new(Op)
-        {
-            Width = Width, SourceWidth = SourceWidth, TableSymbol = TableSymbol, FloatArgs = FloatArgs, IntArgs = IntArgs, NativeAl = NativeAl,
-            Line = Line, Cond = Cond, ZeroFirst = ZeroFirst, Native = Native, Lock = Lock, Probed = Probed, OwnsState = OwnsState, Asm = Asm,
-            Table = Table, CallReloc = CallReloc,
-        };
+        // (One list of what an instruction carries: Rebuilt's.)
+        MInstr made = Rebuilt(Table);
         for (int k = 0; k < operands.Count; k++) made.Operands.Add(operands[k]);
         return made;
     }
