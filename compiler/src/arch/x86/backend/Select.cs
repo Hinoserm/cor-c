@@ -1509,7 +1509,14 @@ internal sealed partial class Selector
                 PackedRegistersBefore(i);
                 if (_mmxDirty && WantsX87(i))
                 {
-                    Emit(new MInstr(MOp.Emms) { Probed = true });
+                    // OUTSIDE A PACKED BLOCK, in code that owns no state
+                    // (!AutomaticPacked), no lane can be in the MMX registers:
+                    // every packed operation is inside a block, and every way
+                    // out of one gives the saved state back -- a landing pad
+                    // too, whose finally restores it before going on. The
+                    // state there is the caller's, which an EMMS would write
+                    // (and the encoder refuses): nothing to empty.
+                    if (_automaticPacked || _packedNow != 0) Emit(new MInstr(MOp.Emms) { Probed = true });
                     _mmxDirty = false;
                 }
                 else if (_mmxDirty && EmptiesMmx(i)) _mmxDirty = false;
