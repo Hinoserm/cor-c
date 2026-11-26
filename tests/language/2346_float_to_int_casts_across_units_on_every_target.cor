@@ -8,7 +8,9 @@
 //
 // TEST 1669's PROGRAM AND ANSWERS WITH NO PROCESSOR NAMED, so that it runs
 // for every target and not for i386 alone: the link regenerates each unit for its target's processor.
-// The paragraph below is 1669's, written for its processor.
+// The paragraph below is 1669's, written for the Pentium 4: here the
+// program and its unit share one processor, so the cast across units is held
+// to .NET's answers, not to a unit's own processor.
 //
 // 1668's casts in another unit, linked closed: the link regenerates each
 // unit from its IR under the CPU its object records, so a Pentium 4 unit's

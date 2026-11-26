@@ -16,8 +16,10 @@
 // unsigned 4294967295 0 4294967295
 //
 // TEST 1677's PROGRAM AND ANSWERS WITH NO PROCESSOR NAMED, so that it runs
-// for every target and not for i386 alone: long mode always has CMOV; i386's default processor may not, and branches.
-// The paragraph below is 1677's, written for its processor.
+// for every target and not for i386 alone. Long mode always has CMOV, so
+// its run is the conditional moves (IfConvert); i386's default processor, the
+// 486, has none, so its run is the branches, by design -- 1677 holds the
+// moves on i386. The paragraph below is 1677's, written for the Pentium Pro.
 //
 // A SMALL CHOICE COMPILES TO A CONDITIONAL MOVE on a processor that has one
 // (X86Feature.Cmov, IfConvert): a ternary, Math.Max, Min and Clamp, and an `if`

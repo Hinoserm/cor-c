@@ -1,4 +1,5 @@
-// The other unit of 1669_float_to_int_casts_across_units_on_sse_profiles:
+// The other unit of 1669_float_to_int_casts_across_units_on_sse_profiles
+// and of 2346_float_to_int_casts_across_units_on_every_target:
 // the casts themselves, compiled apart from the program that calls them.
 namespace CastUnits;
 

@@ -21,7 +21,9 @@
 //
 // TEST 1667's PROGRAM AND ANSWERS WITH NO PROCESSOR NAMED, so that it runs
 // for every target and not for i386 alone: long mode compares with UCOMISD/UCOMISS, i386's default processor by the FPU.
-// The paragraph below is 1667's, written for its processor.
+// The paragraph below is 1667's, written for the Pentium Pro: its FUCOMIP
+// is not this test's on either target (the 486 carries the result through
+// AH, as the paragraph's older processors do).
 //
 // Every relation between NaN, the infinities, one, the smallest subnormal
 // and both zeros, for double and float, as a value, as a branch and as the

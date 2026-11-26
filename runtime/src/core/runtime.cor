@@ -519,11 +519,12 @@ public static class Tls
     /// the heap check off; with it on, CheckMade runs there, whose first
     /// Remember maps its table and whose reports write to the console, and
     /// those are not claimed lock-free on every platform: the check is a
-    /// debugging mode, and this window has no guarantee under it -- so a
-    /// thread stopped there is stopped by an interrupt, whose registers lie
-    /// in a frame no map describes, read whole. A region's block (AllocRegion,
-    /// which sets no InAlloc) is no heap block: its arena is read with the
-    /// thread's stack (Gc.ScanRegion, Gc.CopyRegion). Overwritten by the next
+    /// debugging mode, and this window has no guarantee under it. With the
+    /// check off, a thread stopped there is stopped by an interrupt, whose
+    /// registers lie in a frame no map describes, read whole. A region's
+    /// block (AllocRegion, which sets no InAlloc) is no heap block: its arena
+    /// is read with the thread's stack (Gc.ScanRegion, Gc.CopyRegion).
+    /// Overwritten by the next
     /// one and cleared at the thread's end (Runtime.EndThread): a thread
     /// keeps at most one object alive this way, until it makes another --
     /// never cleared sooner, as a thread parked in the window may be so

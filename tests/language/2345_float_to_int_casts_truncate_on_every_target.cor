@@ -7,8 +7,13 @@
 // loop 184350 -184350 73620
 //
 // TEST 1668's PROGRAM AND ANSWERS WITH NO PROCESSOR NAMED, so that it runs
-// for every target and not for i386 alone: long mode converts by CVTTSS2SI/CVTTSD2SI with the edges decided first, i386's default processor on the x87.
-// The paragraph below is 1668's, written for its processor.
+// for every target and not for i386 alone. Long mode truncates first, by
+// CVTTSS2SI/CVTTSD2SI, and classifies NaN and the limits only where it
+// answers 0x80000000 (Select.SseToInt); a uint by two truncations; a long or
+// ulong classified from the IEEE bits first (SelectFloatToInteger). i386's
+// default processor, the 486, converts on the x87. The paragraph below is
+// 1668's, written for the Pentium 4; what it says of the x87 and of an edge
+// "decided before" is not long mode's.
 //
 // A FLOAT OR DOUBLE CAST TO INT IS ONE TRUNCATING SSE CONVERSION where the
 // profile has it: cvttss2si for a float (SSE, the Pentium III on), cvttsd2si
