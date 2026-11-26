@@ -13986,8 +13986,8 @@ public class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, IColle
 ///     .NET unboxes it: exactly that type (or its Nullable), never widened
 ///     or turned from an enum or into one, and null only into a Nullable's
 ///     array. Unrelated reference types, which .NET refuses before the first
-///     element as the mismatch, are this cast's InvalidCastException at it
-///     (TODO.md).
+///     element as the collection's ArgumentException, are this cast's
+///     InvalidCastException at it (TODO.md).
 /// The names are each collection's own, as .NET's differ: Stack<T> calls the
 /// place arrayIndex and names the array in the mismatch, Queue<T> calls it
 /// index and names nothing there. Where .NET decides from the two element

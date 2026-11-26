@@ -409,7 +409,8 @@ tasks below track that work; moving files alone does not reduce the working set.
   interface or `object` target, a cast refused partway (kept as copied),
   and a reference-type collection's elements into an array of a value type,
   unboxed as .NET unboxes them: exactly the element type or its Nullable,
-  never widened or turned from an enum, null only into a Nullable's array
+  never widened or turned from an enum or into one, null only into a
+  Nullable's array
   (each checked against .NET 10, test 2745). Needed: the element type of an
   array's descriptor, .NET's assignability relation, and Array.Copy and
   CollectionCopy deciding from it before the first element.
