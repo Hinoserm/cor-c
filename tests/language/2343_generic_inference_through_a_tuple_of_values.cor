@@ -1,0 +1,35 @@
+// test: generic_inference_through_a_tuple_of_values
+// expect-exit: 0
+// expect-output:
+// first 7 9 -3 2.5
+// second 4 4 4 4
+// sum 12 61
+//
+// TYPE ARGUMENTS OF VALUE TYPES INFERRED THROUGH A TUPLE'S ITEMS (2342 has
+// references): an int, a long, a short and a double, each its own copy of
+// the method, the tuple's layout the item's -- read back whole (First), the
+// item after it at its own place (Second), and a sequence of them summed
+// through IEnumerable<(T, int)>. They found no overload before.
+
+using System;
+using System.Collections.Generic;
+
+static class R
+{
+    public static T First<T>((T C, int R) p) => p.C;
+    public static int Second<T>((T C, int R) p) => p.R;
+    public static int Count<T>(IEnumerable<(T C, int R)> s) { int n = 0; foreach ((T c, int r) in s) n += r; return n; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("first " + R.First((7, 1)) + " " + R.First((9L, 1)) + " " + R.First(((short)-3, 1)) + " " + R.First((2.5, 1)));
+        Console.WriteLine("second " + R.Second((7, 4)) + " " + R.Second((9L, 4)) + " " + R.Second(((short)-3, 4)) + " " + R.Second((2.5, 4)));
+        List<(long, int)> longs = new() { (1L << 40, 5), (3L, 7) };
+        List<(double, int)> doubles = new() { (0.5, 60), (1.5, 1) };
+        Console.WriteLine("sum " + R.Count(longs) + " " + R.Count(doubles));
+        return 0;
+    }
+}

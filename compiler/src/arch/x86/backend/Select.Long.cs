@@ -702,6 +702,8 @@ internal sealed partial class Selector
                 // A REFERENCE STORED IN ONE SEQUENCE (CardMarks.FuseStores):
                 // the slot in RAX, the value in RDX, every register kept, by
                 // the image's stub (Corsac.Lang.X64.X64Backend.RefStoreStub).
+                // Never position-independent: long mode's --store-sequences
+                // is refused with --pic or --shared (Driver), a kernel's image.
                 MovL(Rax, RL(i.Operands[0]));
                 MovL(Rdx, RL(i.Operands[1]));
                 Emit(MOp.CallKeep, MImm.Sym(name == Corsac.Lang.X86.MachineIntrinsics.RefStore ? Corsac.Lang.X64.X64Backend.RefStoreStub : Corsac.Lang.X64.X64Backend.CardStoreStub, 0));

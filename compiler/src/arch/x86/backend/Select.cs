@@ -84,9 +84,11 @@ internal sealed partial class Selector
     private static readonly MReg Ebp = MReg.Of(Gpr.Ebp);
 
     /// <summary>
-    /// Code for a shared object: the card and barrier stubs read the card
-    /// table by its absolute address, which such code may not, so their
-    /// intrinsics are the runtime's own routines, called as any function is.
+    /// i386 code for a shared object: what reaches the image's own data
+    /// through the GOT register (the float pool, the store sequences' stubs
+    /// read out of the GOT). Long mode reaches its data RIP-relative and
+    /// leaves this unset; whether the barrier calls the runtime is
+    /// _barrierCallsRuntime's, both modes.
     /// </summary>
     private bool _positionIndependent;
 

@@ -12471,7 +12471,12 @@ public sealed partial class Binder
         return bound.Values.All(IsWord);
     }
 
-    /// <summary>Whether a type is made of the named type parameter.</summary>
+    /// <summary>
+    /// Whether a type is made of the named type parameter: itself, its
+    /// element, its arguments -- and a tuple's items as its use wrote them
+    /// (TupleItem), nested tuples' too, a tuple being its shape's class with
+    /// no arguments of its own.
+    /// </summary>
     private static bool Mentions(Type t, string name)
     {
         if (t.ParamName == name)
@@ -12490,6 +12495,13 @@ public sealed partial class Binder
             {
                 return true;
             }
+        }
+
+        if (t.Symbol is { } shape && IsTupleShape(shape))
+        {
+            int items = TupleItems(shape);
+            for (int i = 0; i < items; i++)
+                if (Mentions(TupleItem(t, shape, i), name)) return true;
         }
         return false;
     }
@@ -14842,13 +14854,6 @@ public sealed partial class Binder
     /// <summary>A tuple shape's items: its instance fields.</summary>
     private static int TupleItems(TypeSymbol shape) => shape.Fields.Count(f => !f.Static);
 
-    /// <summary>Whether any of a tuple's items, as this use wrote them, is made of the named type parameter.</summary>
-    private static bool TupleMentions(Type tuple, TypeSymbol shape, string name)
-    {
-        for (int i = 0; i < TupleItems(shape); i++) if (Mentions(TupleItem(tuple, shape, i), name)) return true;
-        return false;
-    }
-
     /// <summary>
     /// Item <paramref name="which"/> of a tuple as THIS use wrote it: `(int,
     /// Box?)` reads a Box? where the shared shape stores a Box.
@@ -16055,8 +16060,7 @@ public sealed partial class Binder
     /// </summary>
     private bool UnifyArgument(MethodSymbol m, Type want, Type got, Dictionary<string, Type> bound)
     {
-        if (m.TypeParams.Any(t => Mentions(want, t) || want.Symbol is { } shape && IsTupleShape(shape) && TupleMentions(want, shape, t)))
-            return Unify(m, want, got, bound);
+        if (m.TypeParams.Any(t => Mentions(want, t))) return Unify(m, want, got, bound);
         if (got.IsError || want.IsError) return true;
         if (want.IsReference && got.IsReference) return Convertible(got, want);
         return Convertible(got, want) && Convertible(want, got);
@@ -16164,10 +16168,9 @@ public sealed partial class Binder
         // shape, its items as this use wrote them (TupleItem): matched by
         // count, names aside, as C#'s identity conversion between tuples is.
         if (want.Symbol is { } wantShape && IsTupleShape(wantShape) && got.Symbol is { } gotShape && IsTupleShape(gotShape)
-            && TupleItems(wantShape) == TupleItems(gotShape) && TupleItems(wantShape) > 0
-            && m.TypeParams.Any(t => Mentions(want, t) || TupleMentions(want, wantShape, t)))
+            && TupleItems(wantShape) is var items and > 0 && TupleItems(gotShape) == items && m.TypeParams.Any(t => Mentions(want, t)))
         {
-            for (int i = 0; i < TupleItems(wantShape); i++)
+            for (int i = 0; i < items; i++)
                 if (!UnifyArgument(m, TupleItem(want, wantShape, i), TupleItem(got, gotShape, i), bound)) return false;
             return true;
         }
@@ -27203,9 +27206,7 @@ public sealed partial class Binder
             // missing overload that is right there -- the real answer is that
             // its type argument is not a machine word.
             string why = byArity.Any(m => m.TypeParams.Count > 0)
-                ? "; a generic candidate's type arguments could not be inferred from these, or"
-                  + " one is no machine word (a generic method is compiled once for every"
-                  + " type argument): name them, or give a class or an interface"
+                ? "; a generic candidate's type arguments could not be inferred from these: name them"
                 : "";
 
             Error(c, $"no overload of '{byArity[0].Name}' accepts ({string.Join(", ", args)}){why}");

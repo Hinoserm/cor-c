@@ -1,0 +1,54 @@
+// test: generic_inference_through_tuples
+// expect-exit: 0
+// expect-output:
+// one 4
+// each 9
+// nested 7
+// nullable 2 1
+// tie plain
+// object generic
+// nine 3
+//
+// A TYPE ARGUMENT INFERRED THROUGH A TUPLE'S ITEMS, as C# infers through a
+// tuple type's elements (12.6.3.9): a tuple parameter given a tuple, a
+// sequence of tuples given a list of them (through the list's template), a
+// tuple inside a tuple, a nullable item beside a plain one of the same
+// shape, nine items. Where a non-generic overload fits as well it is the one
+// (the better function), and a generic one beats a non-generic object's.
+// Before, every one of these found no overload.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Instr { public int Id; }
+
+static class R
+{
+    public static int One<T>((T C, int R) p) where T : class => p.R;
+    public static int Each<T>(IEnumerable<(T Call, int Ret)> s) where T : class { int n = 0; foreach ((T c, int r) in s) n += r; return n; }
+    public static int Nested<T>(((T, int), int) p) where T : class => p.Item1.Item2 + p.Item2;
+    public static int Present<T>((T? Item, int N) p) where T : class => p.Item is null ? 1 : 2;
+    public static string Tie((Instr, int) p) => "plain";
+    public static string Tie<T>((T, int) p) where T : class => "generic";
+    public static string Obj(object o) => "object";
+    public static string Obj<T>((T, int) p) where T : class => "generic";
+    public static int Nine<T>((int, int, int, int, int, int, int, int, T) p) where T : class => p.Item3;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Instr a = new Instr { Id = 2 };
+        Instr? none = null;
+        List<(Instr Call, int Return)> sites = new() { (a, 4), (a, 5) };
+        Console.WriteLine("one " + R.One((a, 4)));
+        Console.WriteLine("each " + R.Each(sites));
+        Console.WriteLine("nested " + R.Nested(((a, 3), 4)));
+        Console.WriteLine("nullable " + R.Present((a, 0)) + " " + R.Present((none, 0)));
+        Console.WriteLine("tie " + R.Tie((a, 1)));
+        Console.WriteLine("object " + R.Obj((a, 1)));
+        Console.WriteLine("nine " + R.Nine((1, 2, 3, 4, 5, 6, 7, 8, a)));
+        return 0;
+    }
+}
