@@ -1792,6 +1792,7 @@ public static class Driver
             // Under an operating system (Linux; --windows is refused for
             // x86-64 above, and would have to be asked the same question).
             Hosted = ownsFpu,
+            ReleaseBodies = x86Backend.ReleaseBodies,
             OptimizeSize = args.Contains("--opt-size"),
             PositionIndependent = x86Backend.PositionIndependent,
             Workers = workers,
@@ -1847,7 +1848,7 @@ public static class Driver
         // (linkRecords) or none at all whenever the bodies go as they are
         // placed. The set held one instruction of every such call, and so
         // that instruction past its function's release.
-        if (x86Backend.ReleaseBodies && backend == x86Backend) module.KeepCalls.Clear();
+        if (backend == x86Backend ? x86Backend.ReleaseBodies : x64Backend.ReleaseBodies) module.KeepCalls.Clear();
         ObjectFile obj = backend.Generate(module, backendErrors);
         if (preinitRecords is not null) PreinitMachine.Remember(obj, preinitRecords);
         Phase("codegen");

@@ -130,6 +130,14 @@ public sealed class X64Backend : IBackend
     public bool Hosted { get; init; }
 
     /// <summary>
+    /// Whether a function's IR and a data item's bytes are let go once they
+    /// are placed, for a caller that reads nothing of the module's bodies
+    /// after Generate (Driver.Compile), as X86Backend's: the whole module's
+    /// IR lived through code generation beside the machine code otherwise.
+    /// </summary>
+    public bool ReleaseBodies { get; set; }
+
+    /// <summary>
     /// The runtime's streaming copy and fill, where the module has them to
     /// call (Module.RuntimeHelpers: lowering kept them) and the code is
     /// hosted: a copy or a fill calls them at 256 KB and over -- behind a
@@ -287,6 +295,8 @@ public sealed class X64Backend : IBackend
                 }
             }
             encoder.ReleaseFunction();
+            // (A function made again at the link is the loader's own copy, let go the same.)
+            if (ReleaseBodies) Corsac.Lang.Backends.ObjectData.Release(f);
         }
 
         EmitStoreSequences(module, text, obj, defined);
@@ -313,73 +323,27 @@ public sealed class X64Backend : IBackend
 
         spills?.Table(module, pointerBytes: 8, errors);
 
-        foreach (DataItem d in module.Data)
+        // The data, each item into its section, and the float constants the
+        // code reads RIP-relative (ObjectData, both backends': the family's
+        // pool, X86Backend.FloatPoolPrefix, Select.Sse's FloatConstant names
+        // them by their bits). A name is another image's where the loader
+        // supplies it (isExternal).
+        Section? importConstants = null, numbers = null;
+        Section ImportConstants()
         {
-            bool loaderWrites = d.Relocs.Count > 0
-                && (PositionIndependent || d.Relocs.Any(r => isExternal is not null && isExternal(r.Symbol)));
-            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? relocatedConstants : rodata) : data;
-            int align = Math.Max(d.Align, 1);
-            long offset;
-            if (d.Zero)
-            {
-                bss.ZeroBytes = (bss.ZeroBytes + align - 1) / align * align;
-                offset = bss.ZeroBytes;
-                bss.ZeroBytes += d.Bytes.Length;
-                if (d.Relocs.Count > 0)
-                {
-                    errors.Add($"{d.Name}: a zero-filled item cannot hold addresses");
-                }
-            }
-            else
-            {
-                Pad(s, align, 0);
-                offset = s.Bytes.Count;
-                s.Bytes.AddRange(d.Bytes);
-                foreach (DataReloc r in d.Relocs)
-                {
-                    s.Relocs.Add(new Relocation((int)offset + r.Offset, r.Symbol, r.Addend, RelocKind.Abs64));
-                }
-            }
-            s.Align = Math.Max(s.Align, align);
-            obj.Symbols.Add(new Symbol { Name = d.Name, Section = s, Offset = offset, Size = d.Bytes.Length, Global = d.Exported });
-            defined.Add(d.Name);
+            if (importConstants is null) obj.Sections.Add(importConstants = new Section(Corsac.Lang.Backends.ObjectData.ImportConstantsSection, SectionKind.Data) { Align = 8 });
+            return importConstants;
         }
+        Section Numbers()
+        {
+            if (numbers is null) obj.Sections.Add(numbers = new Section(Corsac.Lang.Backends.ObjectData.NumbersSection, SectionKind.Data) { Align = 8 });
+            return numbers;
+        }
+        Corsac.Lang.Backends.ObjectData.Place(module, obj, rodata, data, bss, relocatedConstants, ImportConstants, Numbers, RelocKind.Abs64,
+            PositionIndependent, name => isExternal is not null && isExternal(name), definedNames.Contains, defined, errors, ReleaseBodies);
+        Corsac.Lang.Backends.ObjectData.PlaceFloatPool(obj, text, rodata, Corsac.Lang.X86.X86Backend.FloatPoolPrefix, defined);
 
-        // The float constants the code reads RIP-relative (the family's pool,
-        // X86Backend.FloatPoolPrefix: Select.Sse's FloatConstant names them by
-        // their bits), each once, eight-byte aligned, as i386's backend lays
-        // its own down.
-        SortedSet<string> pool = new(StringComparer.Ordinal);
-        foreach (Relocation r in text.Relocs)
-            if (r.Symbol.StartsWith(Corsac.Lang.X86.X86Backend.FloatPoolPrefix, StringComparison.Ordinal)) pool.Add(r.Symbol);
-        foreach (string name in pool)
-        {
-            int prefix = Corsac.Lang.X86.X86Backend.FloatPoolPrefix.Length;
-            int width = name[prefix] == '4' ? 4 : 8;
-            ulong bits = Convert.ToUInt64(name[(prefix + 2)..], 16);
-            Pad(rodata, 8, 0);
-            int at = rodata.Bytes.Count;
-            for (int k = 0; k < width; k++) rodata.Bytes.Add((byte)(bits >> (8 * k)));
-            rodata.Align = Math.Max(rodata.Align, 8);
-            obj.Symbols.Add(new Symbol { Name = name, Section = rodata, Offset = at, Size = width, Global = false });
-            defined.Add(name);
-        }
-
-        HashSet<string> undefined = new(module.Imports, StringComparer.Ordinal);
-        foreach (Section s in obj.Sections)
-        {
-            foreach (Relocation r in s.Relocs)
-            {
-                undefined.Add(r.Symbol);
-            }
-        }
-        foreach (string name in undefined.OrderBy(n => n, StringComparer.Ordinal))
-        {
-            if (!defined.Contains(name))
-            {
-                obj.Symbols.Add(new Symbol { Name = name });
-            }
-        }
+        Corsac.Lang.Backends.ObjectData.DeclareUndefined(obj, module.Imports, defined);
         if (EmitLinkSummary)
         {
             summary.Attach(obj);

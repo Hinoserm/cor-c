@@ -113,7 +113,7 @@ public sealed class X86Backend : IBackend
     public const string StackMapSection = ".corsac.stackmaps";
 
     /// <summary>Writable data with no references in it: outside the collector's roots.</summary>
-    public const string NumbersSection = ".data.corsac.numbers";
+    public const string NumbersSection = Corsac.Lang.Backends.ObjectData.NumbersSection;
     public const string StackMapStart = "__corsac_stackmaps";
 
     /// <summary>Each object's card-marking stub, and the table it reads (Runtime.Cards).</summary>
@@ -273,7 +273,7 @@ public sealed class X86Backend : IBackend
         {
             if (importConstants is null)
             {
-                importConstants = new Section(".data.rel.ro.import", SectionKind.Data);
+                importConstants = new Section(Corsac.Lang.Backends.ObjectData.ImportConstantsSection, SectionKind.Data);
                 obj.Sections.Add(importConstants);
             }
             return importConstants;
@@ -419,7 +419,6 @@ public sealed class X86Backend : IBackend
             });
         for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
-            Function f = module.Functions[functionIndex];
             MFunction? m = window.Take(functionIndex, errors);
             (PeakBatchBytes, PeakBatchFunctions) = (window.PeakBatchBytes, window.PeakBatchFunctions);
             if (m is null)
@@ -431,7 +430,7 @@ public sealed class X86Backend : IBackend
             if (spills is not null) SpillCount.Run(m, spills);
             cardStub |= m.UsesCardStub;
             barrierStub |= m.UsesBarrierStub;
-            f = m.Source;
+            Function f = m.Source;
             // WHERE IT TAKES ITS ARGUMENTS, and where each call it makes by
             // name passes them (RegisterArgs.Agree), for the check below
             // once every function of the unit is in hand.
@@ -602,22 +601,7 @@ public sealed class X86Backend : IBackend
                 }
             }
             encoder.ReleaseFunction();
-            if (ReleaseBodies)
-            {
-                f.Blocks.Clear();
-                f.Blocks.TrimExcess();
-                // AND WHAT HANGS OFF IT BESIDE ITS BLOCKS: its parameters and
-                // frame slots, its state machine's frame, and the index an
-                // analysis kept (Escape.StampIndex), which holds registers of
-                // the body just let go. Nothing past this point reads a
-                // placed function but its name.
-                f.Params.Clear();
-                f.Params.TrimExcess();
-                f.Slots.Clear();
-                f.Slots.TrimExcess();
-                f.Async = null;
-                f.AnalysisIndex = null;
-            }
+            if (ReleaseBodies) Corsac.Lang.Backends.ObjectData.Release(f);
         }
 
         // THE FRAME TABLE, once every function's bytes are placed. It goes in
@@ -644,74 +628,11 @@ public sealed class X86Backend : IBackend
 
         spills?.Table(module, pointerBytes: 4, errors);
 
-        foreach (DataItem d in module.Data)
-        {
-            // READ-ONLY UNTIL SOMEBODY HAS TO WRITE IN IT. A data item
-            // holding an address is a relocation, and a relocation in a
-            // read-only page is one the loader must make writable -- the
-            // whole page, privately, for every process. In a shared object
-            // that is every address; in an executable it is only an address
-            // a library supplies, which a string literal has (the descriptor
-            // of `byte[]` is the runtime's).
-            bool loaderWrites = d.Relocs.Count > 0
-                && (PositionIndependent || d.Relocs.Any(r => imported.Contains(r.Symbol)));
-            // Immutable relocations need loader writes, not conservative
-            // heap-root scanning. Keep them distinct from mutable statics.
-            bool namesImport = loaderWrites && d.Relocs.Any(r => !moduleDefines.Contains(r.Symbol));
-            Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? (namesImport && PositionIndependent ? ImportConstants() : relocatedConstants) : rodata) : d.NoReferences ? Numbers() : data;
-            int align = Math.Max(d.Align, 1);
-            long offset;
-            if (d.Zero)
-            {
-                bss.ZeroBytes = (bss.ZeroBytes + align - 1) / align * align;
-                offset = bss.ZeroBytes;
-                bss.ZeroBytes += d.Bytes.Length;
-                if (d.Relocs.Count > 0)
-                {
-                    errors.Add($"{d.Name}: a zero-filled item cannot hold addresses");
-                }
-            }
-            else
-            {
-                Pad(s, align, 0);
-                offset = s.Bytes.Count;
-                s.Bytes.AddRange(d.Bytes);
-                foreach (DataReloc r in d.Relocs)
-                {
-                    s.Relocs.Add(new Relocation((int)offset + r.Offset, r.Symbol, r.Addend, RelocKind.Abs32));
-                }
-            }
-            s.Align = Math.Max(s.Align, align);
-            obj.Symbols.Add(new Symbol { Name = d.Name, Section = s, Offset = offset, Size = d.Bytes.Length, Global = d.Exported });
-            defined.Add(d.Name);
-            // A PLACED ITEM'S BYTES ARE THE SECTION'S NOW, and were held twice
-            // over to the end of the compile: the module's copy and the
-            // section's. A zero-filled one held an array of zeros as large as
-            // the storage it stands for. Let go when the caller reads nothing
-            // of the module after this (ReleaseBodies), as a function is.
-            if (ReleaseBodies)
-            {
-                d.Bytes = Array.Empty<byte>();
-                d.Relocs.Clear();
-                d.Relocs.TrimExcess();
-            }
-        }
-
-        // The float constants the code reads (FloatPoolPrefix), each once, eight-byte aligned.
-        SortedSet<string> pool = new(StringComparer.Ordinal);
-        foreach (Relocation r in text.Relocs)
-            if (r.Symbol.StartsWith(FloatPoolPrefix, StringComparison.Ordinal)) pool.Add(r.Symbol);
-        foreach (string name in pool)
-        {
-            int width = name[FloatPoolPrefix.Length] == '4' ? 4 : 8;
-            ulong bits = Convert.ToUInt64(name[(FloatPoolPrefix.Length + 2)..], 16);
-            Pad(rodata, 8, 0);
-            int at = rodata.Bytes.Count;
-            for (int k = 0; k < width; k++) rodata.Bytes.Add((byte)(bits >> (8 * k)));
-            rodata.Align = Math.Max(rodata.Align, 8);
-            obj.Symbols.Add(new Symbol { Name = name, Section = rodata, Offset = at, Size = width, Global = false });
-            defined.Add(name);
-        }
+        // The data, each item into its section, and the float constants the
+        // code reads (ObjectData, both backends').
+        Corsac.Lang.Backends.ObjectData.Place(module, obj, rodata, data, bss, relocatedConstants, ImportConstants, Numbers, RelocKind.Abs32,
+            PositionIndependent, imported.Contains, moduleDefines.Contains, defined, errors, ReleaseBodies);
+        Corsac.Lang.Backends.ObjectData.PlaceFloatPool(obj, text, rodata, FloatPoolPrefix, defined);
 
         // A CALL AND ITS FUNCTION DISAGREEING ON WHERE THE ARGUMENTS ARE
         // (RegisterArgs.Agree) is an error of this compile: the function has
@@ -933,22 +854,7 @@ public sealed class X86Backend : IBackend
             EmitStackMaps(obj, mapFunctions, mapBase, defined, PositionIndependent);
         }
 
-        // Whatever is referenced and not defined here is the linker's to find.
-        HashSet<string> undefined = new(module.Imports, StringComparer.Ordinal);
-        foreach (Section s in obj.Sections)
-        {
-            foreach (Relocation r in s.Relocs)
-            {
-                undefined.Add(r.Symbol);
-            }
-        }
-        foreach (string name in undefined.OrderBy(n => n, StringComparer.Ordinal))
-        {
-            if (!defined.Contains(name))
-            {
-                obj.Symbols.Add(new Symbol { Name = name });
-            }
-        }
+        Corsac.Lang.Backends.ObjectData.DeclareUndefined(obj, module.Imports, defined);
         if (EmitLinkSummary && !PositionIndependent)
         {
             summary.Attach(obj);
