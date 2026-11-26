@@ -97,14 +97,20 @@ internal static partial class Peephole
         // A store or load at the end of one block and a reload of the slot
         // near the start of the one merged into it are now in one block: the
         // reload goes or reads the register (ForwardStoreLoad,
-        // ForwardSpillLoads), and a store goes with it when nothing else
-        // reads the slot (DeadSpillStores).
+        // ForwardSpillLoads; an XMM value's by ForwardXmmSpillLoads -- a
+        // loop's first block merged with the one before it reloaded each
+        // packed value it had just stored, every lap), and a store goes
+        // with it when nothing else reads the slot (DeadSpillStores).
         foreach (MBlock block in m.Blocks)
         {
             ForwardStoreLoad(block.Instrs);
             ForwardSpillLoads(block.Instrs);
+            ForwardXmmSpillLoads(block.Instrs);
         }
         DeadSpillStores(m);
+        // And a store those reloads were the only readers of before the
+        // slot is written again, on any path (SpillStoresDeadAcrossBlocks).
+        SpillStoresDeadAcrossBlocks(m);
         // Then a value copied twice copied once, in every block
         // (ForwardCopies), with the registers' liveness read again for both.
         {
