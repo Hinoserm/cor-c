@@ -1134,13 +1134,8 @@ internal sealed partial class Selector
     /// <summary>The same instruction, marked as selected inside the packed block (MInstr.OwnsState).</summary>
     private MInstr Owning(MInstr i)
     {
-        // Everything of the instruction but who owns the state (a list kept in step with MInstr.WithOperands').
-        MInstr n = new(i.Op)
-        {
-            Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = i.Table, TableSymbol = i.TableSymbol,
-            CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = (byte)_packedNow, Asm = i.Asm,
-            ZeroFirst = i.ZeroFirst, FloatArgs = i.FloatArgs, IntArgs = i.IntArgs, NativeAl = i.NativeAl,
-        };
+        // Everything of the instruction but who owns the state (MInstr.Rebuilt's one list).
+        MInstr n = i.Rebuilt(i.Table, (byte)_packedNow);
         n.Operands.AddRange(i.Operands);
         return n;
     }
@@ -3603,12 +3598,13 @@ internal sealed partial class Selector
         if (X86Mode.Long)
         {
             // Every register has a low byte and a low word, and MOVZX clears
-            // the rest of the register; MOVSX is written for the whole
-            // register (Encoder.Long), so an I32's sign extension clears its
-            // upper half again with the move that does.
+            // the rest of the register; MOVSX carries the sign through the
+            // whole register for an I64, and for an I32 is written into the
+            // low half, which clears the upper (MInstr.To32).
             bool signed = i.Op is Opcode.SExt8 or Opcode.SExt16;
-            EmitW(signed ? MOp.Movsx : MOp.Movzx, i.Op is Opcode.SExt8 or Opcode.ZExt8 ? 1 : 2, lo, src);
-            if (signed && WordOf(d.Type) == 4) MovW(lo, lo, 4);
+            int from = i.Op is Opcode.SExt8 or Opcode.ZExt8 ? 1 : 2;
+            if (signed) Emit(new MInstr(MOp.Movsx, lo, src) { Width = from, To32 = WordOf(d.Type) == 4 });
+            else EmitW(MOp.Movzx, from, lo, src);
             return;
         }
         switch (i.Op)
@@ -3800,17 +3796,18 @@ internal sealed partial class Selector
             return;
         }
         // AN INTEGER'S ONE REGISTER IN LONG MODE holds all of it: MOVSX there
-        // is written for the whole register (so an I32's sign extension
-        // clears its upper half again), four signed bytes into an I64 are
-        // MOVSXD, four unsigned a 32-bit move, and eight one move. On i386
-        // an I64 is the pair, its high word made after.
+        // carries the sign through the whole register for an I64 and is
+        // written into the low half for an I32 (MInstr.To32), four signed
+        // bytes into an I64 are MOVSXD, four unsigned a 32-bit move, and
+        // eight one move. On i386 an I64 is the pair, its high word made
+        // after.
         MReg lo = Lo(d);
         switch (size)
         {
             case 1:
             case 2:
-                EmitW(signed ? MOp.Movsx : MOp.Movzx, size, lo, m);
-                if (X86Mode.Long && signed && d.Type == IrType.I32) MovW(lo, lo, 4);
+                if (signed) Emit(new MInstr(MOp.Movsx, lo, m) { Width = size, To32 = X86Mode.Long && d.Type == IrType.I32 });
+                else EmitW(MOp.Movzx, size, lo, m);
                 break;
             case 4:
                 if (X86Mode.Long && signed && d.Type == IrType.I64) EmitW(MOp.Movsx, 4, lo, m);

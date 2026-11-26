@@ -1,0 +1,56 @@
+// test: a byte's and a word's sign extension into an int and into a long, from a register and from memory; the int's upper half clear where it is then read unsigned
+// expect-exit: 0
+// expect-output:
+// -128 4736 -128 4736 4294967168
+// -1 32767 -1 32767 4294967295
+// 0 -32768 0 -32768 0
+// -1 -1 -1 -1 4294967295
+// -128 22144 -128 22144 4294967168
+// -1 255 -1 255 4294967295
+// -128 128 -128 128 4294967168
+// 127 127 127 127 127
+// -1 -1 -1 -1 4294967295
+// -128 -32768 -128 4294934528
+// -1 -1 -1 4294967295
+// 0 0 0 0
+// 1 1 1 1
+// 127 32767 127 32767
+//
+// In long mode an int's sign extension from a byte or a word is one MOVSX
+// into the register's low half, which clears the upper (MInstr.To32); a
+// long's carries the sign through the whole register. It was the whole
+// register's MOVSX and then a 32-bit move of the register onto itself to
+// clear the upper half again. The last column reads the int unsigned into
+// sixty-four bits: an upper half left holding the sign would show there.
+// The same on i386, where the registers are the int. Output as .NET 10
+// prints it.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static sbyte[] _bytes = { -128, -1, 0, 1, 127 };
+    static short[] _shorts = { -32768, -1, 0, 1, 32767 };
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static int FromByte(int x) => (sbyte)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int FromShort(int x) => (short)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static long WideFromByte(int x) => (sbyte)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static long WideFromShort(int x) => (short)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Load8(sbyte[] a, int i) => a[i];
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Load16(short[] a, int i) => a[i];
+    [MethodImpl(MethodImplOptions.NoInlining)] static long WideLoad8(sbyte[] a, int i) => a[i];
+    // The int's upper half must be clear where it is used as an index or widened unsigned.
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong Unsigned(int x) => (uint)(sbyte)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong UnsignedLoad(short[] a, int i) => (uint)a[i];
+
+    static int Main()
+    {
+        int[] values = { 0x1280, 0x7FFF, 0x8000, 0xFFFF, 0x12345680, 255, 128, 127, -1 };
+        foreach (int x in values)
+            Console.WriteLine(FromByte(x) + " " + FromShort(x) + " " + WideFromByte(x) + " " + WideFromShort(x) + " " + Unsigned(x));
+        for (int i = 0; i < 5; i++)
+            Console.WriteLine(Load8(_bytes, i) + " " + Load16(_shorts, i) + " " + WideLoad8(_bytes, i) + " " + UnsignedLoad(_shorts, i));
+        return 0;
+    }
+}

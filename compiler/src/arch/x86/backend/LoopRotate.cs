@@ -147,16 +147,11 @@ internal static class LoopRotate
 
     internal static MInstr Clone(MInstr i)
     {
-        MInstr made = new(i.Op)
-        {
-            Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Native = i.Native, Lock = i.Lock, Table = i.Table,
-            TableSymbol = i.TableSymbol, CallReloc = i.CallReloc, Line = i.Line, Probed = i.Probed, OwnsState = i.OwnsState,
-            Asm = i.Asm, ZeroFirst = i.ZeroFirst, FloatArgs = i.FloatArgs, IntArgs = i.IntArgs, NativeAl = i.NativeAl,
-        };
+        // (What an instruction carries: MInstr.Rebuilt's one list. A memory
+        // operand its own copy, everything of it kept.)
+        MInstr made = i.Rebuilt(i.Table);
         foreach (MOperand o in i.Operands)
-            made.Operands.Add(o is MMem mem
-                ? new MMem(mem.Base, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Symbol = mem.Symbol, Reloc = mem.Reloc, Got = mem.Got, Label = mem.Label, IsSpill = mem.IsSpill, Device = mem.Device, Segment = mem.Segment }
-                : o);
+            made.Operands.Add(o is MMem mem ? mem.WithRegisters(mem.Base, mem.Index) : o);
         return made;
     }
 }

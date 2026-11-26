@@ -279,6 +279,8 @@ internal static partial class Peephole
         return i.Op switch
         {
             MOp.Movzx => true,
+            // (Into the low half: MInstr.To32.)
+            MOp.Movsx => i.To32,
             MOp.Mov or MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Adc or MOp.Sbb
                 or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Not => i.Width == 4,
             MOp.Shl or MOp.Shr or MOp.Sar => i.Width == 4 && i.Operands.Count == 2 && i.Operands[1] is MImm { IsPlain: true } count && (count.Value & 31) != 0,

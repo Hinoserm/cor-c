@@ -285,7 +285,7 @@ internal static partial class Peephole
 
     private static bool SameCompare(MInstr a, MInstr b)
     {
-        if (a.Op != b.Op || a.Width != b.Width || a.Operands.Count != b.Operands.Count) return false;
+        if (a.Op != b.Op || a.Width != b.Width || a.To32 != b.To32 || a.Operands.Count != b.Operands.Count) return false;
         for (int k = 0; k < a.Operands.Count; k++)
         {
             bool same = (a.Operands[k], b.Operands[k]) switch

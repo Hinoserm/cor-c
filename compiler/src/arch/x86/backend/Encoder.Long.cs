@@ -138,12 +138,13 @@ internal sealed partial class Encoder
         {
             case MOp.Mov: Lock(i); MovL(i, w); return true;
             case MOp.Movsx:
-                // Width is the source's; the destination is 64 bits.
+                // Width is the source's; the destination is 64 bits, or the
+                // low thirty-two where the instruction says (MInstr.To32).
                 if (w == 4) OpL(8, Hw(i.Operands[0]), i.Operands[1], 0x63);
                 else
                 {
                     if (w == 1 && i.Operands[1] is MReg { IsFloat: false, Hw: >= 4 and <= 7 }) _rexEmpty = true;
-                    OpL(8, Hw(i.Operands[0]), i.Operands[1], 0x0F, w == 1 ? (byte)0xBE : (byte)0xBF);
+                    OpL(i.To32 ? 4 : 8, Hw(i.Operands[0]), i.Operands[1], 0x0F, w == 1 ? (byte)0xBE : (byte)0xBF);
                 }
                 return true;
             case MOp.Movzx:

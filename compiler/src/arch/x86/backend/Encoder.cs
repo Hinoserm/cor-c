@@ -387,8 +387,10 @@ internal sealed partial class Encoder
     private static bool RexW(MInstr i) => i.Op switch
     {
         MOp.Lea => true,
-        // The destination is the whole register; Width is the source's.
-        MOp.Movsx => true,
+        // The destination is the whole register, Width the source's --
+        // unless it is the low half an I32's sign extension is written into
+        // (MInstr.To32).
+        MOp.Movsx => !i.To32,
         MOp.Movzx => false,
         MOp.CvtIntToF => i.SourceWidth == 8,
         // (The integer side's: the destination here, Width.)

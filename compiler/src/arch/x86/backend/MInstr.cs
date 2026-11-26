@@ -31,6 +31,15 @@ public sealed class MInstr : MOperandList
     /// </summary>
     public int SourceWidth { get; init; }
 
+    /// <summary>
+    /// LONG MODE, MOVSX of a byte or a word: the destination is the
+    /// register's low thirty-two bits (`movsx r32, r/m8`, no REX.W), whose
+    /// write clears the upper half as every 32-bit result's does -- an
+    /// I32's sign extension whole. Unset, MOVSX writes the whole register,
+    /// the sign through all sixty-four bits (an I64's).
+    /// </summary>
+    public bool To32 { get; init; }
+
     /// <summary>Long mode: a jump table's symbol (JmpTable).</summary>
     public string? TableSymbol { get; init; }
 
@@ -173,10 +182,13 @@ public sealed class MInstr : MOperandList
     /// either -- each target's list of fields had left out some of the
     /// other mode's.
     /// </summary>
-    public MInstr Rebuilt(List<MBlock>? table) => new(Op)
+    public MInstr Rebuilt(List<MBlock>? table) => Rebuilt(table, OwnsState);
+
+    /// <summary>The same, marked as selected inside a packed block or outside one (OwnsState): THE ONE LIST of what an instruction carries besides its operands, for every copy made of one (the allocator's rebuild, LoopRotate.Clone, Select.Owning).</summary>
+    public MInstr Rebuilt(List<MBlock>? table, byte ownsState) => new(Op)
     {
-        Width = Width, SourceWidth = SourceWidth, TableSymbol = TableSymbol, FloatArgs = FloatArgs, IntArgs = IntArgs, NativeAl = NativeAl,
-        Line = Line, Cond = Cond, ZeroFirst = ZeroFirst, Native = Native, Lock = Lock, Probed = Probed, OwnsState = OwnsState, Asm = Asm,
+        Width = Width, SourceWidth = SourceWidth, To32 = To32, TableSymbol = TableSymbol, FloatArgs = FloatArgs, IntArgs = IntArgs, NativeAl = NativeAl,
+        Line = Line, Cond = Cond, ZeroFirst = ZeroFirst, Native = Native, Lock = Lock, Probed = Probed, OwnsState = ownsState, Asm = Asm,
         Table = table, CallReloc = CallReloc,
     };
 }
