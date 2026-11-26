@@ -1,5 +1,6 @@
 #nullable enable
 using Corsac.Lang.Frames;
+using Corsac.Lang.Ir;
 using Corsac.Lang.RegAlloc;
 
 namespace Corsac.Lang.X86;
@@ -36,8 +37,18 @@ internal abstract class FamilyTarget
     /// <summary>The copy the allocator made of one virtual register into another, each where it was placed.</summary>
     protected virtual MInstr Copy(int destination, MOperand to, MOperand from, int line) => Move(to, from, line);
 
-    /// <summary>A value made again in a register before an instruction: its constant, its address, or its slot's load.</summary>
-    protected abstract MInstr Remade(int reg, int slot, object? constant, int line);
+    /// <summary>
+    /// A value made again in a register before an instruction: a constant
+    /// moved whole, an address by LEA, a float constant by its load from the
+    /// pool, any other value loaded from its slot.
+    /// </summary>
+    private MInstr Remade(int reg, int slot, object? constant, int line)
+        => constant is MMem address
+            ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device })
+                { Width = X86Mode.Word, Line = line }
+            : constant is MImm imm ? new MInstr(MOp.Mov, Out(reg), imm) { Width = X86Mode.Word, Line = line }
+            : constant is FloatPoolLoad pool ? new MInstr(MOp.MovF, Out(reg), pool.Pool) { Width = pool.Width, Line = line }
+            : Move(Out(reg), Slot(slot), line);
 
     /// <summary>A register an instruction names that is the machine's own, and so no allocation's to place.</summary>
     protected abstract bool Fixed(MReg original);
@@ -56,8 +67,15 @@ internal abstract class FamilyTarget
 
     public bool Immediate(object constant) => constant is MImm;
 
-    /// <summary>What a mode finds out about the whole function before its instructions are lowered (the argument homes).</summary>
-    protected abstract void BeforeLowering();
+    /// <summary>
+    /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot), found over the whole
+    /// function before its instructions are lowered: the loads of a
+    /// stack-passed argument's word that nothing else in the function
+    /// touches, by each mode's reading of its frame.
+    /// </summary>
+    protected abstract HashSet<MInstr> Homes();
+
+    private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>Registers an instruction writes that neither its operands nor the family's table of unnamed ones say (i386's XMM registers at a call).</summary>
     protected virtual void AlsoWritten(MInstr i, List<Named> named) { }
@@ -65,11 +83,50 @@ internal abstract class FamilyTarget
     /// <summary>Whether an operand that may be memory may be WRITTEN there: a mode whose register write does more than the slot's would says no.</summary>
     protected abstract bool MayWriteMemory(MInstr i, int operand);
 
-    /// <summary>The value an instruction makes from nothing the allocator places, which may be made again where wanted (Remade) rather than kept: a constant, an address, a pool's word.</summary>
-    protected abstract object? ConstantOf(MInstr i);
+    /// <summary>
+    /// The value an instruction makes from nothing the allocator places,
+    /// which may be made again where wanted (Remade) rather than kept: a
+    /// constant (the mode's ConstantMoved), a float pool's word, an address.
+    /// </summary>
+    private object? ConstantOf(MInstr i) => ConstantMoved(i) is { } imm ? imm : PoolLoad(i) is { } pool ? pool : Address(i);
 
-    /// <summary>The frame slot an instruction loads as its value's home (each mode's Homes), or null.</summary>
-    protected abstract int? HomeOf(MInstr i);
+    /// <summary>The constant a move puts in a general register, as it is to be moved again into a whole register; null for any other instruction.</summary>
+    protected abstract MImm? ConstantMoved(MInstr i);
+
+    /// <summary>
+    /// An address an LEA makes from nothing the allocator places -- off the
+    /// frame's base register, which holds still through the function, or a
+    /// symbol (i386's absolute, long mode's RIP-relative) -- remade where it
+    /// is wanted (AInstr.Constant); not off the stack pointer, which every
+    /// push moves, nor through the GOT or a segment. On i386 EBP is not the
+    /// frame only in a six-argument system call's window (Select: `push a6;
+    /// ...; push ebp; mov ebp, [esp+4]; int 0x80; pop ebp; lea esp,
+    /// [esp+4]`, or with a constant `push ebp; mov ebp, imm`), where nothing
+    /// is remade: the window names no value the allocator places, and the
+    /// sixth argument's own remaking lands ahead of its push; and in a leaf
+    /// giving the base register a value, where the frame address it makes
+    /// becomes the stack pointer's (FramePointerFree).
+    /// </summary>
+    private static MMem? Address(MInstr i)
+        => i.Op == MOp.Lea && i.Width == X86Mode.Word && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false, IsFloat: false }
+           && i.Operands[1] is MMem { Index: null, Label: null, IsSpill: false, Got: false, Segment: 0 } m
+           && (m.Base is null ? m.Symbol is not null && (X86Mode.Long || m.Reloc == RelocKind.Abs32) : m.Base.Id == (int)Gpr.Ebp && m.Symbol is null)
+            ? m : null;
+
+    /// <summary>
+    /// A FLOAT CONSTANT LOADED FROM THE POOL (X86Backend.FloatPoolName), remade
+    /// where it is wanted -- one load from read-only memory, as a spill's
+    /// reload is, with no store before it. Not in i386's position-independent
+    /// code, whose load is off the GOT's register (Pic) and no constant's;
+    /// long mode's is RIP-relative and always one.
+    /// </summary>
+    internal sealed record FloatPoolLoad(MMem Pool, int Width);
+
+    private static FloatPoolLoad? PoolLoad(MInstr i)
+        => i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false }
+           && i.Operands[1] is MMem { Base: null, Index: null, Symbol: { } s } m && s.StartsWith(X86Backend.FloatPoolPrefix, StringComparison.Ordinal)
+            ? new FloatPoolLoad(m, i.Width) : null;
+
 
     // One list each for the whole function's lowering.
     private readonly List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> _regs = new();
@@ -136,7 +193,7 @@ internal abstract class FamilyTarget
             Targets = targets,
             Unconditional = i.EndsFlow,
             JumpsAnywhere = i.Op == MOp.JmpInd,
-            HomeSlot = HomeOf(i),
+            HomeSlot = _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null,
             Line = i.Line,
             Effects = Effects(i),
         };
@@ -201,7 +258,7 @@ internal abstract class FamilyTarget
         Dictionary<MBlock, ABlock> blocks = new(ReferenceEqualityComparer.Instance);
         foreach (MBlock b in _m.Blocks)
             blocks[b] = new ABlock { Name = b.Name, Tag = b, LandingPad = b.Source?.IsLandingPad == true };
-        BeforeLowering();
+        _homes = Homes();
         foreach (MBlock b in _m.Blocks)
         {
             ABlock ab = blocks[b];
@@ -351,7 +408,7 @@ internal abstract class FamilyTarget
                     k++;
                     break;
                 case MMem m:
-                    // A leaf's frame base is named nowhere (each mode's LowerInstr): as it is.
+                    // A leaf's frame base is named nowhere (LowerInstr): as it is.
                     MReg? baseReg = m.Base is null ? null : _leaf && m.Base.Id == (int)Gpr.Ebp ? m.Base : (MReg)PlaceOf(p.Of(index, k++), m.Base);
                     MReg? indexReg = m.Index is null ? null : (MReg)PlaceOf(p.Of(index, k++), m.Index);
                     // Everything else of the operand as it was (WithRegisters):

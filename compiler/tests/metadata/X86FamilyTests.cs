@@ -105,8 +105,10 @@ public static class X86FamilyTests
                     MInstr plain = new(op) { Width = 0 };
                     Listed(op + " reads", Implicit.Uses(plain), uses);
                     Listed(op + " writes", Implicit.Defs(plain), defs);
-                    Same(op, "reads", Mask(uses), Implicit.Uses(plain).Mask);
-                    Same(op, "writes", Mask(defs), Implicit.Defs(plain).Mask);
+                    // The mask asked a register at a time (Contains), against
+                    // the ids written here: not the set against itself.
+                    Same(op, "reads", Mask(uses), Asked(Implicit.Uses(plain)));
+                    Same(op, "writes", Mask(defs), Asked(Implicit.Defs(plain)));
                     asked++;
                 }
             }
@@ -162,6 +164,98 @@ public static class X86FamilyTests
             X86Mode.Long = was;
         }
         DeviceLoadKept();
+        Lowered();
+    }
+
+    /// <summary>
+    /// ONE INSTRUCTION AS THE ALLOCATOR IS TOLD IT (FamilyTarget.LowerInstr),
+    /// where the modes differ and where they must not: a register moved onto
+    /// itself is nothing at any width but long mode's 4-byte move, which
+    /// clears the upper half; a copy is whole at the mode's word and as an
+    /// XMM move; a call in an i386 function with the XMM class writes all
+    /// eight XMM registers, named after its own; long mode writes a general
+    /// register in a slot only at eight bytes; a push takes a wide constant
+    /// only where the operation is 32 bits wide.
+    /// </summary>
+    private static void Lowered()
+    {
+        bool was = X86Mode.Long;
+        try
+        {
+            foreach (bool longMode in new[] { false, true })
+            {
+                X86Mode.Long = longMode;
+                string mode = longMode ? "long mode" : "i386";
+                int word = X86Mode.Word;
+                MFunction m = new(new Function("lowered", IrType.I32));
+                MBlock b = m.NewBlock("entry");
+                MReg a = m.NewReg(), c = m.NewReg(), x = m.NewFloat(), y = m.NewFloat();
+                m.XmmRegs.Add(x.Id);
+                m.XmmRegs.Add(y.Id);
+                int[] widths = longMode ? new[] { 1, 2, 4, 8 } : new[] { 1, 2, 4 };
+                b.Instrs.Add(new MInstr(MOp.Prologue));
+                foreach (int width in widths) b.Instrs.Add(new MInstr(MOp.Mov, a, c) { Width = width });
+                b.Instrs.Add(new MInstr(MOp.MovF, x, y) { Width = 8 });
+                b.Instrs.Add(new MInstr(MOp.Call, new MImm(0)));
+                b.Instrs.Add(new MInstr(MOp.Push, a));
+                b.Instrs.Add(new MInstr(MOp.Add, a, c) { Width = 4 });
+                b.Instrs.Add(new MInstr(MOp.Add, a, c) { Width = word });
+                b.Instrs.Add(new MInstr(MOp.Mov, a, c) { Width = 4, Lock = true });
+                MMem pool = longMode ? MMem.Rip(X86Backend.FloatPoolName(0x3FF0000000000000, 8), 0) : MMem.Abs(X86Backend.FloatPoolName(0x3FF0000000000000, 8), 0);
+                b.Instrs.Add(new MInstr(MOp.MovF, x, pool) { Width = 8 });
+                b.Instrs.Add(new MInstr(MOp.Mov, a, new MImm(-1)) { Width = 4 });
+                b.Instrs.Add(new MInstr(MOp.Lea, a, MMem.Frame(-16)) { Width = word });
+                b.Instrs.Add(new MInstr(MOp.Lea, a, new MMem(MReg.Of(Gpr.Esp), 8)) { Width = word });
+                b.Instrs.Add(new MInstr(MOp.Mov, a, new MMem(c, 0)) { Width = word });
+                b.Instrs.Add(new MInstr(MOp.Epilogue) { Width = 0 });
+                b.Instrs.Add(new MInstr(MOp.Ret));
+                Corsac.Lang.RegAlloc.AFunction f = longMode ? new Corsac.Lang.X64.X64Target(m).Lower() : new X86Target(m).Lower();
+                List<Corsac.Lang.RegAlloc.AInstr> lowered = f.Blocks[0].Instrs;
+                int at = 1;
+                foreach (int width in widths)
+                {
+                    Corsac.Lang.RegAlloc.AInstr copy = lowered[at++];
+                    Expect(copy.IsCopy, $"{mode}: a {width}-byte register move is a copy");
+                    Expect(copy.WholeCopy == (width == word), $"{mode}: a {width}-byte move is a whole copy only at the mode's word");
+                    Expect(copy.DropsSelf == !(longMode && width == 4), $"{mode}: a {width}-byte move onto itself is dropped, but long mode's 4-byte one");
+                    Expect(copy.MayMemory == 3u && copy.MayMemoryWrite == (longMode && width != 8 ? 0u : 3u), $"{mode}: a {width}-byte move may be written in a slot only where the slot holds what the register would");
+                }
+                Corsac.Lang.RegAlloc.AInstr xmm = lowered[at++];
+                Expect(xmm.IsCopy && xmm.WholeCopy && xmm.DropsSelf, $"{mode}: an XMM move is a whole copy, dropped onto itself");
+                Expect(xmm.MayMemoryWrite == 3u, $"{mode}: an XMM move may be written in a slot");
+                Corsac.Lang.RegAlloc.AInstr call = lowered[at++];
+                Expect(call.IsCall, $"{mode}: a call is one");
+                int[] written = call.Regs.Where(r => r.Operand == -1 && (r.Role & Corsac.Lang.RegAlloc.Role.Def) != 0).Select(r => r.Reg).ToArray();
+                int[] expected = longMode
+                    ? LongAbi.CallerSaved.Concat(Enumerable.Range(MReg.XmmBase, 16)).ToArray()
+                    : new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx }.Concat(Enumerable.Range(MReg.XmmBase, 8)).ToArray();
+                Expect(written.SequenceEqual(expected), $"{mode}: a call writes [{string.Join(", ", written)}], not [{string.Join(", ", expected)}]");
+                Corsac.Lang.RegAlloc.AInstr push = lowered[at++];
+                Expect(push.MayImmediate == 1u, $"{mode}: a push's operand may be a constant");
+                Expect(push.MayImmediateWide == (longMode ? 0u : 1u), $"{mode}: a push takes any constant only where it is 32 bits wide");
+                Corsac.Lang.RegAlloc.AInstr add4 = lowered[at++], addWord = lowered[at++];
+                Expect(add4.MayImmediate == 2u && add4.MayImmediateWide == 2u, $"{mode}: a 4-byte add's source may be any constant");
+                Expect(addWord.MayImmediateWide == (longMode ? 0u : 2u), $"{mode}: a word's add takes any constant only where the word is 32 bits");
+                Expect(add4.MayMemory == 3u && add4.MayMemoryWrite == (longMode ? 0u : 3u), $"{mode}: a 4-byte add may be written in a slot only on i386");
+                Expect(addWord.MayMemoryWrite == 3u, $"{mode}: a word's add may be written in a slot");
+                Expect(!add4.IsCopy, $"{mode}: an add is no copy");
+                Corsac.Lang.RegAlloc.AInstr locked = lowered[at++];
+                Expect(locked.IsCopy && !locked.WholeCopy, $"{mode}: a locked move is no whole copy");
+                // What may be made again where it is wanted, and what may not.
+                object? remadePool = lowered[at++].Constant, remadeNumber = lowered[at++].Constant, remadeFrame = lowered[at++].Constant,
+                    offStack = lowered[at++].Constant, loaded = lowered[at++].Constant;
+                Expect(remadePool is FamilyTarget.FloatPoolLoad { Width: 8 } made && ReferenceEquals(made.Pool, pool), $"{mode}: a float constant's load from the pool is made again from the pool");
+                Expect(remadeNumber is MImm number && number.Value == (longMode ? 0xFFFFFFFFL : -1L), $"{mode}: a 4-byte move of -1 is made again as the value the register held");
+                Expect(remadeFrame is MMem { Disp: -16 }, $"{mode}: an address off the frame's base is made again by its LEA");
+                Expect(offStack is null, $"{mode}: an address off the stack pointer, which every push moves, is not made again");
+                Expect(loaded is null, $"{mode}: a load is no constant");
+            }
+            Console.WriteLine("x86 family: an instruction is told the allocator alike in both modes but where a mode's registers differ -- self-moves, whole copies, a call's writes, slots written, wide constants, what is made again");
+        }
+        finally
+        {
+            X86Mode.Long = was;
+        }
     }
 
     /// <summary>
@@ -239,7 +333,7 @@ public static class X86FamilyTests
 
     private static void Expect(bool held, string what)
     {
-        if (!held) throw new InvalidOperationException("x86 family, frame reading (" + (X86Mode.Long ? "long mode" : "i386") + "): " + what);
+        if (!held) throw new InvalidOperationException("x86 family (" + (X86Mode.Long ? "long mode" : "i386") + "): " + what);
     }
 
     private static Corsac.Lang.Frames.FrameSlotLiveness.Result Measure(MFunction m, string what)
@@ -324,6 +418,14 @@ public static class X86FamilyTests
     {
         long mask = 0;
         foreach (int id in ids) mask |= 1L << id;
+        return mask;
+    }
+
+    private static long Asked(RegSet set)
+    {
+        long mask = 0;
+        for (int reg = 0; reg < 64; reg++) if (set.Contains(reg)) mask |= 1L << reg;
+        if (mask != set.Mask) throw new InvalidOperationException($"x86 family: a set answers {mask:X} asked by register and holds the mask {set.Mask:X}");
         return mask;
     }
 

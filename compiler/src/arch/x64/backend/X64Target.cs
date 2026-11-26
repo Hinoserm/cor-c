@@ -174,30 +174,14 @@ internal sealed class X64Target : FamilyTarget, ITarget
         => i.Width == 8 || i.Operands[operand] is MReg r && (r.IsFloat || _m.XmmRegs.Contains(r.Id));
 
     /// <summary>
-    /// A constant moved into a general register -- the width part of the
-    /// value: a 4-byte move of -1 is 0xFFFFFFFF -- or an address an LEA
-    /// makes from nothing the allocator places: off RBP, which holds still,
-    /// or a symbol RIP-relative; not off RSP, which every push moves, nor
-    /// through the GOT. (A 64-bit constant folded into a move whose
-    /// destination is later spilled would ask for `mov m64, imm64`, which
-    /// x86-64 does not have: Roles.Foldable.)
+    /// A plain constant moved into a general register, the width part of
+    /// the value: a 4-byte move of -1 is 0xFFFFFFFF. (A 64-bit constant
+    /// folded into a move whose destination is later spilled would ask for
+    /// `mov m64, imm64`, which x86-64 does not have: Roles.Foldable.)
     /// </summary>
-    protected override object? ConstantOf(MInstr i)
-    {
-        if (i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg { IsFloat: false } && i.Operands[1] is MImm { IsPlain: true } imm)
-            return i.Width == 4 ? new MImm((uint)imm.Value) : imm;
-        if (i.Op == MOp.Lea && i.Width == 8 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsMachine: false, IsFloat: false }
-            && i.Operands[1] is MMem { Index: null, Label: null, IsSpill: false, Got: false, Segment: 0 } m
-            && (m.Base is null ? m.Symbol is not null : m.Base.Id == (int)Gpr.Rbp && m.Symbol is null))
-            return m;
-        return null;
-    }
-
-    protected override int? HomeOf(MInstr i) => _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null;
-
-    private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
-
-    protected override void BeforeLowering() => _homes = Homes();
+    protected override MImm? ConstantMoved(MInstr i)
+        => i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg { IsFloat: false } && i.Operands[1] is MImm { IsPlain: true } imm
+            ? (i.Width == 4 ? new MImm((uint)imm.Value) : imm) : null;
 
     /// <summary>
     /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot): `mov v, [rbp+d]` of a
@@ -208,7 +192,7 @@ internal sealed class X64Target : FamilyTarget, ITarget
     /// any other access taken as sixteen bytes wide. x86-64's collector
     /// reads a stack as memory: no map to name it in.
     /// </summary>
-    private HashSet<MInstr> Homes()
+    protected override HashSet<MInstr> Homes()
     {
         HashSet<MInstr> homes = new(ReferenceEqualityComparer.Instance);
         Dictionary<int, MInstr?> load = new();
@@ -238,14 +222,6 @@ internal sealed class X64Target : FamilyTarget, ITarget
             if (i is not null && !touched.Any(t => t.From < disp + 8 && disp < t.To)) homes.Add(i);
         return homes;
     }
-
-    /// <summary>A remade constant moved whole, an address by LEA, any other value loaded from its slot.</summary>
-    protected override MInstr Remade(int reg, int slot, object? constant, int line)
-        => constant is MMem address
-            ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol }) { Width = 8, Line = line }
-            : constant is MImm imm
-            ? new MInstr(MOp.Mov, Out(reg), imm) { Width = 8, Line = line }
-            : Move(Out(reg), Slot(slot), line);
 
     /// <summary>
     /// The callee-saved registers touched, or all of them where the function

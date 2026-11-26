@@ -12,12 +12,16 @@
 // takes one of the pool's last segments asks the collector for more and wakes
 // it; one inside a spin lock may not wake anybody and only left the flag, and
 // every later thread took the flag for a wake already given. The threads
-// waiting for a segment then turned on an empty pool while the collector
-// slept in its round, waiting for one of them to answer: a hang, all of it
-// in sched_yield. With more threads than processors -- a thread slow to
-// answer the round is what gives the pool time to run dry -- this program
-// hung in four runs of six on two processors; the compiler's own link, a
-// backend with sixteen workers, hung the same way.
+// waiting for a segment then turned on a pool down to its reserve while the
+// collector slept in its round, waiting for one of them to answer: a hang,
+// all of it in sched_yield.
+//
+// A STRESS TEST, not a certain reproduction: the hang needs a thread slow to
+// answer the round, which gives the pool time to run down. With more threads
+// than processors this program hung in four runs of six on two processors
+// before the fix, and seldom with a processor for every thread; the
+// compiler's own link, a backend with sixteen workers, hung the same way.
+// It cannot fail but by hanging.
 //
 // The wake is owed now, and given by the first thread that may (Gc.AskForStock).
 

@@ -164,35 +164,6 @@ internal sealed class X86Target : FamilyTarget, ITarget
     public string RegName(int reg) => reg >= MReg.XmmBase ? $"xmm{reg - MReg.XmmBase}" : X86Mode.GprName(reg);
     public bool PlainConstant(object constant) => constant is MImm { IsPlain: true };
 
-    /// <summary>
-    /// An address an LEA makes from nothing the allocator places -- off EBP,
-    /// which holds still through the function, or a symbol -- remade where it
-    /// is wanted (AInstr.Constant); not off ESP, which every push moves. EBP
-    /// is not the frame only in a six-argument system call's window (Select:
-    /// `push a6; ...; push ebp; mov ebp, [esp+4]; int 0x80; pop ebp; lea esp,
-    /// [esp+4]`, or with a constant `push ebp; mov ebp, imm`), where nothing
-    /// is remade: the window names no value the allocator places, and the
-    /// sixth argument's own remaking lands ahead of its push; and in a leaf giving EBP
-    /// a value, where the frame address it makes becomes ESP's
-    /// (FramePointerFree).
-    /// </summary>
-    private static MMem? Address(MInstr i) => i.Op == MOp.Lea && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsPhys: false }
-        && i.Operands[1] is MMem { Index: null } m && (m.Base is null ? m.Symbol is not null && m.Reloc == RelocKind.Abs32 : m.Base.Id == (int)Gpr.Ebp && m.Symbol is null)
-        && m.Label is null && !m.IsSpill ? m : null;
-
-    /// <summary>
-    /// A FLOAT CONSTANT LOADED FROM THE POOL (X86Backend.FloatPoolName), remade
-    /// where it is wanted -- one load from read-only memory, as a spill's
-    /// reload is, with no store before it. Not in position-independent code,
-    /// whose load is off the GOT's register (Pic) and no constant's.
-    /// </summary>
-    internal sealed record FloatPoolLoad(MMem Pool, int Width);
-
-    private static FloatPoolLoad? PoolLoad(MInstr i)
-        => i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg { IsPhys: false, IsXmm: false }
-           && i.Operands[1] is MMem { Base: null, Index: null, Symbol: { } s } m && s.StartsWith(X86Backend.FloatPoolPrefix, StringComparison.Ordinal)
-           ? new FloatPoolLoad(m, i.Width) : null;
-
     public int NewVRegLike(int like)
     {
         int v = _m.NewReg().Id;
@@ -224,16 +195,9 @@ internal sealed class X86Target : FamilyTarget, ITarget
     /// <summary>A slot holds what a register does, at any width: a narrow write leaves the rest of either as it was.</summary>
     protected override bool MayWriteMemory(MInstr i, int operand) => true;
 
-    /// <summary>A whole word's constant, a float pool's word, or an address made from nothing placed (Address).</summary>
-    protected override object? ConstantOf(MInstr i)
-        => i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm
-            : PoolLoad(i) is { } pool ? pool : Address(i);
-
-    protected override int? HomeOf(MInstr i) => _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null;
-
-    private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
-
-    protected override void BeforeLowering() => _homes = Homes();
+    /// <summary>A whole word's constant: any, a symbol's address among them.</summary>
+    protected override MImm? ConstantMoved(MInstr i)
+        => i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm : null;
 
     /// <summary>A float home's width, by its offset: reloaded as it was loaded, never past its argument's bytes.</summary>
     private readonly Dictionary<int, int> _homeWidths = new();
@@ -254,7 +218,7 @@ internal sealed class X86Target : FamilyTarget, ITarget
     /// default four (Peephole.ParameterHomes counts as much). The frame
     /// outside reads that word as one it is pushing, so no stack map need.
     /// </summary>
-    private HashSet<MInstr> Homes()
+    protected override HashSet<MInstr> Homes()
     {
         HashSet<MInstr> homes = new(ReferenceEqualityComparer.Instance);
         Dictionary<int, MInstr?> load = new();
@@ -310,13 +274,6 @@ internal sealed class X86Target : FamilyTarget, ITarget
             }
         return homes;
     }
-
-    protected override MInstr Remade(int reg, int slot, object? constant, int line)
-        => constant is MMem address
-            ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = line }
-            : constant is MImm imm ? new MInstr(MOp.Mov, Out(reg), imm) { Line = line }
-            : constant is FloatPoolLoad pool ? new MInstr(MOp.MovF, Out(reg), pool.Pool) { Width = pool.Width, Line = line }
-            : Move(Out(reg), Slot(slot), line);
 
     /// <summary>
     /// The callee-saved registers the function touches, or all of them where

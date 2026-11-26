@@ -15743,7 +15743,8 @@ public static class Gc
     ///
     /// WITH ONE VALUE FOR BOTH, a flag set by a spin lock's holder was taken
     /// by every later thread for a wake already given: the threads waiting
-    /// for a segment turned on a pool nobody was stocking while the
+    /// for a segment turned on a pool down to its reserve, which nobody
+    /// was stocking, while the
     /// collector slept in its round, waiting for one of them to answer --
     /// a backend of the compiler's own link spun so until its hour of
     /// processor time was up.
