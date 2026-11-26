@@ -25,11 +25,122 @@ internal abstract class FamilyTarget
     /// <summary>A leaf whose frame base is a register like any other (each mode's Leaf says when).</summary>
     protected readonly bool _leaf;
 
-    protected FamilyTarget(MFunction m, bool leaf)
+    protected FamilyTarget(MFunction m)
     {
         _m = m;
-        _leaf = leaf;
+        _leaf = Leaf(m);
     }
+
+    /// <summary>
+    /// WHETHER THE FUNCTION MAY RUN WITHOUT A FRAME POINTER, its base
+    /// register one more for the allocator (each mode's leaf file): where
+    /// nothing needs the frame -- no call, a store sequence's stub's included
+    /// (a callee's prologue pushes the base register as the link to this
+    /// frame; the collector and every unwinder walk that chain), no landing
+    /// pad, nothing that names the base register but as the frame's base
+    /// (Sys.FramePointer, i386's six-argument system call), nothing that
+    /// reads a caller's register off it (CallerReg), no asm block that needs
+    /// the frame, and nothing that moves the stack pointer after the
+    /// prologue, off which the frame is addressed instead
+    /// (FramePointerFree). Long mode keeps the frame too where the function
+    /// saves every register (a system call, a software interrupt) or
+    /// realigns its stack.
+    /// </summary>
+    private static bool Leaf(MFunction m)
+    {
+        if (X86Mode.Long && (m.SavesEverything || m.RealignsStack)) return false;
+        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
+        foreach (MBlock b in m.Blocks)
+        {
+            if (b.Source?.IsLandingPad == true) return false;
+            foreach (MInstr i in b.Instrs)
+            {
+                if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                    or MOp.CallKeepRax or MOp.CallKeepCas or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.CallerReg) return false;
+                if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
+                foreach (MOperand o in i.Operands)
+                    if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
+                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
+                {
+                    if (r.Id == (int)Gpr.Ebp && !inMem) return false;
+                    if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// A MODE'S THREE REGISTER FILES, from its registers by what a call does
+    /// to them (caller-saved first: a value that crosses no call costs
+    /// nothing there, a callee-saved register a push and a pop), those of
+    /// them with byte forms (null: all) and how many XMM registers it has --
+    /// every one caller-saved, none ever a reference:
+    ///
+    ///   Whole       the stack pointer and the frame's base never touched
+    ///   Leaf        the base register besides, callee-saved (Leaf)
+    ///   CallerOnly  a thunk's (Function.KeepsCallerRegisters): the
+    ///               caller-saved alone, so the callee-saved keep what its
+    ///               caller left in them, and a value it holds across a
+    ///               call is held in its frame
+    /// </summary>
+    protected static (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) Files(int[] callerSaved, int[] calleeSaved, int[]? byteCapable, int xmm)
+    {
+        RegClass xmmClass = new()
+        {
+            Name = "xmm",
+            Preference = Enumerable.Range(MReg.XmmBase, xmm).ToArray(),
+            CalleeSaved = Array.Empty<int>(),
+            HoldsReferences = false,
+        };
+        RegisterFile File(int[] preference, int[] saved, int[] untracked) => new()
+        {
+            PhysCount = MReg.XmmBase + xmm,
+            FirstVirtual = MReg.FirstVirtual,
+            Untracked = untracked,
+            Classes = new[]
+            {
+                new RegClass { Name = "gpr", Preference = preference, CalleeSaved = saved, ByteCapable = byteCapable?.Intersect(preference).ToArray() },
+                xmmClass,
+            },
+        };
+        int sp = (int)Gpr.Esp, bp = (int)Gpr.Ebp;
+        return (File(callerSaved.Concat(calleeSaved).ToArray(), calleeSaved, new[] { sp, bp }),
+            File(callerSaved.Concat(calleeSaved).Append(bp).ToArray(), calleeSaved.Append(bp).ToArray(), new[] { sp }),
+            File(callerSaved, Array.Empty<int>(), new[] { sp, bp }));
+    }
+
+    /// <summary>A value limited to the registers with byte forms: i386's alone -- every general register has one under REX.</summary>
+    public bool ByteOnly(int vreg) => !X86Mode.Long && _m.ByteRegs.Contains(vreg);
+
+    /// <summary>
+    /// A slot of a word; on i386 an XMM value's is the one its moves fill --
+    /// eight bytes, sixteen for a Packed128's (MFunction.XmmSpillWidth).
+    /// Long mode's XMM values are scalars, a word each.
+    /// </summary>
+    public int NewSlot(int vreg)
+        => !X86Mode.Long && _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(Math.Max(8, _m.XmmSpillWidth), 8) : _m.Frame.Spill();
+
+    /// <summary>A new virtual register of the kind `like` is: its class, its byte limit, its being half of a wide value.</summary>
+    public int NewVRegLike(int like)
+    {
+        int v = _m.NewReg().Id;
+        if (_m.XmmRegs.Contains(like)) _m.XmmRegs.Add(v);
+        if (_m.ByteRegs.Contains(like)) _m.ByteRegs.Add(v);
+        if (_m.WideHalves.Contains(like)) _m.WideHalves.Add(v);
+        return v;
+    }
+
+    public string RegName(int reg) => MReg.Of(reg).ToString();
+
+    /// <summary>A constant any operand carries: i386's any plain one, long mode's one that fits 32 bits signed (an instruction's immediate, sign-extended).</summary>
+    public bool PlainConstant(object constant) => constant is MImm imm && (X86Mode.Long ? imm.FitsInt32 : imm.IsPlain);
+
+    public string Text(AInstr i) => i.Tag is MInstr m ? InstrText(m)
+        : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
+
+    /// <summary>An instruction as the allocator's dumps show it.</summary>
+    protected abstract string InstrText(MInstr i);
 
     /// <summary>A move of a value of the class the operands say, between a register and a register or a slot.</summary>
     protected abstract MInstr Move(MOperand to, MOperand from, int line);
@@ -51,10 +162,10 @@ internal abstract class FamilyTarget
             : Move(Out(reg), Slot(slot), line);
 
     /// <summary>A register an instruction names that is the machine's own, and so no allocation's to place.</summary>
-    protected abstract bool Fixed(MReg original);
+    private static bool Fixed(MReg original) => original.IsMachine;
 
-    /// <summary>The register a value was placed in, as an operand: the frame's base register as the value it holds there.</summary>
-    protected abstract MReg Out(int reg);
+    /// <summary>The register a value was placed in, as an operand: the frame's base register as the value it holds there (MReg.EbpData), no frame's base.</summary>
+    protected static MReg Out(int reg) => reg == (int)Gpr.Ebp ? MReg.EbpData : MReg.Of(reg);
 
     /// <summary>What the function saves and how its frame stands, from the registers the allocation touched.</summary>
     protected abstract void Saved(AFunction f, IPlacement p);

@@ -18,126 +18,24 @@ namespace Corsac.Lang.X86;
 internal sealed class X86Target : FamilyTarget, ITarget
 {
     /// <summary>
-    /// THE XMM CLASS: scalar floats where --cpu has SSE and the code owns its
-    /// state (Selector's _xmm32, _xmm64). Every one caller-saved, as i386's C
-    /// has them; none ever a reference.
+    /// i386's registers: EAX, ECX, EDX free across no call, then the
+    /// callee-saved EBX, ESI, EDI; EAX to EBX have byte halves. The XMM
+    /// class holds scalar floats where --cpu has SSE and the code owns its
+    /// state (Selector's _xmm32, _xmm64), every one caller-saved, as i386's
+    /// C has them. A leaf's file has EBP besides, pushed first of those it
+    /// saves (MFunction.FramePointerFree), in a function with no frame of
+    /// its own (MFunction.Frameless); a fault in such a function finds its
+    /// caller by its first bytes (Runtime.FrameAt).
     /// </summary>
-    private static readonly RegClass XmmClass = new()
-    {
-        Name = "xmm",
-        Preference = Enumerable.Range(MReg.XmmBase, 8).ToArray(),
-        CalleeSaved = Array.Empty<int>(),
-        HoldsReferences = false,
-    };
+    private static readonly (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) Of = Files(
+        new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx }, new[] { (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi },
+        new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx }, 8);
 
-    private static readonly RegisterFile File = new()
-    {
-        PhysCount = MReg.XmmBase + 8,
-        FirstVirtual = MReg.FirstVirtual,
-        Untracked = new[] { (int)Gpr.Esp, (int)Gpr.Ebp },
-        Classes = new[]
-        {
-            new RegClass
-            {
-                Name = "gpr",
-                // Caller-saved first: an interval that does not cross a call costs
-                // nothing in one of these, while a callee-saved register costs a
-                // push and a pop in the prologue and epilogue.
-                Preference = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi },
-                CalleeSaved = new[] { (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi },
-                ByteCapable = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx },
-            },
-            XmmClass,
-        },
-    };
-
-
-    public X86Target(MFunction m) : base(m, Leaf(m))
+    public X86Target(MFunction m) : base(m)
     {
     }
 
-    /// <summary>
-    /// A LEAF'S REGISTERS: EBP besides, callee-saved (pushed first of those
-    /// it saves, MFunction.FramePointerFree), in a function with no frame of
-    /// its own (MFunction.Frameless), where nothing needs one -- no call, a store
-    /// sequence's stub's included (a callee's prologue pushes EBP as the link
-    /// to this frame; the collector and every unwinder walk that chain), no
-    /// landing pad, nothing that names
-    /// EBP but as the frame's base (Sys.FramePointer, a six-argument system
-    /// call) and nothing that moves ESP after the prologue, off which the frame
-    /// is addressed instead (FramePointerFree). A fault in such a function
-    /// finds its caller by its first bytes (Runtime.FrameAt).
-    /// </summary>
-    private static readonly RegisterFile LeafFile = new()
-    {
-        PhysCount = MReg.XmmBase + 8,
-        FirstVirtual = MReg.FirstVirtual,
-        Untracked = new[] { (int)Gpr.Esp },
-        Classes = new[]
-        {
-            new RegClass
-            {
-                Name = "gpr",
-                Preference = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi, (int)Gpr.Ebp },
-                CalleeSaved = new[] { (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi, (int)Gpr.Ebp },
-                ByteCapable = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx },
-            },
-            XmmClass,
-        },
-    };
-
-    /// <summary>
-    /// A THUNK'S REGISTERS (Function.KeepsCallerRegisters): EAX, ECX and EDX
-    /// alone, so EBX, ESI and EDI keep what its caller left in them, and a
-    /// value it holds across a call is held in its frame.
-    /// </summary>
-    private static readonly RegisterFile CallerOnlyFile = new()
-    {
-        PhysCount = MReg.XmmBase + 8,
-        FirstVirtual = MReg.FirstVirtual,
-        Untracked = new[] { (int)Gpr.Esp, (int)Gpr.Ebp },
-        Classes = new[]
-        {
-            new RegClass
-            {
-                Name = "gpr",
-                Preference = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx },
-                CalleeSaved = Array.Empty<int>(),
-                ByteCapable = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx },
-            },
-            XmmClass,
-        },
-    };
-
-    /// <summary>Whether the function may run without a frame pointer (LeafFile).</summary>
-    private static bool Leaf(MFunction m)
-    {
-        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
-        foreach (MBlock b in m.Blocks)
-        {
-            if (b.Source?.IsLandingPad == true) return false;
-            foreach (MInstr i in b.Instrs)
-            {
-                // The store sequences' stubs are calls too (CallKeep*): frameless,
-                // so the barrier they call links to this function's EBP.
-                // A caller's register is read off the frame pointer (Encoder's CallerReg).
-                // An asm block that pushes, names ESP or EBP or a slot off EBP.
-                if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
-                    or MOp.CallSafe or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.CallerReg) return false;
-                if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
-                foreach (MOperand o in i.Operands)
-                    if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
-                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
-                {
-                    if (r.Id == (int)Gpr.Ebp && !inMem) return false;
-                    if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    public override RegisterFile Registers => _registers ??= Halved(_m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File);
+    public override RegisterFile Registers => _registers ??= Halved(_m.Source.KeepsCallerRegisters ? Of.CallerOnly : _leaf ? Of.Leaf : Of.Whole);
 
     private RegisterFile? _registers;
 
@@ -153,28 +51,13 @@ internal sealed class X86Target : FamilyTarget, ITarget
             f.Classes[0],
             new RegClass
             {
-                Name = XmmClass.Name, CalleeSaved = XmmClass.CalleeSaved, HoldsReferences = false,
+                Name = f.Classes[1].Name, CalleeSaved = f.Classes[1].CalleeSaved, HoldsReferences = false,
                 Preference = Enumerable.Range(MReg.XmmBase, _m.XmmClassCount).ToArray(),
             },
         },
     };
-    public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
-    /// <summary>A slot of a word, or one an XMM value's moves fill -- eight bytes, sixteen for a Packed128's (MFunction.XmmSpillWidth).</summary>
-    public int NewSlot(int vreg) => _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(Math.Max(8, _m.XmmSpillWidth), 8) : _m.Frame.Spill();
-    public string RegName(int reg) => reg >= MReg.XmmBase ? $"xmm{reg - MReg.XmmBase}" : X86Mode.GprName(reg);
-    public bool PlainConstant(object constant) => constant is MImm { IsPlain: true };
 
-    public int NewVRegLike(int like)
-    {
-        int v = _m.NewReg().Id;
-        if (_m.XmmRegs.Contains(like)) _m.XmmRegs.Add(v);
-        if (_m.ByteRegs.Contains(like)) _m.ByteRegs.Add(v);
-        if (_m.WideHalves.Contains(like)) _m.WideHalves.Add(v);
-        return v;
-    }
-
-    public string Text(AInstr i) => i.Tag is MInstr m ? AsmText.Line(_m, m)
-        : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
+    protected override string InstrText(MInstr i) => AsmText.Line(_m, i);
 
     /// <summary>
     /// A CALL CLOBBERS EVERY XMM REGISTER, all caller-saved in i386's C: said
@@ -284,14 +167,12 @@ internal sealed class X86Target : FamilyTarget, ITarget
     protected override void Saved(AFunction f, IPlacement p)
     {
         bool catches = f.Blocks.Any(b => b.LandingPad);
-        foreach (int g in File.Classes[0].CalleeSaved)
+        foreach (int g in Of.Whole.Classes[0].CalleeSaved)
             if (catches || p.Touched.Contains(g)) _m.SavedRegs.Add((Gpr)g);
         _m.Frameless = _leaf;
         _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Ebp);
         if (_m.FramePointerFree) _m.SavedRegs.Insert(0, Gpr.Ebp);
     }
-
-    protected override bool Fixed(MReg original) => original.IsPhys;
 
     /// <summary>An XMM value by MOVSS/MOVSD at the width its home or its class's spill slot has; a general one by MOV.</summary>
     protected override MInstr Move(MOperand to, MOperand from, int line)
@@ -302,7 +183,4 @@ internal sealed class X86Target : FamilyTarget, ITarget
                 Line = line,
             }
             : new MInstr(MOp.Mov, to, from) { Line = line };
-
-    /// <summary>A register the allocator placed a value in: EBP as the value it holds (MReg.EbpData), no frame's base.</summary>
-    protected override MReg Out(int reg) => reg == (int)Gpr.Ebp ? MReg.EbpData : MReg.Of(reg);
 }

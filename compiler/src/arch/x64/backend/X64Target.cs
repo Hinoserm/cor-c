@@ -20,150 +20,23 @@ internal sealed class X64Target : FamilyTarget, ITarget
 {
     private const int Xmms = 1;
 
-    private static readonly RegisterFile File = new()
-    {
-        PhysCount = MReg.FirstVirtual,
-        FirstVirtual = MReg.FirstVirtual,
-        Untracked = new[] { (int)Gpr.Rsp, (int)Gpr.Rbp },
-        Classes = new[]
-        {
-            new RegClass
-            {
-                Name = "gpr",
-                // Caller-saved first: free when the value does not cross a call.
-                Preference = new[]
-                {
-                    (int)Gpr.Rax, (int)Gpr.Rcx, (int)Gpr.Rdx, (int)Gpr.Rsi, (int)Gpr.Rdi,
-                    (int)Gpr.R8, (int)Gpr.R9, (int)Gpr.R10, (int)Gpr.R11,
-                    (int)Gpr.Rbx, (int)Gpr.R12, (int)Gpr.R13, (int)Gpr.R14, (int)Gpr.R15,
-                },
-                CalleeSaved = Allocator.CalleeSaved.Select(g => (int)g).ToArray(),
-            },
-            new RegClass
-            {
-                Name = "xmm",
-                Preference = Enumerable.Range(MReg.XmmBase, 16).ToArray(),
-                CalleeSaved = Array.Empty<int>(),
-                HoldsReferences = false,
-            },
-        },
-    };
-
     /// <summary>
-    /// A LEAF'S REGISTERS: RBP besides, callee-saved (the prologue still
-    /// pushes it), where nothing needs the frame pointer -- no call (a
-    /// callee's prologue pushes RBP as the link to this frame; the collector
-    /// and every unwinder walk that chain), no landing pad, no system call or
-    /// software interrupt (SavesEverything), no realigned stack, nothing that
-    /// names RBP but as the frame's base and nothing that moves RSP after the
-    /// prologue, off which the frame is addressed instead (FramePointerFree).
-    /// A fault in such a function finds its frame by the prologue's mark
-    /// (Encoder.PrologueL).
+    /// Long mode's registers: the caller-saved nine first, then RBX and R12
+    /// to R15, every one with a byte form under REX; sixteen XMM registers,
+    /// every one caller-saved under the System V ABI. A leaf's file has RBP
+    /// besides (the prologue still pushes it); a fault in such a function
+    /// finds its frame by the prologue's mark (Encoder.PrologueL).
     /// </summary>
-    private static readonly RegisterFile LeafFile = new()
-    {
-        PhysCount = MReg.FirstVirtual,
-        FirstVirtual = MReg.FirstVirtual,
-        Untracked = new[] { (int)Gpr.Rsp },
-        Classes = new[]
-        {
-            new RegClass
-            {
-                Name = "gpr",
-                Preference = new[]
-                {
-                    (int)Gpr.Rax, (int)Gpr.Rcx, (int)Gpr.Rdx, (int)Gpr.Rsi, (int)Gpr.Rdi,
-                    (int)Gpr.R8, (int)Gpr.R9, (int)Gpr.R10, (int)Gpr.R11,
-                    (int)Gpr.Rbx, (int)Gpr.R12, (int)Gpr.R13, (int)Gpr.R14, (int)Gpr.R15, (int)Gpr.Rbp,
-                },
-                CalleeSaved = Allocator.CalleeSaved.Select(g => (int)g).Append((int)Gpr.Rbp).ToArray(),
-            },
-            new RegClass
-            {
-                Name = "xmm",
-                Preference = Enumerable.Range(MReg.XmmBase, 16).ToArray(),
-                CalleeSaved = Array.Empty<int>(),
-                HoldsReferences = false,
-            },
-        },
-    };
+    private static readonly (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) Of = Files(
+        LongAbi.CallerSaved, Allocator.CalleeSaved.Select(g => (int)g).ToArray(), null, 16);
 
-    /// <summary>
-    /// A THUNK'S REGISTERS (Function.KeepsCallerRegisters): the caller-saved
-    /// nine alone, so RBX and R12 to R15 keep what its caller left in them,
-    /// and a value it holds across a call is held in its frame.
-    /// </summary>
-    private static readonly RegisterFile CallerOnlyFile = new()
-    {
-        PhysCount = MReg.FirstVirtual,
-        FirstVirtual = MReg.FirstVirtual,
-        Untracked = new[] { (int)Gpr.Rsp, (int)Gpr.Rbp },
-        Classes = new[]
-        {
-            new RegClass
-            {
-                Name = "gpr",
-                Preference = new[]
-                {
-                    (int)Gpr.Rax, (int)Gpr.Rcx, (int)Gpr.Rdx, (int)Gpr.Rsi, (int)Gpr.Rdi,
-                    (int)Gpr.R8, (int)Gpr.R9, (int)Gpr.R10, (int)Gpr.R11,
-                },
-                CalleeSaved = Array.Empty<int>(),
-            },
-            new RegClass
-            {
-                Name = "xmm",
-                Preference = Enumerable.Range(MReg.XmmBase, 16).ToArray(),
-                CalleeSaved = Array.Empty<int>(),
-                HoldsReferences = false,
-            },
-        },
-    };
-
-    public X64Target(MFunction m) : base(m, Leaf(m))
+    public X64Target(MFunction m) : base(m)
     {
     }
 
-    /// <summary>Whether the function may run without a frame pointer (LeafFile).</summary>
-    private static bool Leaf(MFunction m)
-    {
-        if (m.SavesEverything || m.RealignsStack) return false;
-        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
-        foreach (MBlock b in m.Blocks)
-        {
-            if (b.Source?.IsLandingPad == true) return false;
-            foreach (MInstr i in b.Instrs)
-            {
-                // The store sequences' stubs are calls too (CallKeep*): frameless,
-                // so the barrier they call links to this function's RBP.
-                // An asm block that pushes, names RSP or RBP or a slot off RBP.
-                if (i.Op is MOp.Call or MOp.CallInd or MOp.CallSafe or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas
-                    or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf) return false;
-                if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
-                foreach (MOperand o in i.Operands)
-                    if (o is MMem { Index: { Id: (int)Gpr.Rbp } }) return false;
-                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Roles.RegsOf(i, regs))
-                {
-                    if (r.Id == (int)Gpr.Rbp && !inMem) return false;
-                    if (r.Id == (int)Gpr.Rsp && (role & Roles.Role.Def) != 0) return false;
-                }
-            }
-        }
-        return true;
-    }
+    public override RegisterFile Registers => _m.Source.KeepsCallerRegisters ? Of.CallerOnly : _leaf ? Of.Leaf : Of.Whole;
 
-    public override RegisterFile Registers => _m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File;
-
-    /// <summary>Every general register has a byte form under REX.</summary>
-    public bool ByteOnly(int vreg) => false;
-    public int NewSlot(int vreg) => _m.Frame.Spill();
-    public int NewVRegLike(int like) => _m.XmmRegs.Contains(like) ? _m.NewFloat().Id : _m.NewReg().Id;
-    public string RegName(int reg) => new MReg(reg).ToString();
-    /// <summary>A constant any operand carries: one that fits 32 bits signed (an instruction's immediate, sign-extended).</summary>
-    public bool PlainConstant(object constant) => constant is MImm { FitsInt32: true };
-
-    public string Text(AInstr i) => i.Tag is MInstr m ? $"{m.Op} {string.Join(", ", m.Operands)}"
-        : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
+    protected override string InstrText(MInstr i) => $"{i.Op} {string.Join(", ", i.Operands)}";
 
     /// <summary>
     /// A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a reload is
@@ -235,8 +108,6 @@ internal sealed class X64Target : FamilyTarget, ITarget
         _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Rbp);
     }
 
-    protected override bool Fixed(MReg original) => original.IsMachine;
-
     /// <summary>A spilled value moved by its class's move (MOV, MOVSD) through an eight-byte slot: the class the register operand is of.</summary>
     protected override MInstr Move(MOperand to, MOperand from, int line)
         => new MInstr(to is MReg r && ClassOf(r.Id) == Xmms || from is MReg s && ClassOf(s.Id) == Xmms ? MOp.MovF : MOp.Mov, to, from) { Width = 8, Line = line };
@@ -244,7 +115,4 @@ internal sealed class X64Target : FamilyTarget, ITarget
     /// <summary>The allocator's copy, by the class of the register copied into.</summary>
     protected override MInstr Copy(int destination, MOperand to, MOperand from, int line)
         => new MInstr(ClassOf(destination) == Xmms ? MOp.MovF : MOp.Mov, to, from) { Width = 8, Line = line };
-
-    /// <summary>A register the allocator placed a value in: RBP as the value it holds (MReg.RbpData), no frame's base.</summary>
-    protected override MReg Out(int reg) => reg == (int)Gpr.Rbp ? MReg.RbpData : new MReg(reg);
 }
