@@ -692,7 +692,9 @@ public sealed partial class Lowering
     public const int TlsState = 28;
     /// <summary>This thread's [ThreadStatic] cells: an object?[] (Tls.ThreadStatics).</summary>
     public const int TlsThreadStatics = 168;
-    public const int TlsBytes = 220;
+    /// <summary>The block's size: runtime Tls.Bytes, its 57 slots times four
+    /// (ThreadBlock0, the block of a thread no platform gives one).</summary>
+    public const int TlsBytes = 228;
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";

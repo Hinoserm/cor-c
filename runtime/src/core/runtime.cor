@@ -323,7 +323,7 @@ public static class Processor
 public static class Tls
 {
     // Every field is a word slot, numbered as lowering numbers them (its Tls*
-    // constants are these slots times four, scaled by the word): 55 slots.
+    // constants are these slots times four, scaled by the word): 57 slots.
     /// The block's own address. First, because gs:[0] is how it is found.
     public const int Self = 0 * WordSize.Bytes;
 
@@ -503,7 +503,17 @@ public static class Tls
     /// WorkerLoop): a wait it makes then is a worker the queue is without
     /// (Runtime.BeginBlocking, Scheduler.WorkerBlocks).
     public const int PoolWork = 55 * WordSize.Bytes;
-    public const int Bytes = 56 * WordSize.Bytes;
+    /// The object this thread's last allocation from the heap's slow path
+    /// handed out (Gc.AllocSlow, Gc.AllocClass), written under the heap lock
+    /// as it is let go, and read as a root by every answer for the thread
+    /// (GcThreads.Work). Between that and the typed reference the caller
+    /// keeps it in, the object is a plain word of the runtime's, which a
+    /// thread answering for itself with its stack maps (Gc.ScanOwnStack) does
+    /// not keep -- and a kernel's preemption parks a thread there and answers
+    /// for it so. Overwritten by the next one: a thread keeps at most one
+    /// object alive this way, as long as it makes no other.
+    public const int Handed = 56 * WordSize.Bytes;
+    public const int Bytes = 57 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (Corsac.GC.AllocSample): every sixteenth
@@ -1818,12 +1828,25 @@ public static partial class Runtime
     public static bool AllocHookEvery;
     static long _allocCount;
 
+    /// The sampler called (AllocHook) with the block it is told of in hand
+    /// (Tls.Handed): until the call returns, the allocation's caller holds
+    /// it only in a word of the runtime's, which a thread answering for
+    /// itself by its stack maps does not keep -- so a hook that reached a
+    /// preemption point, and was parked there, lost the block it was shown.
+    /// The frame is the allocator's, from which the hook reads its callers.
+    static void Sample(nuint frame, nuint bytes, nuint at)
+    {
+        nuint tb = Sys.ThreadBlock();
+        if (tb != 0) Sys.WriteAddress(tb + Tls.Handed, at);
+        Sys.Call(AllocHook, frame, bytes, at);
+    }
+
     public static nuint Alloc(nuint bytes)
     {
         nuint at = Gc.AllocWord(bytes, 0);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | 1, bytes, at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sample(Sys.FramePointer() | 1, bytes, at);
         return at;
     }
 
@@ -1836,7 +1859,7 @@ public static partial class Runtime
         nuint at = Gc.AllocWord(bytes, Gc.LeafKind);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | 2, bytes, at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sample(Sys.FramePointer() | 2, bytes, at);
         return at;
     }
 
@@ -1848,7 +1871,7 @@ public static partial class Runtime
         nuint at = Gc.AllocWord(bytes, Gc.ObjectKind);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | 3, bytes, at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sample(Sys.FramePointer() | 3, bytes, at);
         return at;
     }
 
@@ -2177,7 +2200,7 @@ public static partial class Runtime
     static nuint AllocRegionSlow(nuint bytes, nuint kind, nuint frame)
     {
         nuint at = Gc.AllocRegion(bytes, kind, 0, frame);
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | SampleKind(kind), bytes, at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sample(Sys.FramePointer() | SampleKind(kind), bytes, at);
         return at;
     }
 
@@ -2193,7 +2216,7 @@ public static partial class Runtime
     public static nuint AllocNear(nuint bytes, nuint kind, nuint owner, nuint frame)
     {
         nuint at = Gc.AllocRegion(bytes, kind, owner == 0 ? Gc.NoRecord : owner, frame);
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | SampleKind(kind), bytes, at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sample(Sys.FramePointer() | SampleKind(kind), bytes, at);
         return at;
     }
 

@@ -8050,6 +8050,7 @@ public static class Gc
             Sys.WriteAddress(from, need);
             Sys.WriteAddress(from + KindAt, kind);
             Sys.WriteAddress(from + need - FooterBytes, need);
+            Sys.WriteAddress(tb + Tls.Handed, from + HeaderBytes);
             GcLock.Exit();
             return from + HeaderBytes;
         }
@@ -8189,6 +8190,7 @@ public static class Gc
         Count(Sys.ThreadBlock(), (long)SizeOfBlock(block));
         Sys.WriteAddress(block + KindAt, kind);
         StampHandedOut(tb, block, 0);
+        Sys.WriteAddress(tb + Tls.Handed, block + HeaderBytes);
         GcLock.Exit();
         return block + HeaderBytes;
     }
@@ -8235,6 +8237,7 @@ public static class Gc
                 if (at != 0)
                 {
                     ShutLastTry();
+                    Sys.WriteAddress(tb + Tls.Handed, at);
                     GcLock.Exit();
                     return at;
                 }
@@ -8254,6 +8257,7 @@ public static class Gc
                     Sys.WriteAddress(block + KindAt, kind);
                     if (_heapCheck) CheckMade(block, "a bigger class's slot", 0);
                     ShutLastTry();
+                    Sys.WriteAddress(tb + Tls.Handed, block + HeaderBytes);
                     GcLock.Exit();
                     return block + HeaderBytes;
                 }
@@ -8283,6 +8287,7 @@ public static class Gc
                 if (_heapCheck) CheckMade(block, "class fallback", FooterBytes);
                 StampHandedOut(tb, block, 0);
                 ShutLastTry();
+                Sys.WriteAddress(tb + Tls.Handed, block + HeaderBytes);
                 GcLock.Exit();
                 return block + HeaderBytes;
             }
@@ -19491,6 +19496,7 @@ public static class GcThreads
             Gc.ScanRoots(block + Tls.ThreadStatics, block + Tls.ThreadStatics + WordSize.Bytes);
             Gc.ScanRoots(block + Tls.AsyncContext, block + Tls.AsyncContext + WordSize.Bytes);
             Gc.ScanRoots(block + Tls.Owner, block + Tls.Owner + WordSize.Bytes);
+            Gc.ScanRoots(block + Tls.Handed, block + Tls.Handed + WordSize.Bytes);
         }
         return true;
     }
@@ -19611,7 +19617,7 @@ public static class GcThreads
         // object there holds was the thread's at the snapshot as surely as
         // its stack's words were.
         nuint regionWords = Gc.RegionWords(block);
-        if (words == 0 && regionWords == 0)
+        if (words == 0 && regionWords == 0 && Sys.ReadAddress(block + Tls.Handed) == 0)
         {
             return;
         }
@@ -19624,8 +19630,9 @@ public static class GcThreads
         nuint slot = Sys.AtomicAdd(_stackCopies, 1u);
         // Room for a live register's value in every frame beside the stack's
         // own words (Gc.ScanOwnStack): twice them, mapped, and touched only
-        // as far as written; the arena's words after them.
-        nuint mapped = (2 * words + 16 + regionWords) * w;
+        // as far as written; the arena's words after them, and last the
+        // object the thread's last slow allocation handed out (Tls.Handed).
+        nuint mapped = (2 * words + 17 + regionWords) * w;
         nuint copy = slot < _stackCopiesFor ? Platform.Map(mapped) : NoCopy;
         if (copy == 0)
         {
@@ -19658,6 +19665,13 @@ public static class GcThreads
             kept = words;
         }
         kept = kept + Gc.CopyRegion(block, copy + kept * w);
+        // THE OBJECT IN HAND: preempted between the heap lock's release and
+        // the typed reference its caller keeps, a thread holds its new object
+        // only in words of the runtime's, which its own answer's stack maps
+        // pass over -- given a start bit at the hand-out, as a snapshot
+        // object, and reached by nothing, it was swept while still in use.
+        Sys.WriteAddress(copy + kept * w, Sys.ReadAddress(block + Tls.Handed));
+        kept = kept + 1;
         Sys.WriteAddress(CopyAt(slot) + w, kept * w);
         Sys.WriteAddress(CopyAt(slot) + 2 * w, mapped);
         Sys.AtomicSwap(CopyAt(slot), copy);
