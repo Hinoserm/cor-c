@@ -48,6 +48,49 @@ internal abstract class FamilyTarget
     /// <summary>What the function saves and how its frame stands, from the registers the allocation touched.</summary>
     protected abstract void Saved(AFunction f, IPlacement p);
 
+    /// <summary>The mode's registers as the allocator has them, for this function.</summary>
+    public abstract RegisterFile Registers { get; }
+
+    /// <summary>The class of a register: the general ones 0, the XMM ones 1 -- a machine register by its number, a virtual one by the function's record.</summary>
+    public int ClassOf(int reg) => reg < MReg.FirstVirtual ? (reg >= MReg.XmmBase ? 1 : 0) : _m.XmmRegs.Contains(reg) ? 1 : 0;
+
+    public bool Immediate(object constant) => constant is MImm;
+
+    /// <summary>What a mode finds out about the whole function before its instructions are lowered (the argument homes).</summary>
+    protected abstract void BeforeLowering();
+
+    /// <summary>One instruction as the allocator sees it: the registers it names, what may be memory or a constant, its jumps, its effects.</summary>
+    protected abstract AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks);
+
+    /// <summary>
+    /// THE FUNCTION AS THE ALLOCATOR SEES IT: a block for a block, each
+    /// instruction lowered once, and the blocks whose address something
+    /// holds (a label as an immediate or in a memory operand) marked.
+    /// </summary>
+    public AFunction Lower()
+    {
+        AFunction f = new() { Name = _m.Source.Name, Registers = Registers, Target = (ITarget)this, NextVReg = _m.NextVReg };
+        Dictionary<MBlock, ABlock> blocks = new(ReferenceEqualityComparer.Instance);
+        foreach (MBlock b in _m.Blocks)
+            blocks[b] = new ABlock { Name = b.Name, Tag = b, LandingPad = b.Source?.IsLandingPad == true };
+        BeforeLowering();
+        foreach (MBlock b in _m.Blocks)
+        {
+            ABlock ab = blocks[b];
+            foreach (MInstr i in b.Instrs)
+            {
+                ab.Instrs.Add(LowerInstr(i, blocks));
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MImm { Label: { } l } && blocks.TryGetValue(l, out ABlock? li)) li.AddressTaken = true;
+                    if (o is MMem { Label: { } ml } && blocks.TryGetValue(ml, out ABlock? mi)) mi.AddressTaken = true;
+                }
+            }
+            f.Blocks.Add(ab);
+        }
+        return f;
+    }
+
     public void Rebuild(AFunction f, IPlacement p)
     {
         Dictionary<ABlock, MBlock> blocks = new(ReferenceEqualityComparer.Instance);

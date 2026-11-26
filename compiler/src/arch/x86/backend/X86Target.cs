@@ -139,7 +139,7 @@ internal sealed class X86Target : FamilyTarget, ITarget
         return true;
     }
 
-    public RegisterFile Registers => _registers ??= Halved(_m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File);
+    public override RegisterFile Registers => _registers ??= Halved(_m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File);
 
     private RegisterFile? _registers;
 
@@ -160,13 +160,11 @@ internal sealed class X86Target : FamilyTarget, ITarget
             },
         },
     };
-    public int ClassOf(int reg) => reg < MReg.FirstVirtual ? (reg >= MReg.XmmBase ? 1 : 0) : _m.XmmRegs.Contains(reg) ? 1 : 0;
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
     /// <summary>A slot of a word, or one an XMM value's moves fill -- eight bytes, sixteen for a Packed128's (MFunction.XmmSpillWidth).</summary>
     public int NewSlot(int vreg) => _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(Math.Max(8, _m.XmmSpillWidth), 8) : _m.Frame.Spill();
     public string RegName(int reg) => reg >= MReg.XmmBase ? $"xmm{reg - MReg.XmmBase}" : X86Mode.GprName(reg);
     public bool PlainConstant(object constant) => constant is MImm { IsPlain: true };
-    public bool Immediate(object constant) => constant is MImm;
 
     /// <summary>
     /// An address an LEA makes from nothing the allocator places -- off EBP,
@@ -209,32 +207,7 @@ internal sealed class X86Target : FamilyTarget, ITarget
     public string Text(AInstr i) => i.Tag is MInstr m ? AsmText.Line(_m, m)
         : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
 
-    /// <summary>The function in the allocator's form.</summary>
-    public AFunction Lower()
-    {
-        AFunction f = new() { Name = _m.Source.Name, Registers = Registers, Target = this, NextVReg = _m.NextVReg };
-        Dictionary<MBlock, ABlock> blocks = new(ReferenceEqualityComparer.Instance);
-        foreach (MBlock b in _m.Blocks)
-            blocks[b] = new ABlock { Name = b.Name, Tag = b, LandingPad = b.Source?.IsLandingPad == true };
-        _homes = Homes();
-        foreach (MBlock b in _m.Blocks)
-        {
-            ABlock ab = blocks[b];
-            foreach (MInstr i in b.Instrs)
-            {
-                ab.Instrs.Add(LowerInstr(i, blocks));
-                foreach (MOperand o in i.Operands)
-                {
-                    if (o is MImm { Label: { } l } && blocks.TryGetValue(l, out ABlock? li)) li.AddressTaken = true;
-                    if (o is MMem { Label: { } ml } && blocks.TryGetValue(ml, out ABlock? mi)) mi.AddressTaken = true;
-                }
-            }
-            f.Blocks.Add(ab);
-        }
-        return f;
-    }
-
-    private AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
+    protected override AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
     {
         List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = Allocator.RegsOf(i, _regs);
         // In a leaf the frame's base is no use of the register EBP holds:
@@ -334,6 +307,8 @@ internal sealed class X86Target : FamilyTarget, ITarget
     }
 
     private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
+
+    protected override void BeforeLowering() => _homes = Homes();
 
     /// <summary>A float home's width, by its offset: reloaded as it was loaded, never past its argument's bytes.</summary>
     private readonly Dictionary<int, int> _homeWidths = new();

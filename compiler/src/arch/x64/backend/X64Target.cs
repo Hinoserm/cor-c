@@ -151,11 +151,8 @@ internal sealed class X64Target : FamilyTarget, ITarget
         return true;
     }
 
-    public RegisterFile Registers => _m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File;
+    public override RegisterFile Registers => _m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File;
 
-    public int ClassOf(int reg) => reg < MReg.FirstVirtual
-        ? (reg >= MReg.XmmBase ? Xmms : Gprs)
-        : (_m.XmmRegs.Contains(reg) ? Xmms : Gprs);
 
     /// <summary>Every general register has a byte form under REX.</summary>
     public bool ByteOnly(int vreg) => false;
@@ -164,34 +161,11 @@ internal sealed class X64Target : FamilyTarget, ITarget
     public string RegName(int reg) => new MReg(reg).ToString();
     /// <summary>A constant any operand carries: one that fits 32 bits signed (an instruction's immediate, sign-extended).</summary>
     public bool PlainConstant(object constant) => constant is MImm { FitsInt32: true };
-    public bool Immediate(object constant) => constant is MImm;
 
     public string Text(AInstr i) => i.Tag is MInstr m ? $"{m.Op} {string.Join(", ", m.Operands)}"
         : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
 
-    /// <summary>The function in the allocator's form.</summary>
-    public AFunction Lower()
-    {
-        AFunction f = new() { Name = _m.Source.Name, Registers = Registers, Target = this, NextVReg = _m.NextVReg };
-        Dictionary<MBlock, ABlock> blocks = new(ReferenceEqualityComparer.Instance);
-        foreach (MBlock b in _m.Blocks)
-            blocks[b] = new ABlock { Name = b.Name, Tag = b, LandingPad = b.Source?.IsLandingPad == true };
-        _homes = Homes();
-        foreach (MBlock b in _m.Blocks)
-        {
-            ABlock ab = blocks[b];
-            foreach (MInstr i in b.Instrs)
-            {
-                ab.Instrs.Add(LowerInstr(i, blocks));
-                foreach (MOperand o in i.Operands)
-                    if (o is MMem { Label: { } ml } && blocks.TryGetValue(ml, out ABlock? mi)) mi.AddressTaken = true;
-            }
-            f.Blocks.Add(ab);
-        }
-        return f;
-    }
-
-    private AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
+    protected override AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
     {
         List<Named> named = new();
         foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i))
@@ -307,6 +281,8 @@ internal sealed class X64Target : FamilyTarget, ITarget
     }
 
     private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
+
+    protected override void BeforeLowering() => _homes = Homes();
 
     /// <summary>
     /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot): `mov v, [rbp+d]` of a
