@@ -698,20 +698,24 @@ public sealed partial class Lowering
     public const int TlsBytes = 228;
 
     /// <summary>THE SIZE OF ThreadBlock0, the block of a thread no platform
-    /// gives one: the runtime's Tls.Bytes as it is bound for this target,
-    /// where this compilation has it, and never less than TlsBytes scaled by
-    /// the word. Read from the runtime, so that a slot added there needs no
-    /// change here -- by hand the two drifted once, and the last slot was
-    /// read past the block.</summary>
-    int ThreadBlockBytes()
+    /// gives one: in the compilation of the runtime (`runtime`, its Runtime
+    /// type), that runtime's Tls.Bytes as bound for this target, so that a
+    /// slot added there needs no change here -- by hand the two drifted
+    /// once, and the last slot was read past the block. A runtime whose Tls
+    /// has no Bytes bound is refused rather than given the floor, the very
+    /// drift this is for; a program with no runtime has the floor, TlsBytes
+    /// scaled by the word, whatever types of its own it names Tls.</summary>
+    int ThreadBlockBytes(TypeSymbol? runtime)
     {
         int bytes = TlsBytes / 4 * _t.WordSize;
-        if (_b.Types.TryGetValue("Tls", out TypeSymbol? tls)
-            && _b.Constants.TryGetValue((tls, "Bytes"), out long runtime) && runtime > bytes && runtime < 1 << 16)
+        if (runtime is null || !_b.Types.TryGetValue("Tls", out TypeSymbol? tls)) return bytes;
+        if (!_b.Constants.TryGetValue((tls, "Bytes"), out long bound) || bound < bytes || bound >= 1 << 16)
         {
-            bytes = (int)runtime;
+            Errors.Add(new CompileError(_in, 0, 0,
+                $"the runtime's Tls.Bytes ({(_b.Constants.ContainsKey((tls, "Bytes")) ? bound.ToString() : "not bound")}) cannot size the main thread's block: at least {bytes} bytes, under 64 KiB"));
+            return bytes;
         }
-        return bytes;
+        return (int)bound;
     }
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
@@ -895,7 +899,7 @@ public sealed partial class Lowering
             // is one thread block for the process and it is the library's,
             // and a program carrying a second one would have a handler chain
             // and an allocation buffer nothing else could see.
-            _m.Data.Add(new DataItem(ThreadBlock0, new byte[ThreadBlockBytes()]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
+            _m.Data.Add(new DataItem(ThreadBlock0, new byte[ThreadBlockBytes(ownsRuntime ? runtimeOwner : null)]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
             _m.Data.Add(new DataItem(ThreadBlockSelf, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
             // Windows: the TLS slot's number, which every read of the block
             // names (Selector.TlsBaseSymbol) and the runtime fills from TlsAlloc.

@@ -513,10 +513,14 @@ public static class Tls
     /// release is a preemption point (Runtime.PreemptHook), where a kernel
     /// parks the thread and it answers for itself so. The sampler's call
     /// (Runtime.Sample) writes it too, unlocked, with whatever block it is
-    /// shown, a region's among them. THE FAST PATHS NEED NONE: between the
-    /// pop or bump and their return they make no call -- an interrupt there
-    /// leaves the registers in a frame no map describes, read whole -- and
-    /// a preemption with Tls.InAlloc set is refused. Overwritten by the next
+    /// shown, a region's among them. THE FAST PATHS NEED NONE: up to their
+    /// store of 0 to Tls.InAlloc a preemption is refused, and from it to
+    /// their return they call nothing that reaches a preemption point (the
+    /// heap check's reports, PaintGuard and CheckMade, take no lock), so a
+    /// thread stopped there is stopped by an interrupt, whose registers lie
+    /// in a frame no map describes, read whole. A region's block (AllocRegion,
+    /// which sets no InAlloc) is no heap block: its arena is read with the
+    /// thread's stack (Gc.ScanRegion, Gc.CopyRegion). Overwritten by the next
     /// one and cleared at the thread's end (Runtime.EndThread): a thread
     /// keeps at most one object alive this way, until it makes another --
     /// never cleared sooner, as a thread parked in the window may be so
