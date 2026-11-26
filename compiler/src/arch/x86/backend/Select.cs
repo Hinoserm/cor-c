@@ -1343,8 +1343,8 @@ internal sealed partial class Selector
         EmitW(MOp.Fstp, FWidth(d.Type), FHome(d));
     }
 
-    private static MMem Displaced(MMem source, int delta) => new(source.Base, source.Disp + delta)
-    { Index = source.Index, Scale = source.Scale, Symbol = source.Symbol, Reloc = source.Reloc, Label = source.Label, IsSpill = source.IsSpill, Device = source.Device };
+    // (Everything of the reference kept, a device's mark among it: MMem.WithDisp.)
+    private static MMem Displaced(MMem source, int delta) => source.WithDisp(delta);
 
     // Copy bits, not numbers: this also preserves signaling-NaN payloads and
     // avoids touching x87 state for ordinary same-width floating-point moves.
@@ -3858,7 +3858,14 @@ internal sealed partial class Selector
         }
     }
 
-    private void SelectStore(Instr i) => StoreFrom(Address(i.Operands[0], i.Offset), i.StoredValue, i.Size);
+    private void SelectStore(Instr i)
+    {
+        MMem m = Address(i.Operands[0], i.Offset);
+        // A device's register (Instr.Device): the operand says so to every
+        // pass after (MMem.Device), as a device's load's does.
+        if (i.Device) m = m.AsDevice();
+        StoreFrom(m, i.StoredValue, i.Size);
+    }
 
     /// <summary>`size` bytes of v at `m`: SelectStore's, and an asm block's slot filled (TryInlineAsm, TryInlineAsmL).</summary>
     private void StoreFrom(MMem m, Operand v, int size)

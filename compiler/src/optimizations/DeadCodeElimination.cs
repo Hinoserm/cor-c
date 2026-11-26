@@ -123,6 +123,7 @@ public sealed class DeadCodeElimination : IPass
                     }
                     if (next.Op == Opcode.Store)
                     {
+                        if (next.Device) break;
                         fresh ??= Fresh(f);
                         if (next.Operands[0] is RegOperand at && fresh.Contains(at.Reg)) continue;
                         break;

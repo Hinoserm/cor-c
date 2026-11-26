@@ -127,11 +127,11 @@ public sealed class Builder
     public VReg Load(IrType type, VReg address, long offset = 0, int size = 0, bool signed = true, bool device = false, bool immutable = false)
         => Load(type, R(address), offset, size, signed, device, immutable);
 
-    public void Store(Operand address, Operand value, long offset = 0, int size = 0)
+    public void Store(Operand address, Operand value, long offset = 0, int size = 0, bool device = false)
         => Append(new Instr
         {
             Op = Opcode.Store, Operands = { address, value },
-            Offset = offset, Size = size == 0 ? value.Type.Bytes() : size,
+            Offset = offset, Size = size == 0 ? value.Type.Bytes() : size, Device = device,
         });
 
     public void Store(VReg address, VReg value, long offset = 0, int size = 0)

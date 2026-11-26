@@ -49,6 +49,15 @@ public sealed class Dse : IPass
                 Instr i = b.Instrs[k];
                 switch (i.Op)
                 {
+                    // A DEVICE'S READ OR WRITE (Instr.Device) is never dead and
+                    // never covers another: every store before it is read
+                    // by whatever it sets going.
+                    case Opcode.Store when i.Device:
+                    case Opcode.Load when i.Device:
+                        covered.Clear();
+                        slotsDead = false;
+                        continue;
+
                     case Opcode.Store:
                         {
                             Operand addr = i.Operands[0];

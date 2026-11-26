@@ -87,17 +87,24 @@ public sealed partial class Lowering
                 return _e.Load(IrType.I32, Address(call, target, 0), 0, 4, signed: false, device: true);
             case "Read64":
                 return _e.Load(IrType.I64, Address(call, target, 0), 0, 8, device: true);
+            // A DEVICE'S REGISTER WRITTEN (Instr.Device), as it is read above:
+            // made when and as often as the source says and in its order --
+            // never dropped as dead, never merged with another, never moved
+            // past any other read or write of memory, a device's or the
+            // program's own (a descriptor stored in memory and then the
+            // doorbell rung; a reset bit set and then cleared). Linux's
+            // writel: no fence instruction, the compiler's order kept.
             case "Write8":
-                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 1);
+                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 1, device: true);
                 return Void();
             case "Write16":
-                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 2);
+                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 2, device: true);
                 return Void();
             case "Write32":
-                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 4);
+                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 4, device: true);
                 return Void();
             case "Write64":
-                _e.Store(R(Address(call, target, 0)), R(ToI64(Arg(call, target, 1))), 0, 8);
+                _e.Store(R(Address(call, target, 0)), R(ToI64(Arg(call, target, 1))), 0, 8, device: true);
                 return Void();
             // A WORD, the collector's: an ordinary load and store.
             case "ReadAddress":

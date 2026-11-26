@@ -55,8 +55,10 @@ public static class IrInfo
                 // A load through a register may fault on a bad address, and
                 // the program is entitled to that fault; one from a static
                 // or a frame slot addresses memory the program owns, and an
-                // immutable one data the link made (Instr.Immutable).
-                return i.Operands[0] is SymOperand or SlotOperand || i.Immutable && !i.Device;
+                // immutable one data the link made (Instr.Immutable). A
+                // device's read (Instr.Device) is never one to drop or to
+                // take for another, wherever its address comes from.
+                return !i.Device && (i.Operands[0] is SymOperand or SlotOperand || i.Immutable);
             case Opcode.Copy:
             case Opcode.Add:
             case Opcode.Sub:

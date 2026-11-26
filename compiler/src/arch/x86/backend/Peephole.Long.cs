@@ -47,8 +47,9 @@ internal static partial class Peephole
     /// block was already a 32-bit result, the hardware zeroed that half then
     /// -- every 32-bit write to a general register does -- and the move
     /// goes: `movzx eax, word [m]` followed by `mov eax, eax` was every char
-    /// load. After MOVSX, whose destination is 64 bits, the move is the
-    /// zero-extension and stays.
+    /// load. After a MOVSX into the whole register, the sign through all
+    /// sixty-four bits, the move is the zero-extension and stays; one into
+    /// the low half (MInstr.To32) is a 32-bit result like any other.
     /// </summary>
     private static void DropZeroExtensions(List<MInstr> s)
     {
@@ -209,7 +210,8 @@ internal static partial class Peephole
     /// <summary>
     /// Whether the instruction's write of the register replaces all 64 bits
     /// of it: a 32-bit result (ZeroExtended), or a 64-bit write of it alone
-    /// (MOVSX's destination is always 64 bits). Not a partial or a
+    /// (MOVSX writes the whole register either way: the sign through it, or
+    /// into the low half with the upper cleared). Not a partial or a
     /// conditional one -- a byte's SETcc, CMOVcc, CMPXCHG's accumulator.
     /// </summary>
     private static bool WritesWhole(MInstr i, int reg)
@@ -252,8 +254,9 @@ internal static partial class Peephole
     /// <summary>
     /// Whether an instruction's write of the register is a 32-bit result,
     /// whose upper half the hardware zeroes: a 4-byte move or ALU operation
-    /// into it, a shift by a count that is not zero, or MOVZX, whose
-    /// destination is 32 bits. A shift by zero, CMOV, SETcc, a 64-bit form
+    /// into it, a shift or a rotate by a count that is not zero, MOVZX,
+    /// whose destination is 32 bits, or a MOVSX into the low half
+    /// (MInstr.To32). A shift by zero, CMOV, SETcc, a 64-bit form
     /// and anything not named here count as not.
     /// </summary>
     private static bool ZeroExtended(MInstr i, int reg)
@@ -283,7 +286,8 @@ internal static partial class Peephole
             MOp.Movsx => i.To32,
             MOp.Mov or MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Adc or MOp.Sbb
                 or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Not => i.Width == 4,
-            MOp.Shl or MOp.Shr or MOp.Sar => i.Width == 4 && i.Operands.Count == 2 && i.Operands[1] is MImm { IsPlain: true } count && (count.Value & 31) != 0,
+            // (A rotate as a shift: by a count that is not zero it writes its 32-bit result.)
+            MOp.Shl or MOp.Shr or MOp.Sar or MOp.Rol or MOp.Ror => i.Width == 4 && i.Operands.Count == 2 && i.Operands[1] is MImm { IsPlain: true } count && (count.Value & 31) != 0,
             _ => false,
         };
     }

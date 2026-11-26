@@ -15,6 +15,8 @@
 // 17246217529106331654 1998854405802556896 10808041090504687071 14627392582107119343 16537068327908335479 13644637895296671771
 // 655884233731895160 12379813738877118345 17685063433767583854 18370198130093125578
 // -71417082090924133 -2449317685342546021
+// 2085445231 1851258752 201326592 4156872166 115703672 12582912
+// 81985532403188584 16045690984532037611 18446744071565213697
 //
 // `(x >> r) | (x << (bits - r))` of an unsigned value is one ROR where the
 // selector sees it whole: thirty-two bits in both modes, and in long mode a
@@ -46,6 +48,13 @@ static class Program
 
     [MethodImpl(MethodImplOptions.NoInlining)] static long Signed(long x) => (x >> 7) | (x << 57);
 
+    // Thirty-two bits rotated inside a sixty-four-bit value: masked before
+    // and after; known to have a zero upper half (a uint widened); and the
+    // value rotated still wanted whole after.
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong Masked(ulong x) => ((x & 0xFFFFFFFF) >> 5 | (x & 0xFFFFFFFF) << 27) & 0xFFFFFFFF;
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong ZeroHigh(ulong x) { ulong low = (uint)x; return (low >> 9 | low << 23) & 0xFFFFFFFF; }
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong UsedAfter(ulong x) { uint low = (uint)x; uint turned = (low >> 11) | (low << 21); return turned + x; }
+
     static int Main()
     {
         uint[] small = { 0, 1, 0x80000000, 0x12345678, 0xFFFFFFFF, 0xDEADBEEF };
@@ -55,6 +64,9 @@ static class Program
         // (Two values each: one alone is folded into the function.)
         Console.WriteLine(L3(wide[3]) + " " + L40(wide[3]) + " " + L3(wide[5]) + " " + L40(wide[5]));
         Console.WriteLine(Signed(unchecked((long)0x8123456789ABCDEF)) + " " + Signed(0x0123456789ABCDEF));
+        ulong[] mixed = { 0x0123456789ABCDEF, 0xDEADBEEFCAFEF00D, 0xFFFFFFFF80000001 };
+        Console.WriteLine(Masked(mixed[0]) + " " + Masked(mixed[1]) + " " + Masked(mixed[2]) + " " + ZeroHigh(mixed[0]) + " " + ZeroHigh(mixed[1]) + " " + ZeroHigh(mixed[2]));
+        Console.WriteLine(UsedAfter(mixed[0]) + " " + UsedAfter(mixed[1]) + " " + UsedAfter(mixed[2]));
         return 0;
     }
 }

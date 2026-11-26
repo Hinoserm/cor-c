@@ -1,0 +1,88 @@
+// test: a device's register written by Sys.Write8..64 is written when and as often as the source says, in its order with every other read and write of memory
+// expect-exit: 0
+// expect-output:
+// 7 9 16
+// 3 0 2 21
+// 5 5 10
+// 40
+//
+// Sys.Read8..64 and Sys.Write8..64 are a device's register read and written
+// (Instr.Device): no write is dropped because another follows to the same
+// place, none is merged with another, none moves past another read or write
+// of memory, and what memory held before one is not taken to hold after it
+// -- the device may have written it. Here the "device" is memory the
+// program owns, so the values say only that the code is right; the script
+// beside this reads the image for what the output cannot show: every write
+// there, in order.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static ulong _register;
+    static ulong _memory;
+
+    // The descriptor written to memory, then the doorbell: two writes of the
+    // register (set, then clear), the first not dead for the second's sake.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Ring(nuint register, nuint memory, uint value)
+    {
+        Sys.WriteAddress(memory, value);
+        Sys.Write32(register, 1);
+        Sys.Write32(register, 0);
+        Sys.WriteAddress(memory, value + 2);
+        Sys.Write32(register, value + 9);
+    }
+
+    // Memory read on both sides of a device's read: two loads, the second no
+    // copy of the first.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static nuint Status(nuint register, nuint memory)
+    {
+        nuint before = Sys.ReadAddress(memory);
+        uint status = Sys.Read32(register);
+        nuint after = Sys.ReadAddress(memory);
+        return before + after + status;
+    }
+
+    // Every width; a read nobody uses still made.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong Widths(nuint register)
+    {
+        Sys.Write64(register, 0);
+        Sys.Write8(register, 3);
+        Sys.Write16(register + 2, 2);
+        Sys.Read32(register);
+        Sys.Write8(register + 1, 0);
+        return Sys.Read8(register) + (ulong)Sys.Read8(register + 1) * 100 + (ulong)Sys.Read16(register + 2) * 10000 + Sys.Read64(register) / 0x20003 * 1000000;
+    }
+
+    // In a loop: the memory's load not taken out past the register's write.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static nuint Polled(nuint register, nuint memory, int laps)
+    {
+        nuint sum = 0;
+        for (int i = 0; i < laps; i++)
+        {
+            Sys.Write32(register, (uint)i);
+            sum += Sys.ReadAddress(memory);
+        }
+        return sum;
+    }
+
+    static int Main()
+    {
+        nuint register = Sys.AddressOf(ref _register), memory = Sys.AddressOf(ref _memory);
+        Ring(register, memory, 7);
+        Console.WriteLine(_memory - 2 + " " + _memory + " " + _register);
+        ulong widths = Widths(register);
+        Console.WriteLine(widths % 100 + " " + widths / 100 % 100 + " " + widths / 10000 % 100 + " " + (_register == 0x20003 ? 21 : 0));
+        _memory = 5;
+        _register = 0;
+        Console.WriteLine(_memory + " " + _memory + " " + Status(register, memory));
+        _memory = 10;
+        Console.WriteLine(Polled(register, memory, 4));
+        return 0;
+    }
+}

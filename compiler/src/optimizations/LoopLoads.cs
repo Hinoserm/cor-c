@@ -283,9 +283,12 @@ public sealed class LoopLoads : IPass
         foreach (Block b in loop)
             foreach (Instr i in b.Instrs)
             {
+                // A device's read or write in the loop (Instr.Device): no
+                // load is the same before the loop as beside it.
+                if (i.Device) return null;
                 if (i.Op == Opcode.Store)
                 {
-                    if (i.Device || i.Operands.Count == 0) return null;
+                    if (i.Operands.Count == 0) return null;
                     switch (i.Operands[0])
                     {
                         case SymOperand { Name: var cell } when cell.StartsWith("s_", StringComparison.Ordinal) || cell.StartsWith("ts_", StringComparison.Ordinal):

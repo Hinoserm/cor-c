@@ -42,7 +42,12 @@ public sealed class NullCheckFold : IPass
             for (int k = 0; k < block.Instrs.Count; k++)
             {
                 Instr check = block.Instrs[k];
-                if (check.Op != Opcode.Load || check.Dest is not { } dest || check.Operands.Count != 1
+                // (A DEVICE'S READ IS NO CHECK, whoever uses its value: reading
+                // the register is what the program asked -- a status read
+                // that clears it -- and it is made, Instr.Device. Taken for a
+                // null check, one whose value nothing used went wherever
+                // another access through the same address stood beside it.)
+                if (check.Op != Opcode.Load || check.Device || check.Dest is not { } dest || check.Operands.Count != 1
                     || check.Operands[0] is not RegOperand { Reg: var receiver } || check.Offset is < 0 or >= Covered) continue;
                 used ??= Used(function);
                 if (used.Contains(dest)) continue;

@@ -177,9 +177,15 @@ public sealed class Gvn : IPass
 
             switch (i.Op)
             {
-                // A DEVICE'S READ is made every time (Instr.Device): nothing
-                // answers it, and it answers nothing after it.
+                // A DEVICE'S READ OR WRITE is made every time (Instr.Device):
+                // nothing answers it, and it answers nothing after it. And
+                // what memory held before it is not known to hold after: the
+                // device may have written it (a status read, then the
+                // descriptor it says is ready), so no load after is an
+                // earlier one's value, nor an earlier store's.
                 case Opcode.Load when i.Device:
+                case Opcode.Store when i.Device:
+                    mem.Clear();
                     continue;
                 // WHAT NEVER CHANGES (Instr.Immutable): numbered as a value,
                 // its address, offset and width, kept across every store and
