@@ -17789,11 +17789,14 @@ public static class HeapChunks
         {
             return 0;
         }
-        nuint raw = Platform.Map(n * pageBytes);
+        // Each page of the batch is given back alone (RetirePage,
+        // Unmapped): said to the platform, whose kernel checks each give-back
+        // against the mapping it made (Platform.MapPieces).
+        nuint raw = Platform.MapPieces(n * pageBytes, pageBytes);
         if (raw == 0 && n > 1)
         {
             n = 1;
-            raw = Platform.Map(pageBytes);
+            raw = Platform.MapPieces(pageBytes, pageBytes);
         }
         if (raw == 0)
         {

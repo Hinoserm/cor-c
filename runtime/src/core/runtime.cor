@@ -1385,6 +1385,9 @@ public static partial class Runtime
     //
     //   long Platform.Map(nuint bytes)               fresh ZEROED, page-aligned
     //                                               memory of `bytes`, or 0
+    //   long Platform.MapPieces(nuint bytes, nuint piece)
+    //                                               the same, given back in
+    //                                               pieces of `piece` bytes
     //   void Platform.Exit(int code)                does not return
     //   long Platform.WriteBytes(int fd, nuint at, long count)
     //                                               bytes written, or -errno

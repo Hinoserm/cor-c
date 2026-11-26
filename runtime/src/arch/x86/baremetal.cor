@@ -254,7 +254,11 @@ public static class Platform
     /// region below is only what was handed out before they existed.
     // HOOKS: a method's address (Sys.AddressOf) called by Sys.Call, so each
     // declares (nuint, nuint, nuint) and answers a nuint -- a word an argument.
-    // MapHook(bytes, 0, 0) -> address; UnmapHook(at, bytes, 0).
+    // MapHook(bytes, pieces, 0) -> address; UnmapHook(at, bytes, 0).
+    // `pieces` says how the mapping comes back (MapPieces): its low bit set
+    // is this runtime saying -- 1 alone, given back whole; a page multiple
+    // with the bit, given back in pieces of that size -- and 0 is an older
+    // runtime's, which says nothing (the kernel takes it at page grain).
     public static nuint MapHook;
     public static nuint UnmapHook;
 
@@ -399,8 +403,14 @@ public static class Platform
     /// Fresh, zeroed, page-aligned memory of `bytes`, or 0 when there is
     /// none: the region's given back (Unmap) first, then the kernel's once
     /// it has installed MapHook, and the bump region's until then -- every
-    /// piece of the region whole pages (RegionPage).
-    public static nuint Map(nuint bytes)
+    /// piece of the region whole pages (RegionPage). Given back whole.
+    public static nuint Map(nuint bytes) { return MapPieces(bytes, 0); }
+
+    /// As Map, for memory given back in pieces of `piece` bytes (a page
+    /// multiple: HeapChunks.TakePages' batch, each page given back alone),
+    /// which the kernel's MapHook is told so that it checks each give-back
+    /// against the mapping it made; 0 is whole.
+    public static nuint MapPieces(nuint bytes, nuint piece)
     {
         // NO SIZE PAST THE LAST PAGE: rounded up, it would wrap to nothing
         // on i386, and the free ranges hand out their first for nothing.
@@ -420,7 +430,7 @@ public static class Platform
         }
         if (MapHook != 0)
         {
-            return Sys.Call(MapHook, bytes, 0, 0);
+            return Sys.Call(MapHook, bytes, piece | 1, 0);
         }
 
         if (_limit == 0)

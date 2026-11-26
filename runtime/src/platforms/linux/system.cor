@@ -379,6 +379,9 @@ public static class Platform
         return at;
     }
 
+    /// As Map: Linux unmaps any page range of a mapping, so how it comes back is no word of its.
+    public static nuint MapPieces(nuint bytes, nuint piece) { return Map(bytes); }
+
     public static nuint Map(nuint bytes)
     {
         // PROT_READ | PROT_WRITE = 3; MAP_PRIVATE | MAP_ANONYMOUS = 0x22;
