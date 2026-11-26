@@ -1429,7 +1429,7 @@ internal sealed partial class Selector
         // the class's registers (Select.PackedValues), a value taken or
         // not, so its packed state is none in every block and the class
         // keeps every XMM register; its spills are of the whole register
-        // wherever a function names a packed operation.
+        // wherever a function names an operation on them.
         bool longMode = X86Mode.Long;
         // (Where it makes a value in one: a function that only fences,
         // prefetches or stores a word around the caches keeps its frame as it was.)
@@ -1543,11 +1543,6 @@ internal sealed partial class Selector
     }
 
     /// <summary>
-    /// Incoming arguments sit above the return address; the integer ones are
-    /// loaded into their virtual registers here and the float ones simply
-    /// have their home declared to be the argument slot.
-    /// </summary>
-    /// <summary>
     /// THE PARAMETERS FROM WHERE THE CONVENTION PUT THEM (Conventions.
     /// Current's plan of the function's signature), both modes: each one a
     /// register carries from its register, first thing -- the register is
@@ -1573,7 +1568,8 @@ internal sealed partial class Selector
             VReg p = _f.Params[k];
             if (!longMode) Mov(Lo(p), MReg.Of(place.Register));
             else if (place.Kind == PlaceKind.Float) EmitW(MOp.MovF, Width(p.Type), V(p), MReg.Xmm(place.Register));
-            else MovL(V(p), MReg.Of(place.Register), Width(p.Type));
+            else if (p.Type.IsInt()) MovL(V(p), MReg.Of(place.Register), Width(p.Type));
+            else Error($"parameter {p} has type {p.Type}");
         }
         for (int k = 0; k < types.Length; k++)
         {
@@ -4403,50 +4399,77 @@ internal sealed partial class Selector
         {
             Emit(MOp.Add, Esp, Imm(bytes));
         }
-        if (d is null)
-        {
-            return;
-        }
-        switch (d.Type)
-        {
-            case IrType.I32:
-                Mov(Lo(d), Eax);
-                break;
-            case IrType.I64:
-                Mov(Lo(d), Eax);
-                Mov(Hi(d), Edx);
-                break;
-            default:
-                Fstp(d);
-                break;
-        }
+        if (d is not null) TakeResult(d);
     }
 
+    /// <summary>
+    /// A CALL'S RESULT FROM WHERE THE CONVENTION BRINGS IT BACK (Conventions.
+    /// Current's Result), both modes: long mode's from RAX or XMM0; i386's
+    /// a word from EAX, a 64-bit integer's two from EAX and EDX, a float
+    /// off the x87's stack.
+    /// </summary>
+    private void TakeResult(VReg d)
+    {
+        ArgPlace[] back = Conventions.Current.Result(d.Type);
+        if (X86Mode.Long)
+        {
+            if (back[0].Kind == PlaceKind.Float) EmitW(MOp.MovF, Width(d.Type), V(d), MReg.Xmm(back[0].Register));
+            else MovL(V(d), MReg.Of(back[0].Register), Width(d.Type));
+            return;
+        }
+        if (back[0].Kind == PlaceKind.FloatStack)
+        {
+            Fstp(d);
+            return;
+        }
+        Mov(Lo(d), MReg.Of(back[0].Register));
+        if (back.Length > 1) Mov(Hi(d), MReg.Of(back[1].Register));
+    }
+
+    /// <summary>
+    /// A RETURN: the value into the convention's place for it (Conventions.
+    /// Current's Result), then the way out -- which says what carries the
+    /// value, for the registers the instruction reads (Implicit.Uses): by
+    /// its width on i386 (EAX, or EDX with it), by the counts in long mode.
+    /// </summary>
     private void SelectRet(Instr i)
     {
+        bool longMode = X86Mode.Long;
+        int ints = 0, floats = 0, width = 0;
         if (i.Operands.Count > 0)
         {
             Operand v = i.Operands[0];
-            switch (v.Type)
+            ArgPlace[] back = Conventions.Current.Result(v.Type);
+            if (longMode)
             {
-                case IrType.I32:
-                    Mov(Eax, RM(v));
-                    break;
-                case IrType.I64:
+                if (back[0].Kind == PlaceKind.Float)
                 {
-                    (MOperand lo, MOperand hi) = PairRM(v);
-                    Mov(Eax, lo);
-                    Mov(Edx, hi);
-                    break;
+                    EmitW(MOp.MovF, Width(v.Type), MReg.Xmm(back[0].Register), F(v));
+                    floats = 1;
                 }
-                default:
-                    Fld(v);
-                    break;
+                else
+                {
+                    int w = Width(v.Type);
+                    MOperand src = RML(v, w);
+                    MovL(MReg.Of(back[0].Register), src, w);
+                    ints = 1;
+                }
+            }
+            else if (back[0].Kind == PlaceKind.FloatStack) Fld(v);
+            else if (back.Length == 1)
+            {
+                Mov(MReg.Of(back[0].Register), RM(v));
+                width = 4;
+            }
+            else
+            {
+                (MOperand lo, MOperand hi) = PairRM(v);
+                Mov(MReg.Of(back[0].Register), lo);
+                Mov(MReg.Of(back[1].Register), hi);
+                width = 8;
             }
         }
-        // The width says which of EAX and EDX carry the value out (see Implicit.Uses).
-        int width = i.Operands.Count == 0 ? 0 : i.Operands[0].Type switch { IrType.I32 => 4, IrType.I64 => 8, _ => 0 };
-        Emit(new MInstr(MOp.Epilogue) { Width = width });
+        Emit(longMode ? new MInstr(MOp.Epilogue) { IntArgs = ints, FloatArgs = floats } : new MInstr(MOp.Epilogue) { Width = width });
     }
 
     // ---- control ---------------------------------------------------------------------

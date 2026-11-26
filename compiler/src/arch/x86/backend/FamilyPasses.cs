@@ -60,18 +60,23 @@ internal static class FamilyPasses
     ///
     /// THE STACK AT SIXTEEN BEFORE EVERY CALL is what this stands on, and
     /// hosted code is entered no other way: the process's entry realigns
-    /// (RealignsStack, itself left out), a thread starts on a stack its
-    /// trampoline aligns, the kernel enters a signal's handler as the ABI
-    /// says, and every call this backend makes keeps the sixteen
+    /// (RealignsStack, itself left out), a thread starts on a stack the
+    /// runtime's trampoline aligns (platforms/linux/threading.cor), the
+    /// kernel enters a signal's handler as the ABI says (test 2336 runs
+    /// spilling code on each), and every call this backend makes keeps
+    /// the sixteen
     /// (Conventions.SystemV). FREESTANDING code is entered by whatever
     /// wrote its stubs -- an interrupt's frame with or without an error
     /// code, a context switch -- and is promised nothing: its packed
-    /// spills stay MOVUPS's.
+    /// spills stay MOVUPS's. Which it is, is the function's own word
+    /// (MFunction.StackAtSixteen, from the unit's contract): a unit made
+    /// again at the link is compiled by another process, which reads it
+    /// from the unit.
     /// </summary>
     private static void AlignedSpills(MFunction m)
     {
         if (m.XmmSpillWidth != 16 || m.Frameless || m.FramePointerFree || m.ColdFrames || m.RealignsStack) return;
-        if (Corsac.Lang.Lower.Lowering.Freestanding) return;
+        if (!m.StackAtSixteen) return;
         foreach (MBlock b in m.Blocks)
             foreach (MInstr i in b.Instrs)
             {

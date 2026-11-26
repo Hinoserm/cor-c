@@ -189,6 +189,16 @@ public sealed class MFunction
     /// </summary>
     public bool RealignsStack { get; set; }
 
+    /// <summary>
+    /// Long mode: whether the function is entered with the stack at sixteen
+    /// before its call, as System V says -- hosted code's, every way into
+    /// which keeps it (X64Backend.Hosted). Freestanding code is entered by
+    /// its image's own stubs (an interrupt's frame, a context switch) and
+    /// is promised nothing. What a packed spill slot's MOVAPS stands on
+    /// (FamilyPasses.AlignedSpills).
+    /// </summary>
+    public bool StackAtSixteen { get; set; }
+
     /// <summary>Bytes of arguments this function passes on the stack at its widest call.</summary>
     public int OutgoingBytes { get; set; }
 

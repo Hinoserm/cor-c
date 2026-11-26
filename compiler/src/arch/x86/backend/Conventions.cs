@@ -45,9 +45,18 @@ internal static class Conventions
             return new CallPlan { Places = places, StackBytes = stack, Generals = generals, Floats = floats };
         }
 
-        public override ArgPlace[] Result(IrType type)
-            => type == IrType.Void ? [] : type.IsFloat() ? [ArgPlace.InFloat(0, type == IrType.F32 ? 4 : 8)]
-                : [ArgPlace.InGeneral((int)Gpr.Rax, type == IrType.I32 ? 4 : 8)];
+        // (Made once: a function's every return and call asks.)
+        private static readonly ArgPlace[] None = [], Word = [ArgPlace.InGeneral((int)Gpr.Rax, 4)], Quad = [ArgPlace.InGeneral((int)Gpr.Rax, 8)],
+            Single = [ArgPlace.InFloat(0, 4)], Double = [ArgPlace.InFloat(0, 8)];
+
+        public override ArgPlace[] Result(IrType type) => type switch
+        {
+            IrType.Void => None,
+            IrType.I32 => Word,
+            IrType.F32 => Single,
+            IrType.F64 => Double,
+            _ => Quad,
+        };
     }
 
     /// <summary>
@@ -85,12 +94,17 @@ internal static class Conventions
             return new CallPlan { Places = places, StackBytes = stack, Generals = generals, Floats = 0 };
         }
 
+        private static readonly ArgPlace[] None = [], Word = [ArgPlace.InGeneral((int)Gpr.Eax, 4)],
+            Pair = [ArgPlace.InGeneral((int)Gpr.Eax, 4), ArgPlace.InGeneral((int)Gpr.Edx, 4)],
+            Single = [new ArgPlace(PlaceKind.FloatStack, 0, 0, 4)], Double = [new ArgPlace(PlaceKind.FloatStack, 0, 0, 8)];
+
         public override ArgPlace[] Result(IrType type) => type switch
         {
-            IrType.Void => [],
-            IrType.I32 => [ArgPlace.InGeneral((int)Gpr.Eax, 4)],
-            IrType.I64 => [ArgPlace.InGeneral((int)Gpr.Eax, 4), ArgPlace.InGeneral((int)Gpr.Edx, 4)],
-            _ => [new ArgPlace(PlaceKind.FloatStack, 0, 0, type == IrType.F32 ? 4 : 8)],
+            IrType.Void => None,
+            IrType.I32 => Word,
+            IrType.I64 => Pair,
+            IrType.F32 => Single,
+            _ => Double,
         };
     }
 }

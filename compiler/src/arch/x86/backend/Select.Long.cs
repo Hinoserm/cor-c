@@ -248,12 +248,6 @@ internal sealed partial class Selector
 
     // ---- the walk (Select, Select.cs) -----------------------------------------
 
-    /// <summary>
-    /// The parameters, from where the convention put them: the first six
-    /// integers and first eight floats in registers, each taken from its
-    /// register into a virtual one at once so the allocator is free to put
-    /// it anywhere, and the rest from their slots above the return address.
-    /// </summary>
     /// <summary>Long mode: a parameter from its word on the stack (LoadParams).</summary>
     private void ParamFromStackL(VReg p, int off)
     {
@@ -271,7 +265,7 @@ internal sealed partial class Selector
                 SelectCallL(i);
                 break;
             case Opcode.Ret:
-                SelectRetL(i);
+                SelectRet(i);
                 break;
             case Opcode.Unwind:
                 SelectUnwindL(i);
@@ -786,7 +780,7 @@ internal sealed partial class Selector
         int pad = (convention.StackAlignment - pushed % convention.StackAlignment) % convention.StackAlignment;
         if (pad != 0)
         {
-            EmitW(MOp.Sub, 8, Rsp, Imm(8));
+            EmitW(MOp.Sub, 8, Rsp, Imm(pad));
         }
         for (int k = onStack.Count - 1; k >= 0; k--)
         {
@@ -861,40 +855,7 @@ internal sealed partial class Selector
         {
             EmitW(MOp.Add, 8, Rsp, Imm(pushed + pad));
         }
-        if (d is null)
-        {
-            return;
-        }
-        if (d.Type.IsFloat())
-        {
-            EmitW(MOp.MovF, Width(d.Type), V(d), Xmm0);
-        }
-        else
-        {
-            MovL(V(d), Rax, Width(d.Type));
-        }
-    }
-
-    private void SelectRetL(Instr i)
-    {
-        int ints = 0, floats = 0;
-        if (i.Operands.Count > 0)
-        {
-            Operand v = i.Operands[0];
-            if (v.Type.IsFloat())
-            {
-                EmitW(MOp.MovF, Width(v.Type), Xmm0, F(v));
-                floats = 1;
-            }
-            else
-            {
-                int w = Width(v.Type);
-                MOperand src = RML(v, w);
-                MovL(Rax, src, w);
-                ints = 1;
-            }
-        }
-        Emit(new MInstr(MOp.Epilogue) { IntArgs = ints, FloatArgs = floats });
+        if (d is not null) TakeResult(d);
     }
 
     // ---- control ---------------------------------------------------------------------

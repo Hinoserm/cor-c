@@ -541,6 +541,8 @@ public sealed class UnitBackend : IUnitBackend
         {
             Corsac.Lang.X64.X64Backend backend = new()
             {
+                // As its compile said (the contract's word).
+                Hosted = cpu.AutomaticPacked,
                 OptimizeSize = read.Settings?.OptimizeSize ?? false,
                 PositionIndependent = positionIndependent,
                 EmitLinkSummary = true, Workers = workers,

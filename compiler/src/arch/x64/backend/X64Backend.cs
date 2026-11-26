@@ -119,13 +119,25 @@ public sealed class X64Backend : IBackend
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Whether the code runs under an operating system (Linux): entered
+    /// with the stack at sixteen before every call, so a packed value's
+    /// spill slot can be moved by MOVAPS (MFunction.StackAtSixteen).
+    /// False for a freestanding image. Written into the object's contract
+    /// (its AutomaticPacked word, which i386 uses for the same question of
+    /// whose state the code owns) and read back where the unit is made again.
+    /// </summary>
+    public bool Hosted { get; init; }
+
     public ObjectFile Generate(Module module, List<string> errors)
     {
         // Long mode, for the machine IR the two backends share (X86Mode).
         X86Mode.Long = true;
         ObjectFile obj = new();
         // The processor --cpu named, its instructions what this unit may use.
-        Target.X86_64.X86Profile.LongModeContract(false).Attach(obj);
+        // And whether the code is an operating system's guest (Hosted): the
+        // unit made again at the link reads it back (UnitBackend).
+        Target.X86_64.X86Profile.LongModeContract(Hosted).Attach(obj);
         Section text = new(".text", SectionKind.Code) { Align = Math.Max(16, FunctionAlign) };
         Section rodata = new(".rodata", SectionKind.ReadOnlyData) { Align = 8 };
         Section data = new(".data", SectionKind.Data) { Align = 8 };
@@ -475,6 +487,7 @@ public sealed class X64Backend : IBackend
         Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m = Selector.RunLong(f, errors, isExternal);
         m.RealignsStack = entry;
+        m.StackAtSixteen = Hosted;
         if (errors.Count > before)
         {
             return null;
