@@ -1,0 +1,178 @@
+// test: a null dereference in a leaf with no frame that pushed the registers a call keeps -- and one that gave the frame's base register a value -- is caught by its caller, and two calls up past a frame holding references in those registers
+// expect-exit: 0
+// expect-output:
+// 200730
+// -25
+// 3712352250300
+// 439100
+// -5876
+// 2334102
+// -8879
+// 8355436227780
+// 1551
+// True
+// True
+//
+// A leaf has no frame (MFunction.Frameless) in either mode. Wide keeps
+// twelve values alive round a loop besides its own three, more than the
+// registers a call may change in long mode (nine), so it pushes some of
+// those a call keeps -- RBX, R12 to R15 -- on its way in; Wider keeps
+// eighteen, more than every register a leaf has, so it gives the frame's
+// base register a value too (pushed first: a frame link of its own) and
+// keeps slots besides. On i386 both are past the registers at once.
+//
+// A fault in Wide stands for the call it was in its caller (Runtime.FrameAt):
+// its return address found past the pushes and the slots that had run
+// (Runtime.Prologue), and the registers it pushed put back as its return
+// would have (Runtime.LeafSaved); Wider's own frame link is the RBP it
+// pushed. Caught by the leaf's own caller (Near, NearWider: a return
+// address read a word off misses their handlers), and two calls up (Outer),
+// the frame between holding five references and a number across the call in
+// the registers a call keeps. Thousands of faults, with enough allocated
+// between for collections to fall inside a throw; and what each function
+// holds is still its own after. And the fault's trace names the leaf, its
+// caller at the call, and the frames above, in that order -- the row a
+// wrong return address loses. Output as .NET 10 prints it.
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Box
+{
+    public long A, B;
+}
+
+class Tag
+{
+    public long N;
+    public Tag(long n) { N = n; }
+}
+
+static class Program
+{
+    static object? _sink;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Wide(Box b, long x, long y)
+    {
+        long a0 = x + 1, a1 = y + 2, a2 = x * 3, a3 = y * 5, a4 = x ^ 7, a5 = y ^ 11;
+        long a6 = x - 13, a7 = y - 17, a8 = x * y, a9 = x + y, a10 = x - y, a11 = y * 19;
+        long acc = 0;
+        for (int i = 0; i < 2; i++)
+        {
+            acc += (a0 ^ acc) + a1 + (a2 ^ a3) + a4 + (a5 ^ a6) + a7 + (a8 ^ a9) + a10 + a11;
+            acc += b.A;
+        }
+        return acc;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Wider(Box b, long x, long y)
+    {
+        long a0 = x + 1, a1 = y + 2, a2 = x * 3, a3 = y * 5, a4 = x ^ 7, a5 = y ^ 11;
+        long a6 = x - 13, a7 = y - 17, a8 = x * y, a9 = x + y, a10 = x - y, a11 = y * 19;
+        long a12 = x * 23, a13 = y + 29, a14 = x ^ 31, a15 = y * 37, a16 = x + 41, a17 = y ^ 43;
+        long acc = 0;
+        for (int i = 0; i < 2; i++)
+        {
+            acc += (a0 ^ acc) + a1 + (a2 ^ a3) + a4 + (a5 ^ a6) + a7 + (a8 ^ a9) + a10 + a11
+                + (a12 ^ a13) + a14 + (a15 ^ a16) + a17;
+            acc += b.B;
+        }
+        return acc;
+    }
+
+    // Five references and a number held across both calls, in the registers
+    // a call keeps; nothing caught here.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Middle(Box? b, long x, Tag t0, Tag t1, Tag t2, Tag t3, Tag t4)
+    {
+        long got = Wide(b!, x, x + 1) + Wider(b!, x + 2, x + 3);
+        return got + t0.N + t1.N + t2.N + t3.N + t4.N;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Outer(Box? b, long x)
+    {
+        Tag t0 = new Tag(x + 1), t1 = new Tag(x + 2), t2 = new Tag(x + 3), t3 = new Tag(x + 4), t4 = new Tag(x + 5);
+        long got;
+        try
+        {
+            got = Middle(b, x, t0, t1, t2, t3, t4);
+        }
+        catch (NullReferenceException)
+        {
+            got = -1;
+        }
+        // A collection's chance over the frames the fault left.
+        for (int i = 0; i < 40; i++) _sink = new long[24];
+        return got * 100 + t0.N + t1.N + t2.N + t3.N + t4.N;
+    }
+
+    // The leaf's own caller catches: the fault must be found to be inside
+    // this call of this function, by the return address past what the leaf
+    // pushed -- and what the function holds is its own after.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Near(Box? b, long x, string keep)
+    {
+        string held = keep + x;
+        long got;
+        try { got = Wide(b!, x, x + 1); }
+        catch (NullReferenceException) { got = -x - 1; }
+        return got * 1000 + held.Length + held[0];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long NearWider(Box? b, long x, string keep)
+    {
+        string held = keep + x;
+        long got;
+        try { got = Wider(b!, x, x + 2); }
+        catch (NullReferenceException) { got = -x - 2; }
+        return got * 1000 + held.Length + held[0];
+    }
+
+    // The trace of a fault in a leaf names the leaf, then the caller at its
+    // call of it, then the frames above: the leaf stood for its call loses
+    // no row, and a return address read a word off loses the caller's.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool Traced(bool wider)
+    {
+        try
+        {
+            if (wider) Wider(null!, 3, 4);
+            else Wide(null!, 3, 4);
+            return false;
+        }
+        catch (NullReferenceException e)
+        {
+            string trace = e.StackTrace ?? "";
+            int leaf = trace.IndexOf(wider ? "Program.Wider(" : "Program.Wide(");
+            int caller = trace.IndexOf("Program.Traced(");
+            int above = trace.IndexOf("Program.Main(");
+            return leaf >= 0 && caller > leaf && above > caller;
+        }
+    }
+
+    static int Main()
+    {
+        Box box = new Box { A = 7, B = 11 };
+        Console.WriteLine(Outer(box, 3));
+        Console.WriteLine(Outer(null, 12));
+        long total = 0;
+        for (int k = 0; k < 3000; k++) total += Outer(k % 3 == 0 ? null : box, k);
+        Console.WriteLine(total);
+        Console.WriteLine(Near(box, 4, "ab"));
+        Console.WriteLine(Near(null, 5, "xyz"));
+        Console.WriteLine(NearWider(box, 6, "cd"));
+        Console.WriteLine(NearWider(null, 7, "uvw"));
+        total = 0;
+        for (int k = 0; k < 2000; k++)
+            total += Near(k % 2 == 0 ? null : box, k, "n") + NearWider(k % 2 == 1 ? null : box, k, "w");
+        Console.WriteLine(total);
+        Console.WriteLine(Wide(box, 2, 5) + Wider(box, 2, 5));
+        Console.WriteLine(Traced(false));
+        Console.WriteLine(Traced(true));
+        return 0;
+    }
+}

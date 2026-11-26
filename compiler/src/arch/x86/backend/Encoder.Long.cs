@@ -24,7 +24,15 @@ internal sealed partial class Encoder
     private int _frameBytes;
 
     /// <summary>The bytes a long-mode function's prologue takes below its saved base: the frame and the callee-saved registers' slots, to a multiple of sixteen.</summary>
-    public static int FrameBytes(MFunction m) => (m.Frame.Size + m.SavedRegs.Count * 8 + 15) & ~15;
+    public static int FrameBytes(MFunction m) => m.Frameless ? FramelessBytes(m) : (m.Frame.Size + m.SavedRegs.Count * 8 + 15) & ~15;
+
+    /// <summary>
+    /// What a function without a frame reserves below the registers it
+    /// pushes (MFunction.Frameless): its slots -- long mode's in whole
+    /// words, the stack pointer kept a multiple of eight; no sixteen to
+    /// keep, it calls nothing. (i386's frame is whole words as it is made.)
+    /// </summary>
+    public static int FramelessBytes(MFunction m) => X86Mode.Long ? (m.Frame.Size + 7) & ~7 : m.Frame.Size;
 
     /// <summary>A register operand's whole hardware number (0 to 15), general or XMM; 0 for anything else. Never a register left unallocated.</summary>
     private static int Hw(MOperand o) => o is not MReg r ? 0 : r.IsMachine ? r.Hw
@@ -430,6 +438,10 @@ internal sealed partial class Encoder
         }
         if (dst is MMem) OpL(w, Hw(src), dst, w == 1 ? (byte)0x88 : (byte)0x89);
         else if (src is MMem) OpL(w, Hw(dst), src, w == 1 ? (byte)0x8A : (byte)0x8B);
+        // `mov rbp, rsp` in a function without a frame written 8B EC: its
+        // first bytes after its `push rbp` are then never a framed
+        // function's 55 48 89 E5 (Runtime.FrameAt).
+        else if (_m.Frameless && w == 8 && dst is MReg { Id: (int)Gpr.Rbp } && src is MReg { Id: (int)Gpr.Rsp }) OpL(w, Hw(dst), src, 0x8B);
         else OpL(w, Hw(src), dst, w == 1 ? (byte)0x88 : (byte)0x89);
     }
 
@@ -494,15 +506,36 @@ internal sealed partial class Encoder
 
     /// <summary>
     /// `push rbp ; mov rbp, rsp ; sub rsp, n`, then each callee-saved register
-    /// the function uses stored in its slot below the frame. In a function
-    /// that gives RBP a value after (FramePointerFree) the move is written
-    /// 8B EC, so its first bytes are never a framed function's.
+    /// the function uses stored in its slot below the frame.
+    ///
+    /// A FUNCTION WITHOUT A FRAME (MFunction.Frameless, a leaf): the
+    /// registers it saves pushed -- RBP first where it gives it a value --
+    /// then its slots reserved, `sub rsp, n`, and nothing at all where it
+    /// saves none and keeps none. Never the framed function's first four
+    /// bytes, 55 48 89 E5, which is how a fault's walk tells the two apart
+    /// (Runtime.FrameAt; MovL writes a `mov rbp, rsp` of its own the other
+    /// way).
     /// </summary>
     private void PrologueL()
     {
+        if (_m.Frameless)
+        {
+            bool first = true;
+            foreach (Gpr g in _m.SavedRegs)
+            {
+                if (!first) NextInstr();
+                first = false;
+                OpReg(0x50, MReg.Of(g));
+            }
+            if (_frameBytes > 0)
+            {
+                if (!first) NextInstr();
+                AluL(5, MReg.Of(Gpr.Rsp), new MImm(_frameBytes), 8);
+            }
+            return;
+        }
         _out.Add(0x55);
-        if (_m.FramePointerFree) B(0x48, 0x8B, 0xEC);
-        else B(0x48, 0x89, 0xE5);
+        B(0x48, 0x89, 0xE5);
         if (_m.RealignsStack) B(0x48, 0x83, 0xE4, 0xF0);                       // and rsp, -16
         if (_frameBytes > 0)
         {
@@ -516,28 +549,38 @@ internal sealed partial class Encoder
         }
     }
 
-    private MMem SaveSlot(int k) => _m.FramePointerFree
-        ? new MMem(MReg.Of(Gpr.Rsp), _frameBytes - _m.Frame.Size - 8 * (k + 1))
+    /// <summary>
+    /// Where the function's k-th saved register is kept: its slot below the
+    /// frame, or, in a function without a frame, where it was pushed --
+    /// above the slots, the first pushed highest.
+    /// </summary>
+    private MMem SaveSlot(int k) => _m.Frameless
+        ? new MMem(MReg.Of(Gpr.Rsp), _frameBytes + 8 * (_m.SavedRegs.Count - 1 - k))
         : MMem.Frame(-_m.Frame.Size - 8 * (k + 1));
 
     private void EpilogueL()
     {
-        for (int k = 0; k < _m.SavedRegs.Count; k++)
+        if (_m.Frameless)
         {
-            OpL(8, (int)_m.SavedRegs[k], SaveSlot(k), 0x8B);
-            NextInstr();
-        }
-        if (_m.FramePointerFree)
-        {
-            // RBP holds a value, not the frame: RSP past the frame, then RBP back.
             if (_frameBytes > 0)
             {
                 AluL(0, MReg.Of(Gpr.Rsp), new MImm(_frameBytes), 8);
                 NextInstr();
             }
-            _out.Add(0x5D);    // pop rbp
+            for (int k = _m.SavedRegs.Count - 1; k >= 0; k--)
+            {
+                OpReg(0x58, MReg.Of(_m.SavedRegs[k]));
+                NextInstr();
+            }
+            _out.Add(0xC3);
+            return;
         }
-        else _out.Add(0xC9);   // leave: mov rsp, rbp; pop rbp
+        for (int k = 0; k < _m.SavedRegs.Count; k++)
+        {
+            OpL(8, (int)_m.SavedRegs[k], SaveSlot(k), 0x8B);
+            NextInstr();
+        }
+        _out.Add(0xC9);   // leave: mov rsp, rbp; pop rbp
         _out.Add(0xC3);
     }
 }

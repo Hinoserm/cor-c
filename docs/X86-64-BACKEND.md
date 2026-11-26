@@ -159,8 +159,20 @@ can carry is folded as an immediate, and which registers its prologue
 saves. A value live across a call cannot sit in a caller-saved register; a
 float across a call is spilled, or read again from the constant pool.
 
-A leaf that gives RBP a value addresses its frame off RSP
-(`FramePointerFree`); long mode has no function without a frame yet.
+A leaf has no frame in either mode (`MFunction.Frameless`): no `push rbp;
+mov rbp, rsp`, no `leave`. It pushes the callee-saved registers it uses --
+RBP first where the allocator gave RBP a value, which is then a frame link
+of its own -- reserves its slots with `sub rsp, n`, and addresses them off
+RSP (`FramePointerFree`); a leaf that saves nothing and keeps nothing has
+no prologue at all. The System V red zone is not used: an interrupt on the
+same stack writes below RSP, and kernels are built by this code generator.
+A fault in such a leaf is found by its first bytes, which are never a
+framed function's `55 48 89 E5` (`Runtime.FrameAt`): the leaf stands for
+the call it was in its caller, the registers it pushed put back
+(`Runtime.LeafSaved`), and the trace still begins with the leaf's own row
+(`Runtime.NullFault`). A frame made only on the way to a call that never
+returns (i386's `ColdFrames`) is not long mode's yet: its call wants the
+stack sixteen-aligned.
 
 `compiler/src/arch/x64/backend` holds the object's writer and driver
 alone (`X64Backend.cs`).

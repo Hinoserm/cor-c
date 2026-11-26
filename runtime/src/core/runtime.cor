@@ -4466,8 +4466,9 @@ public static partial class Runtime
     /// read the same way, a run of pushes being what its first bytes say.
     /// `pc` made so is that return address exactly -- what the collector
     /// finds the caller's call by (Gc.MapSite) when the handler makes it a
-    /// return address again; one less is inside the call, which a line is
-    /// read at (NullFault's own row). The registers the leaf saved are its
+    /// return address again; the fault's own row is still the leaf's, at
+    /// the instruction that faulted, and the caller's the next (NullFault).
+    /// The registers the leaf saved are its
     /// caller's again only once the fault's handler puts them back
     /// (LeafSaved).
     ///
@@ -4481,10 +4482,16 @@ public static partial class Runtime
     /// it has run (Prologue). Stopped on the call, its frame made: `bp`;
     /// between the two instructions: the frame at `sp` (`sp + X`).
     ///
-    /// x86-64: a leaf that gives RBP a value begins `push rbp; mov rbp, rsp`
-    /// written 48 8B EC, then `sub rsp, n`: its frame is at `sp` plus the
-    /// frame's size and the saved registers' pushes; any other function's is
-    /// `bp`.
+    /// x86-64 THE SAME BY ITS OWN BYTES. A framed function begins `push rbp;
+    /// mov rbp, rsp` (55 48 89 E5): past those, `bp`; stopped on the move,
+    /// `sp`; before the push, the caller as it called. A leaf has no frame
+    /// and begins otherwise: the registers it saves pushed (50 to 57, and 41
+    /// 50 to 41 57 for R8 to R15), then its slots reserved (`sub rsp, n`: 48
+    /// 83 EC n or 48 81 EC n32) -- RBP first where it gives RBP a value, a
+    /// link just below the return address; else the leaf stands for the
+    /// call it was. (A `mov rbp, rsp` of a leaf's own is written 48 8B EC,
+    /// never the framed function's bytes.) No frame is made on the way to a
+    /// call there yet.
     ///
     /// Not in an epilogue: there the answer is off by what is already
     /// undone -- no fault is there, and an interrupt's walk (the kernel's
@@ -4495,28 +4502,22 @@ public static partial class Runtime
         if (!Lookup(pc, out name, out file, out pool, out line, out offset, false)) { return bp; }
         nuint at = pc - offset;
 #if TARGET_64BIT
-        if (Sys.Read8(at) != 0x55) { return bp; }
-        at = at + 1;
-        if (Sys.Read8(at) != 0x48) { return bp; }
-        at = at + 1;
-        if (Sys.Read8(at) != 0x8B || Sys.Read8(at + 1) != 0xEC) { return bp; }
-        at = at + 2;
-        nuint size = 0;
-        if (Sys.Read8(at) == 0x48) {
-            if (Sys.Read8(at + 1) == 0x83 && Sys.Read8(at + 2) == 0xEC) { size = Sys.Read8(at + 3); at = at + 4; }
-            else if (Sys.Read8(at + 1) == 0x81 && Sys.Read8(at + 2) == 0xEC) { size = Sys.Read32(at + 3); at = at + 7; }
+        if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x48 && Sys.Read8(at + 2) == 0x89 && Sys.Read8(at + 3) == 0xE5) {
+            if (pc >= at + 4) { return bp; }
+            if (pc > at) { return sp; }
+            pc = Sys.ReadAddress(sp);
+            return bp;
         }
-        nuint pushes = 0;
-        while (true) {
-            int b = Sys.Read8(at);
-            if (b == 0x41 && Sys.Read8(at + 1) >= 0x50 && Sys.Read8(at + 1) <= 0x57) { pushes = pushes + 1; at = at + 2; continue; }
-            if (b >= 0x50 && b <= 0x57) { pushes = pushes + 1; at = at + 1; continue; }
-            break;
-        }
-        // Stopped inside the prologue, its pushes not all made: the register
-        // is still the frame, and given no value yet.
-        if (pc < at) { return bp; }
-        return sp + size + pushes * WordSize.Bytes;
+        // No frame link of its own: what of its pushes and its slots'
+        // reserving has run (Prologue), its return address past them -- the
+        // caller's RBP just below it where RBP was pushed first, a link.
+        nuint rbpDepth;
+        nuint body;
+        nuint made = Prologue(at, pc, 5, out rbpDepth, out body);
+        nuint ret = sp + made;
+        if (rbpDepth == (nuint)WordSize.Bytes) { return ret - (nuint)WordSize.Bytes; }
+        pc = Sys.ReadAddress(ret);
+        return bp;
 #else
         if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x89 && Sys.Read8(at + 2) == 0xE5) {
             if (pc >= at + 3) { return bp; }
@@ -4582,22 +4583,22 @@ public static partial class Runtime
     /// collector's map of the caller's call). A leaf that saved EBP keeps
     /// its own frame link and its pc, so stands for nothing: its frame, the
     /// words it pushed among them, is read whole by the collector, as any
-    /// frame no map is had for. i386 only; 0 elsewhere.
+    /// frame no map is had for. In long mode `reg` is 0 RAX to 15 R15.
     public static nuint LeafSaved(nuint pc, nuint sp, int reg) {
-#if TARGET_64BIT
-        return 0;
-#else
         nuint name, file, pool, offset;
         long line;
         if (!Lookup(pc, out name, out file, out pool, out line, out offset, false)) { return 0; }
         nuint at = pc - offset;
+#if TARGET_64BIT
+        if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x48 && Sys.Read8(at + 2) == 0x89 && Sys.Read8(at + 3) == 0xE5) { return 0; }
+#else
         if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x89 && Sys.Read8(at + 2) == 0xE5) { return 0; }
+#endif
         nuint depth;
         nuint body;
         nuint made = Prologue(at, pc, reg, out depth, out body);
         // The word `depth` below the return address, which is `made` above sp.
         return depth == 0 ? 0 : sp + made - depth;
-#endif
     }
 
     /// WHAT OF A FRAMELESS FUNCTION'S WAY IN HAS RUN AT `pc` (i386): its first
@@ -4608,9 +4609,40 @@ public static partial class Runtime
     /// of pushes -- the bytes of those that ran, so its return address is
     /// `sp` plus that; how far below the return address register `reg` was
     /// pushed (0: it was not, or not yet); and where the way in ends, `body`.
+    ///
+    /// x86-64: a leaf's pushes (50 to 57 but 54, and 41 50 to 41 57 for R8 to
+    /// R15, `reg` 0 to 15), then at most one `sub rsp, n` (48 83 EC n, 48 81
+    /// EC n32). No reserved frame there.
     static nuint Prologue(nuint at, nuint pc, int reg, out nuint depth, out nuint body) {
         nuint made = 0;
         depth = 0;
+#if TARGET_64BIT
+        while (true) {
+            int b = Sys.Read8(at);
+            int high = 0;
+            nuint length = 1;
+            if (b == 0x41) {
+                b = Sys.Read8(at + 1);
+                high = 8;
+                length = 2;
+            }
+            if (b < 0x50 || b > 0x57 || (b == 0x54 && high == 0)) { break; }
+            if (at < pc) {
+                made = made + (nuint)WordSize.Bytes;
+                if (b - 0x50 + high == reg) { depth = made; }
+            }
+            at = at + length;
+        }
+        if (Sys.Read8(at) == 0x48 && Sys.Read8(at + 1) == 0x83 && Sys.Read8(at + 2) == 0xEC) {
+            if (pc >= at + 4) { made = made + Sys.Read8(at + 3); }
+            at = at + 4;
+        } else if (Sys.Read8(at) == 0x48 && Sys.Read8(at + 1) == 0x81 && Sys.Read8(at + 2) == 0xEC) {
+            if (pc >= at + 7) { made = made + Sys.Read32(at + 3); }
+            at = at + 7;
+        }
+        body = at;
+        return made;
+#else
         bool pushed = false;
         bool reserved = false;
         while (true) {
@@ -4644,6 +4676,7 @@ public static partial class Runtime
         }
         body = at;
         return made;
+#endif
     }
 
     /// WHETHER `frame` LOOKS LIKE A FRAME, and `next` (0: not asked) like the
@@ -5935,11 +5968,28 @@ public static partial class Runtime
     /// (Platform.Fault) makes the faulting thread call this as if from the
     /// instruction that read or wrote the null page, with the frame it was in
     /// and that instruction, so the trace begins where the program was.
+    ///
+    /// A LEAF WITH NO FRAME LINK OF ITS OWN STOOD FOR THE CALL IT WAS
+    /// (FrameAt): `frame` is then its caller's, and this function's return
+    /// address the caller's call of the leaf, not the faulting instruction
+    /// -- which `pc` still is. The trace is the leaf's row, then the
+    /// caller's at that call, then the frames above: as .NET writes it. (A
+    /// handler that names `pc` one byte inside the caller's call instead,
+    /// as every one did once, gets the caller's row and no leaf's.)
     public static void NullFault(nuint frame, nuint pc)
     {
         NullReferenceException e = new NullReferenceException();
         string? site = Frame(pc);
-        e.Placed$(site ?? "", Frames(frame));
+        nuint[] frames = Frames(frame);
+        nuint called = Sys.ReadAddress(Sys.FramePointer() + (nuint)WordSize.Bytes);
+        if (called != pc && called - 1 != pc)
+        {
+            nuint[] all = new nuint[frames.Length + 1];
+            all[0] = called;
+            for (int i = 0; i < frames.Length; i++) all[i + 1] = frames[i];
+            frames = all;
+        }
+        e.Placed$(site ?? "", frames);
         throw e;
     }
 

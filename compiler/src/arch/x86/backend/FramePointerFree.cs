@@ -4,41 +4,42 @@ using Corsac.Lang.Ir;
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// A FUNCTION WITHOUT A FRAME POINTER made so, last before it is written,
-/// in both modes: the one walk that moves its operands off the frame's base
-/// (Readdress), and each mode's layout -- long mode's below (RunLong),
-/// i386's here.
+/// A FUNCTION WITHOUT A FRAME made so, last before it is written, in both
+/// modes: a leaf (MFunction.Frameless), or on i386 one whose only calls
+/// never return, which makes its frame on the way to them alone
+/// (MFunction.ColdFrames, OnlyColdCalls). Every pass until here took an
+/// operand based on the base register for the frame, and the value the base
+/// register holds in a leaf that gives it one as MReg.EbpData; now the frame
+/// is addressed off the stack pointer, and the value is in the base register
+/// (Readdress).
 ///
-/// i386: a leaf
-/// (MFunction.Frameless), or one whose only calls never return, which makes
-/// its frame on the way to them alone (MFunction.ColdFrames, OnlyColdCalls).
-/// Every pass until here took an operand based on EBP for the frame, and the value EBP holds in a leaf that gives it one as
-/// MReg.EbpData; now the frame is addressed off ESP, and the value is in EBP.
-/// The leaf pushes the registers it saves -- EBP first where it gives it a
-/// value -- and then reserves its frame, so from the return address down:
-/// the saved registers (S of them), then the frame (N bytes), ESP at its
-/// bottom, the return address at ESP + N + 4S. Where EBP would have pointed,
-/// a word below the return address, an argument at EBP + D (D 8 or more)
-/// is at ESP + N + 4S - 4 + D; the frame's own slots, below where EBP would
-/// have pointed by D (D negative), are below the saved registers: at ESP + N
-/// + D. Nothing moves ESP between the prologue and the epilogue.
+/// The leaf pushes the registers it saves -- the base register first where
+/// it gives it a value -- and then reserves its frame, so from the return
+/// address down: the saved registers (S bytes of them), then the frame (N
+/// bytes), the stack pointer at its bottom, the return address at SP + N +
+/// S. Where the base would have pointed, a word below the return address,
+/// an argument at base + D (D two words or more) is at SP + N + S - word +
+/// D; the frame's own slots, below where the base would have pointed by D
+/// (D negative), are below the saved registers: at SP + N + D. Nothing
+/// moves the stack pointer between the prologue and the epilogue. (No red
+/// zone in long mode: an interrupt on the same stack writes below the
+/// stack pointer, and a kernel is built by this code generator too; a leaf
+/// with slots reserves them.)
 ///
 /// A cold-framed function that saves registers or keeps slots
 /// (MFunction.ReservedFrame) is laid out the other way round, as a framed
-/// function is: from the return address down, EBP's word (reserved, not
-/// written), the frame, then the saves; EBP + D is ESP + N + 4S + D, slot or
-/// argument alike.
+/// function is: from the return address down, the base register's word
+/// (reserved, not written), the frame, then the saves; base + D is SP + N +
+/// S + D, slot or argument alike.
 /// </summary>
 internal static class FramePointerFree
 {
     public static void Run(MFunction m)
     {
-        if (X86Mode.Long)
-        {
-            RunLong(m);
-            return;
-        }
-        if (!m.Frameless && OnlyColdCalls(m))
+        int word = X86Mode.Word;
+        // (Frames made on the way to a call that never returns are i386's
+        // alone yet: long mode's call wants its stack sixteen-aligned.)
+        if (!X86Mode.Long && !m.Frameless && OnlyColdCalls(m))
         {
             m.Frameless = true;
             m.ColdFrames = true;
@@ -47,7 +48,7 @@ internal static class FramePointerFree
         // A reserved frame costs eight bytes at each such call where the
         // plain one costs three: at most two of them, and a frame and saves
         // a byte's displacement covers (else the frame stays a prologue's).
-        if (m.ReservedFrame && (ColdCalls(m) > 2 || m.Frame.Size + 4 * m.SavedRegs.Count > 127))
+        if (m.ReservedFrame && (ColdCalls(m) > 2 || m.Frame.Size + word * m.SavedRegs.Count > 127))
         {
             m.Frameless = false;
             m.ColdFrames = false;
@@ -55,35 +56,20 @@ internal static class FramePointerFree
             return;
         }
         if (!m.Frameless) return;
-        int frame = m.Frame.Size, saved = 4 * m.SavedRegs.Count;
-        // (A reserved frame is a framed function's: where EBP would point is
-        // ESP + N + 4S, every slot and argument as far from it.)
-        int Address(int disp) => m.ReservedFrame ? frame + saved + disp : disp switch
-        {
-            >= 8 => frame + saved - 4 + disp,
-            < 0 => frame + disp,
-            // Where EBP would point, and the return address: no slot of a
-            // frameless function's is there.
-            _ => throw new InvalidOperationException($"{m.Source.Name}: a frame slot at EBP + {disp} in a function without a frame"),
-        };
+        // The frame as the prologue reserves it (Encoder.FramelessBytes:
+        // whole words) and the registers pushed above it.
+        int frame = Encoder.FramelessBytes(m), saved = word * m.SavedRegs.Count;
+        // (A reserved frame is a framed function's: where the base would
+        // point is SP + N + S, every slot and argument as far from it.)
+        int Address(int disp) => m.ReservedFrame ? frame + saved + disp
+            // An argument, two words or more above where the base would
+            // point: past the frame, the saves and the return address.
+            : disp >= 2 * word ? frame + saved - word + disp
+            : disp < 0 ? frame + disp
+            // Where the base would point, and the return address: no slot of
+            // a frameless function's is there.
+            : throw new InvalidOperationException($"{m.Source.Name}: a frame slot at the frame's base + {disp} in a function without a frame");
         Readdress(m, Address, !m.ColdFrames);
-    }
-
-    /// <summary>
-    /// LONG MODE'S: a leaf the allocator gave RBP a value in
-    /// (MFunction.FramePointerFree). The frame is addressed off RSP -- which
-    /// nothing moves between the prologue and the epilogue, RSP + K being
-    /// where RBP would point, K the frame the prologue makes
-    /// (Encoder.FrameBytes) -- and the value is in RBP. The prologue still
-    /// sets RBP before anything is written to it, and marks the function so
-    /// a fault finds its frame (Encoder.PrologueL). No function is without
-    /// a frame there yet, and none makes its frame only on the way to a call.
-    /// </summary>
-    private static void RunLong(MFunction m)
-    {
-        if (!m.FramePointerFree) return;
-        int k = Encoder.FrameBytes(m);
-        Readdress(m, disp => disp + k, true);
     }
 
     /// <summary>

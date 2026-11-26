@@ -871,16 +871,37 @@ public static class Platform
                 // gregs from 40: RDI 8th, RSI 9th, RBP 10th, RSP 15th, RIP 16th.
                 // Past the red zone, aligned as a call leaves it.
                 // Each greg_t is 8 bytes here.
-                // A leaf that gave RBP a value has its frame found by its
-                // prologue (Runtime.FrameAt), and RBP made that frame again,
-                // so NullFault's prologue links to it as a call from there would.
-                nuint faultPc = Sys.ReadAddress(uc + 168);
+                // The faulting function's frame link (Runtime.FrameAt), made
+                // RBP, so NullFault's prologue links to it as a call from
+                // there would; a leaf with no link of its own stands as the
+                // call it was in its caller (`faultPc` its return address,
+                // pushed as NullFault's, the caller's call found by it; the
+                // instruction NullFault names is still the leaf's).
+                nuint stoppedPc = Sys.ReadAddress(uc + 168);
+                nuint faultPc = stoppedPc;
                 nuint faultFrame = Runtime.FrameAt(ref faultPc, Sys.ReadAddress(uc + 160), Sys.ReadAddress(uc + 120));
+                // A leaf stood for its call has its caller's RBX and R12 to
+                // R15 where it pushed them: put back, as its return would
+                // have (Runtime.LeafSaved), before anything walks the stack.
+                // (The gregs: R12 the 5th to R15 the 8th, RBX the 12th.)
+                if (faultPc != stoppedPc)
+                {
+                    nuint stoppedSp = Sys.ReadAddress(uc + 160);
+                    nuint saved = Runtime.LeafSaved(stoppedPc, stoppedSp, 3);
+                    if (saved != 0) Sys.WriteAddress(uc + 128, Sys.ReadAddress(saved));
+                    int r = 12;
+                    while (r <= 15)
+                    {
+                        saved = Runtime.LeafSaved(stoppedPc, stoppedSp, r);
+                        if (saved != 0) Sys.WriteAddress(uc + 40 + (nuint)((r - 8) * 8), Sys.ReadAddress(saved));
+                        r = r + 1;
+                    }
+                }
                 Sys.WriteAddress(uc + 120, faultFrame);
                 nuint sp = ((Sys.ReadAddress(uc + 160) - 128) & ~(nuint)15) - 8;
                 Sys.WriteAddress(sp, faultPc);
                 Sys.WriteAddress(uc + 104, faultFrame);
-                Sys.WriteAddress(uc + 112, faultPc);
+                Sys.WriteAddress(uc + 112, stoppedPc);
                 Sys.WriteAddress(uc + 160, sp);
                 Sys.WriteAddress(uc + 168, entry);
 #else
@@ -893,7 +914,7 @@ public static class Platform
                 // there would; a leaf with no link of its own stands as the
                 // call it was in its caller (`faultPc` its return address,
                 // pushed as NullFault's, the caller's call found by it; the
-                // instruction NullFault names one less, inside the call).
+                // instruction NullFault names is still the leaf's).
                 nuint stoppedPc = Sys.ReadAddress(uc + 76);
                 nuint faultPc = stoppedPc;
                 nuint faultFrame = Runtime.FrameAt(ref faultPc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
@@ -917,7 +938,7 @@ public static class Platform
                 // this language does; the return address is what the stack has.
                 Sys.WriteAddress(sp, faultPc);
                 Sys.WriteAddress(uc + 64, faultFrame);
-                Sys.WriteAddress(uc + 56, faultPc != stoppedPc ? faultPc - 1 : faultPc);
+                Sys.WriteAddress(uc + 56, stoppedPc);
                 Sys.WriteAddress(uc + 48, sp);
                 Sys.WriteAddress(uc + 76, entry);
 #endif

@@ -274,8 +274,8 @@ public static class Win32
         // frame), Ecx (the instruction), Eip. The faulting function's frame
         // link (Runtime.FrameAt), made EBP, so NullFault's prologue links to
         // it as a call from there would; a leaf with no link of its own
-        // stands as the call it was in its caller (`pc` its return address,
-        // the instruction named one less, inside the call).
+        // stands as the call it was in its caller (`pc` its return address;
+        // the instruction named is still the leaf's: Runtime.NullFault).
         nuint stoppedPc = pc;
         nuint frame = Runtime.FrameAt(ref pc, Sys.Read32(ctx + 0xC4), Sys.Read32(ctx + 0xB4));
         // A leaf stood for its call has its caller's EBX, ESI and EDI where
@@ -293,7 +293,7 @@ public static class Win32
         Sys.Write32(ctx + 0xB4, Sys.Low32(frame));
         Sys.Write32(ctx + 0xB0, Sys.Low32(pc));
         Sys.Write32(ctx + 0xA8, Sys.Low32(frame));
-        Sys.Write32(ctx + 0xAC, Sys.Low32(pc != stoppedPc ? pc - 1 : pc));
+        Sys.Write32(ctx + 0xAC, Sys.Low32(stoppedPc));
         Sys.Write32(ctx + 0xB8, Sys.Low32(_nullStub));
         return ContinueExecution;
     }

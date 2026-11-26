@@ -17,8 +17,10 @@ internal sealed class LongTarget : FamilyTarget, ITarget
     /// Long mode's registers: the caller-saved nine first, then RBX and R12
     /// to R15, every one with a byte form under REX; sixteen XMM registers,
     /// every one caller-saved under the System V ABI. A leaf's file has RBP
-    /// besides (the prologue still pushes it); a fault in such a function
-    /// finds its frame by the prologue's mark (Encoder.PrologueL).
+    /// besides, pushed first of those it saves (MFunction.FramePointerFree),
+    /// in a function with no frame of its own (MFunction.Frameless); a fault
+    /// in such a function finds its caller by its first bytes
+    /// (Runtime.FrameAt).
     /// </summary>
     private static readonly (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) Of = Files(
         LongAbi.CallerSaved, LongAbi.CalleeSaved.Select(g => (int)g).ToArray(), null, 16);
@@ -27,7 +29,7 @@ internal sealed class LongTarget : FamilyTarget, ITarget
     {
     }
 
-    public override RegisterFile Registers => _m.Source.KeepsCallerRegisters ? Of.CallerOnly : _leaf ? Of.Leaf : Of.Whole;
+    protected override (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) ModeFiles => Of;
 
     protected override string InstrText(MInstr i) => $"{i.Op} {string.Join(", ", i.Operands)}";
 
@@ -48,16 +50,4 @@ internal sealed class LongTarget : FamilyTarget, ITarget
     protected override MImm? ConstantMoved(MInstr i)
         => i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg { IsFloat: false } && i.Operands[1] is MImm { IsPlain: true } imm
             ? (i.Width == 4 ? new MImm((uint)imm.Value) : imm) : null;
-
-    /// <summary>
-    /// The callee-saved registers touched, or all of them where the function
-    /// enters the collector. RBP given a value is saved by the prologue's own
-    /// push, not among these.
-    /// </summary>
-    protected override void Saved(AFunction f, IPlacement p)
-    {
-        foreach (Gpr g in LongAbi.CalleeSaved)
-            if (_m.SavesEverything || p.Touched.Contains((int)g)) _m.SavedRegs.Add(g);
-        _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Rbp);
-    }
 }

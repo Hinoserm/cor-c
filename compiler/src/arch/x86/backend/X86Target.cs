@@ -30,15 +30,13 @@ internal sealed class X86Target : FamilyTarget, ITarget
     {
     }
 
-    public override RegisterFile Registers => _registers ??= Halved(_m.Source.KeepsCallerRegisters ? Of.CallerOnly : _leaf ? Of.Leaf : Of.Whole);
-
-    private RegisterFile? _registers;
+    protected override (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) ModeFiles => Of;
 
     /// <summary>
     /// The file with the XMM class XMM0 to XMM3 alone, where the function's
     /// packed operations hold XMM4 to XMM7 (MFunction.XmmClassCount).
     /// </summary>
-    private RegisterFile Halved(RegisterFile f) => _m.XmmClassCount == 8 ? f : new RegisterFile
+    protected override RegisterFile Fitted(RegisterFile f) => _m.XmmClassCount == 8 ? f : new RegisterFile
     {
         PhysCount = f.PhysCount, FirstVirtual = f.FirstVirtual, Untracked = f.Untracked,
         Classes = new[]
@@ -76,20 +74,4 @@ internal sealed class X86Target : FamilyTarget, ITarget
     /// <summary>A whole word's constant: any, a symbol's address among them.</summary>
     protected override MImm? ConstantMoved(MInstr i)
         => i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm : null;
-
-    /// <summary>
-    /// The callee-saved registers the function touches, or all of them where
-    /// it catches (a landing pad is entered with them as the thrower left
-    /// them); a leaf has no frame, and one that gave EBP a value saves it
-    /// first, as the prologue's push would have.
-    /// </summary>
-    protected override void Saved(AFunction f, IPlacement p)
-    {
-        bool catches = f.Blocks.Any(b => b.LandingPad);
-        foreach (int g in Of.Whole.Classes[0].CalleeSaved)
-            if (catches || p.Touched.Contains(g)) _m.SavedRegs.Add((Gpr)g);
-        _m.Frameless = _leaf;
-        _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Ebp);
-        if (_m.FramePointerFree) _m.SavedRegs.Insert(0, Gpr.Ebp);
-    }
 }

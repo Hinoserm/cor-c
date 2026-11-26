@@ -19,7 +19,7 @@ namespace Corsac.Lang.X86;
 /// making. What a mode does its own way it is asked: its registers, which
 /// constant a move carries (ConstantMoved), where a slot may be written
 /// (MayWriteMemory), registers written that no table names (AlsoWritten),
-/// and what the function saves (Saved).
+/// and i386's fewer XMM registers under packed operations (Fitted).
 /// </summary>
 internal abstract class FamilyTarget
 {
@@ -186,11 +186,39 @@ internal abstract class FamilyTarget
     /// <summary>The register a value was placed in, as an operand: the frame's base register as the value it holds there (MReg.EbpData), no frame's base.</summary>
     protected static MReg Out(int reg) => reg == (int)Gpr.Ebp ? MReg.EbpData : MReg.Of(reg);
 
-    /// <summary>What the function saves and how its frame stands, from the registers the allocation touched.</summary>
-    protected abstract void Saved(AFunction f, IPlacement p);
+    /// <summary>
+    /// WHAT THE FUNCTION SAVES AND HOW ITS FRAME STANDS, from the registers
+    /// the allocation touched, in both modes: the callee-saved registers it
+    /// touches, or all of them where it must put every one back -- one that
+    /// catches (a landing pad is entered with them as the thrower left
+    /// them), and in long mode one that enters the collector through a
+    /// system call (MFunction.SavesEverything, which says both). A leaf has
+    /// no frame (MFunction.Frameless), and one that gave the base register a
+    /// value saves it first, as the prologue's push would have
+    /// (MFunction.FramePointerFree): the caller's base register just below
+    /// the return address, a frame link a fault's walk reads
+    /// (Runtime.FrameAt).
+    /// </summary>
+    private void Saved(AFunction f, IPlacement p)
+    {
+        bool all = X86Mode.Long ? _m.SavesEverything : f.Blocks.Any(b => b.LandingPad);
+        foreach (int g in ModeFiles.Whole.Classes[0].CalleeSaved)
+            if (all || p.Touched.Contains(g)) _m.SavedRegs.Add((Gpr)g);
+        _m.Frameless = _leaf;
+        _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Ebp);
+        if (_m.FramePointerFree) _m.SavedRegs.Insert(0, Gpr.Ebp);
+    }
 
-    /// <summary>The mode's registers as the allocator has them, for this function.</summary>
-    public abstract RegisterFile Registers { get; }
+    /// <summary>The mode's three register files (Files).</summary>
+    protected abstract (RegisterFile Whole, RegisterFile Leaf, RegisterFile CallerOnly) ModeFiles { get; }
+
+    /// <summary>A file as this function has it: i386's with fewer XMM registers where its packed operations hold the rest.</summary>
+    protected virtual RegisterFile Fitted(RegisterFile file) => file;
+
+    /// <summary>The mode's registers as the allocator has them, for this function: a thunk's, a leaf's, or the whole file.</summary>
+    public RegisterFile Registers => _registers ??= Fitted(_m.Source.KeepsCallerRegisters ? ModeFiles.CallerOnly : _leaf ? ModeFiles.Leaf : ModeFiles.Whole);
+
+    private RegisterFile? _registers;
 
     /// <summary>
     /// The class of a register: the general ones 0, the XMM ones 1 -- a

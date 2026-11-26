@@ -84,17 +84,18 @@ public sealed class MFunction
     public List<Gpr> SavedRegs { get; } = new();
 
     /// <summary>
-    /// EBP HOLDS A VALUE IN THIS FUNCTION (X86Target, for a leaf, which is
-    /// Frameless): saved first of the registers it saves (SavedRegs[0]), so
-    /// the caller's EBP lies just below the return address -- a frame link as
-    /// a prologue's would be, which a fault's walk reads (Runtime.FrameAt).
+    /// THE BASE REGISTER HOLDS A VALUE IN THIS FUNCTION (FamilyTarget, for a
+    /// leaf, which is Frameless), both modes: saved first of the registers
+    /// it saves (SavedRegs[0]), so the caller's base register lies just
+    /// below the return address -- a frame link as a prologue's would be,
+    /// which a fault's walk reads (Runtime.FrameAt).
     /// </summary>
     public bool FramePointerFree { get; set; }
 
     /// <summary>
-    /// A FUNCTION WITH NO FRAME OF ITS OWN -- a leaf (X86Target), or one
-    /// whose only calls never return (ColdFrames): no `push ebp; mov ebp,
-    /// esp` and no `leave`. It pushes the registers it saves, then reserves
+    /// A FUNCTION WITH NO FRAME OF ITS OWN -- a leaf (FamilyTarget.Leaf, both
+    /// modes), or on i386 one whose only calls never return (ColdFrames): no
+    /// `push ebp; mov ebp, esp` and no `leave`. It pushes the registers it saves, then reserves
     /// its frame (`sub esp, n`), and every slot and argument is addressed off
     /// ESP, which nothing moves between that and the epilogue -- `add esp, n`,
     /// the pops, `ret` (FramePointerFree.Run, Encoder) -- a reserved frame
