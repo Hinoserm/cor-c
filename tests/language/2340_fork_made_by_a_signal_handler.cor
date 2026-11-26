@@ -1,0 +1,84 @@
+// test: a fork made by a signal handler: the child runs handlers after it, whichever thread ran the forking one
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// rounds 24 children wrong 0
+//
+// A HANDLER RUNS ON THE DELIVERING THREAD, or on a thread in Os.Pause that
+// found the signal before that thread took it (Settle). A fork made by the
+// handler copies whichever it was. Where it was the delivering thread, the
+// child's only thread is that one, still delivering: here it just leaves
+// (7). Where it was the pausing thread, the delivering thread stayed
+// behind with the parent: the child must be given one of its own, or no
+// handler ever runs in it again -- the child sends itself SIGTERM after
+// the fork and leaves 0 if that handler ran, 3 if five seconds passed.
+// Which thread wins is the run's to say, so the program asks two dozen
+// times and counts the children that left any other way.
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+sealed class Forking : PosixSignalHandler
+{
+    public void Invoke(PosixSignalContext context)
+    {
+        context.Cancel = true;
+        int pid = UnixProcess.Fork();
+        if (pid == 0)
+        {
+            Program.InChild = true;
+            // The delivering thread's copy: no thread of the program came with it.
+            if (Environment.CurrentManagedThreadId != Program.First) Environment.Exit(7);
+        }
+        else Volatile.Write(ref Program.Child, pid);
+    }
+}
+
+sealed class Counting : PosixSignalHandler
+{
+    public static int Ran;
+
+    public void Invoke(PosixSignalContext context)
+    {
+        context.Cancel = true;
+        Interlocked.Increment(ref Ran);
+    }
+}
+
+static class Program
+{
+    public static int First, Child;
+    public static volatile bool InChild;
+
+    static int Main()
+    {
+        First = Environment.CurrentManagedThreadId;
+        PosixSignalRegistration forking = PosixSignalRegistration.Create(PosixSignal.SIGHUP, new Forking());
+        PosixSignalRegistration counting = PosixSignalRegistration.Create(PosixSignal.SIGTERM, new Counting());
+        int wrong = 0, rounds = 0;
+        for (; rounds < 24; rounds++)
+        {
+            Volatile.Write(ref Child, 0);
+            UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGHUP);
+            // Returns when the handler has run -- here, or on the delivering thread.
+            Os.Pause();
+            if (InChild)
+            {
+                // The pausing thread's copy, the handler done: handlers must still run.
+                UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
+                for (int waited = 0; waited < 5000 && Volatile.Read(ref Counting.Ran) < 1; waited += 5) Thread.Sleep(5);
+                return Volatile.Read(ref Counting.Ran) >= 1 ? 0 : 3;
+            }
+            int pid = Volatile.Read(ref Child);
+            if (pid <= 0) { wrong++; continue; }
+            int status;
+            UnixProcess.WaitPid(pid, out status);
+            int left = UnixProcess.Result(status);
+            if (left != 0 && left != 7) wrong++;
+        }
+        Console.WriteLine("rounds " + rounds + " children wrong " + wrong);
+        GC.KeepAlive(forking);
+        GC.KeepAlive(counting);
+        return 0;
+    }
+}

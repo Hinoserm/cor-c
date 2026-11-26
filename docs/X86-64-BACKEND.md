@@ -307,7 +307,7 @@ CR8 are whole), `LoadSegments` -- and what a long-mode kernel needs besides:
 
 Those that are one instruction in both modes are selected once
 (`Select.Intrinsics.cs`, `SelectFamilyIntrinsic`): the interrupt flag and
-`hlt`, port input, the flags and the segment registers read, `SetGs`,
+`hlt`, `SaveRegisters`, port input, the flags and the segment registers read, `SetGs`,
 `LoadTaskRegister`, `LoadCodeSegment`, the bit scans, CPUID's one-register
 reads, `KeepAlive`, `CallerRegister`, the loader's finaliser, the streaming
 prefetch. Each mode keeps what is not the same instruction there: MSRs and

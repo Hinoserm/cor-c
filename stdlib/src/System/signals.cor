@@ -80,6 +80,11 @@ public class PosixSignalRegistration : IDisposable
     // answered EINTR at every slice while it ran -- nor take them from the
     // program's (Deliver), nor wait for themselves (Settle).
     [ThreadStatic] static bool _inside;
+    // WHETHER THIS THREAD IS THE ONE THAT DELIVERS (DeliverLoop's): a
+    // handler is run by it, or by the thread in Os.Pause that found a
+    // signal the delivering thread had not yet taken (Settle) -- and a
+    // fork made by a handler copies whichever it was (ForkedChild).
+    [ThreadStatic] static bool _delivers;
     // Whether the thread that delivers has been started: once a process, by
     // the first Create (StartDelivering). A FORK'S CHILD has the word and
     // not the thread -- only the forking thread is copied -- so it is given
@@ -130,15 +135,24 @@ public class PosixSignalRegistration : IDisposable
     /// thread that ran them stayed behind. A signal that arrived for the
     /// parent is not the child's (POSIX: none pending is inherited), nor a
     /// delivery the parent was in the middle of; then a delivering thread
-    /// of the child's own, where any handler is set. A FORK MADE BY A
-    /// HANDLER is the one case the copied thread is the delivering one, in
-    /// the middle of its delivery: it goes on being it, lock and all.
+    /// of the child's own, where any handler is set. Every signal is
+    /// blocked from before the fork until this has run (Os.Fork), so none
+    /// of the child's own is forgotten with the parent's.
+    ///
+    /// A FORK MADE BY A HANDLER copies the thread that was running it, in
+    /// the middle of its delivery, and the delivery's lock is its to give
+    /// back when the handler returns (Run). Where that is the delivering
+    /// thread itself it goes on being it. Where it is a thread in Os.Pause
+    /// that ran the handler itself (Settle), the delivering thread stayed
+    /// behind like any other: the child is given one, which waits at the
+    /// lock until the handler is done.
     static void ForkedChild()
     {
         System.Threading.Interlocked.Exchange(ref _pending, 0);
         System.Threading.Interlocked.Exchange(ref _unseen, 0);
-        if (Inside()) return;
-        System.Threading.Interlocked.Exchange(ref _running, 0);
+        bool inside = Inside();
+        if (inside && _delivers) return;
+        if (!inside) System.Threading.Interlocked.Exchange(ref _running, 0);
         System.Threading.Interlocked.Exchange(ref _delivering, 0);
         if (_handlers == null) return;
         for (int n = 0; n < MaxSignal; n++)
@@ -157,6 +171,7 @@ public class PosixSignalRegistration : IDisposable
     /// ends with nothing there (Windows parks a second at most) runs nothing.
     static void DeliverLoop()
     {
+        _delivers = true;
         nuint at = Sys.AddressOf(ref _pending);
         while (true)
         {

@@ -1796,11 +1796,21 @@ public static partial class Os
     /// this -- libc's own, through a DllImport -- has none of it.
     public static int Fork()
     {
+        // WHERE THE PROGRAM HAS SIGNAL HANDLERS, every signal is held back
+        // across the fork and until the child's are set straight: one sent
+        // to the child the moment it exists would be marked in the parent's
+        // words -- which the child then forgets -- with nobody to run it,
+        // and its default action is no longer the kernel's to take. The
+        // kernel keeps it for the child until the mask goes back.
+        bool handlers = Runtime.ForkedSignals != 0;
+        long every = 0 - 1, was = 0;
+        if (handlers) Sys.Syscall(LinuxCall.RtSigprocmask, 0, (SyscallWord)Sys.AddressOf(ref every), (SyscallWord)Sys.AddressOf(ref was), 8, 0, 0);   // SIG_BLOCK
         bool held = Gc.ReadyFork();
         int pid = (int)Platform.Result(Sys.Syscall(LinuxCall.Fork, 0, 0, 0));
         Gc.Forked(pid == 0, held);
         if (pid == 0 && Runtime.ForkedChild != 0) Sys.Call(Runtime.ForkedChild, 0, 0, 0);
         if (pid == 0 && Runtime.ForkedSignals != 0) Sys.Call(Runtime.ForkedSignals, 0, 0, 0);
+        if (handlers) Sys.Syscall(LinuxCall.RtSigprocmask, 2, (SyscallWord)Sys.AddressOf(ref was), 0, 8, 0, 0);     // SIG_SETMASK
         return pid;
     }
 

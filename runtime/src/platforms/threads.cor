@@ -3097,15 +3097,14 @@ public static partial class Runtime
 
     /// The span under which a scan stays scalar: leaving the MMX registers
     /// (EMMS) costs what a few dozen units compared one at a time do. (Long
-    /// mode has no EMMS to pay for and could go lower; it keeps i386's
-    /// span until that is measured, a call and a pattern's setup being
-    /// what it pays instead.)
+    /// mode has no EMMS to pay for and may do with less; it keeps i386's
+    /// span until that is measured.)
     const int PackedUnits = 32;
 
-    /// (i386. Long mode's scans use no MMX register and both leaves are no
-    /// instruction there: Selector.SelectMachineIntrinsicL.)
     /// The MMX registers given back to the x87: FEMMS where 3DNow! has it --
     /// the faster on the K6 (AMD 21924), the same on the K7 -- EMMS elsewhere.
+    /// In long mode the scans use no MMX register, and both are no
+    /// instruction at all (Selector.SelectMachineIntrinsicL).
     static void PackedDone()
     {
         if (Processor.Has(Processor.ThreeDNow)) Sys.PackedEndFast();

@@ -58,6 +58,7 @@ static class Program
             Console.WriteLine("child: " + (first ? "handled " + Counting.Last + " " + Counting.Ran : "never handled"));
             UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
             Console.WriteLine("child: " + (Until(2) ? "second " + Counting.Ran : "second never handled"));
+            GC.KeepAlive(own);
             return first ? 0 : 3;
         }
         int status;
@@ -65,6 +66,7 @@ static class Program
         Console.WriteLine("parent: child " + UnixProcess.Result(status));
         UnixProcess.Kill(Environment.ProcessId, (int)PosixSignal.SIGTERM);
         Console.WriteLine("parent: " + (Until(1) ? "handled " + Counting.Last + " " + Counting.Ran : "never handled"));
+        GC.KeepAlive(parents);
         return 0;
     }
 }
