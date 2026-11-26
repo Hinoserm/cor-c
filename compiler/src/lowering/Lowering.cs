@@ -279,12 +279,14 @@ public sealed partial class Lowering
         // (BodyWantedLate), says its errors after the binder's were reported,
         // and they are this unit's as much as any.
         int saidBefore = bound.Errors.Count;
-        // THE STREAMING COPY AND FILL, in i386 code that owns its FPU state
-        // (OwnsFpuState): the backend calls them for a block of 256 KB and
-        // more (Select.SelectMemCopy), and no IR does, so they are lowered
-        // and kept as the store sequences' routines are (Module.RuntimeHelpers).
+        // THE STREAMING COPY AND FILL, in code under an operating system
+        // (OwnsFpuState: i386's use the MMX registers, which only such code
+        // owns; long mode's a general register, and follow the same rule):
+        // the backend calls them for a block of 256 KB and more
+        // (Select.SelectMemCopy), and no IR does, so they are lowered and
+        // kept as the store sequences' routines are (Module.RuntimeHelpers).
         List<MethodSymbol> streams = new();
-        if (OwnsFpuState && Target.Current.WordSize == 4)
+        if (OwnsFpuState)
             foreach (string name in new[] { "StreamCopy", "StreamFill" })
                 if (l.RuntimeMethod(name, 3) is MethodSymbol stream) { l.Require(stream); streams.Add(stream); }
         l.Run(unit);

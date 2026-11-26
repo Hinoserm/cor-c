@@ -3001,9 +3001,11 @@ public class ManualResetEventSlim : IDisposable
     public void Dispose() { }
 }
 
-#if !TARGET_64BIT
-// THE MMX REGISTERS' BULK AND SCANNING ROUTINES, hosted i386 only: what owns
-// the x87 state may borrow it (a freestanding image never runs these). Each
+// THE BULK AND SCANNING ROUTINES, hosted code's (a freestanding image never
+// runs these). THE COPY AND THE FILL AROUND THE CACHES are both modes':
+// i386's through the MMX registers (MOVNTQ), long mode's through a general
+// register (MOVNTI), which leaves no state behind it. THE SCANS are i386's
+// alone, on the MMX registers: what owns the x87 state may borrow it. Each
 // asks Processor first, whatever --cpu the image was made for -- one image
 // runs on the 486 and the K8 alike -- and takes the ordinary way where the
 // processor has not the instructions, or the work is too short to pay for
@@ -3089,6 +3091,7 @@ public static partial class Runtime
         Sys.MemorySet(to, value, count & 63);
     }
 
+#if !TARGET_64BIT
     /// The span under which a scan stays scalar: leaving the MMX registers
     /// (EMMS) costs what a few dozen units compared one at a time do.
     const int PackedUnits = 32;
@@ -3316,5 +3319,5 @@ public static partial class Runtime
         PackedDone();
         return i;
     }
-}
 #endif
+}

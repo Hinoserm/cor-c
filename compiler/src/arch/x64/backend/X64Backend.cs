@@ -129,10 +129,25 @@ public sealed class X64Backend : IBackend
     /// </summary>
     public bool Hosted { get; init; }
 
+    /// <summary>
+    /// The runtime's streaming copy and fill, where the module has them to
+    /// call (Module.RuntimeHelpers: lowering kept them) and the code is
+    /// hosted: a copy or a fill of a length known only as it runs calls
+    /// them at 256 KB and over (Selector.StreamedOr), as i386's.
+    /// </summary>
+    private string? _streamCopy, _streamFill;
+
+    private void FindStreams(Module module)
+    {
+        _streamCopy = Hosted && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamCopy) ? Corsac.Lang.Lto.RuntimeAbi.StreamCopy : null;
+        _streamFill = Hosted && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill) ? Corsac.Lang.Lto.RuntimeAbi.StreamFill : null;
+    }
+
     public ObjectFile Generate(Module module, List<string> errors)
     {
         // Long mode, for the machine IR the two backends share (X86Mode).
         X86Mode.Long = true;
+        FindStreams(module);
         ObjectFile obj = new();
         // The processor --cpu named, its instructions what this unit may use.
         // And whether the code is an operating system's guest (Hosted): the
@@ -451,6 +466,7 @@ public sealed class X64Backend : IBackend
         // Long mode, as Generate says it: the selection, the allocation and
         // the listing all read it.
         X86Mode.Long = true;
+        FindStreams(module);
         StringBuilder sb = new();
         List<string> errors = new();
         sb.Append("; module ").Append(module.Name).Append('\n');
@@ -485,7 +501,7 @@ public sealed class X64Backend : IBackend
         Corsac.Lang.Opt.SharedTrapFrees.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.RunLong(f, errors, isExternal);
+        MFunction m = Selector.RunLong(f, errors, isExternal, _streamCopy, _streamFill);
         m.RealignsStack = entry;
         m.StackAtSixteen = Hosted;
         if (errors.Count > before)

@@ -117,8 +117,10 @@ width left unsaid is the mode's word (`MInstr.Width`), so a method that
 serves both names every width it emits.
 
 What is long mode's own, in `x86/backend/Select.Long.cs` (its methods of
-i386's names carry an `L`): the System V call, parameters and return
-(`SelectCallL`, `LoadParamsL`, `SelectRetL`), unwinding and SYSCALL, the
+i386's names carry an `L`): the System V call's sequence (`SelectCallL`;
+where its arguments and its result go is `Conventions.SystemV`'s word, and
+the entry's parameters and the return are the family's `LoadParams`,
+`SelectRet` and `TakeResult`, which read it), unwinding and SYSCALL, the
 makers of its operands (`RL`, `RML`, `AddressL`, `LoadConstant`,
 `GotAddress`), division by a constant at either width
 (`SelectDivByConstant`), an unsigned integer to a float and a float to an

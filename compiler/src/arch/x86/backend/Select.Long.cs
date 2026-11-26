@@ -69,10 +69,12 @@ internal sealed partial class Selector
     /// in a dynamically linked program what its libraries supply -- which is
     /// reached through its GOT slot rather than at its own address.
     /// </summary>
-    public static MFunction RunLong(Function f, List<string> errors, Func<string, bool>? isExternal = null)
+    public static MFunction RunLong(Function f, List<string> errors, Func<string, bool>? isExternal = null, string? streamCopy = null, string? streamFill = null)
     {
         if (!X86Mode.Long) throw new InvalidOperationException("long mode's selector was asked for a function outside long mode");
-        Selector s = new(f, errors, isExternal);
+        // (Not in the stream routines themselves, as i386's: Selector.Run.)
+        bool stream = f.Name != streamCopy && f.Name != streamFill;
+        Selector s = new(f, errors, isExternal) { _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null };
         s.Select();
         return s._m;
     }
@@ -1123,6 +1125,32 @@ internal sealed partial class Selector
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.ReadCodeSegment:
                 if (i.Dest is not null) Emit(MOp.ReadCs, V(i.Dest));
+                return;
+            // THE STREAMING ROUTINES' INSTRUCTIONS (Runtime.StreamCopy,
+            // StreamFill): a cache line stored around the caches by eight
+            // MOVNTI of a general register -- as Linux's uncached copy for
+            // x86-64 stores it -- where i386 goes through MM0 by MOVNTQ.
+            // No packed register, so nothing to leave at the end but the
+            // fence that orders the stores before what follows.
+            case Corsac.Lang.X86.MachineIntrinsics.StreamPrefetch:
+                Emit(new MInstr(MOp.PrefetchNta, new MMem(RL(i.Operands[0]), 0)) { Probed = true });
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.StreamCopy64:
+            case Corsac.Lang.X86.MachineIntrinsics.StreamFill64:
+            {
+                MReg to = RL(i.Operands[0]), from = RL(i.Operands[1]);
+                bool fill = name == Corsac.Lang.X86.MachineIntrinsics.StreamFill64;
+                MReg word = Temp();
+                if (fill) MovL(word, new MMem(from, 0), 8);
+                for (int k = 0; k < 64; k += 8)
+                {
+                    if (!fill) MovL(word, new MMem(from, k), 8);
+                    Emit(new MInstr(MOp.Movnti, new MMem(to, k), word) { Width = 8, Probed = true });
+                }
+                return;
+            }
+            case Corsac.Lang.X86.MachineIntrinsics.StreamEnd:
+                Emit(new MInstr(MOp.Sfence) { Probed = true });
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.GetGs:
                 // Nothing where nothing reads it, as i386's.

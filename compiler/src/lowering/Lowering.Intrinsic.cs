@@ -900,7 +900,11 @@ public sealed partial class Lowering
             case "StreamPrefetch" or "StreamPrefetchLine" or "StreamCopy64" or "StreamFill64" or "StreamEnd"
                 or "PackedFindChar4" or "PackedFindChar8" or "PackedEqual8" or "PackedEnd" or "PackedEndFast":
             {
-                if (_t.WordSize != 4)
+                // Long mode has the streaming four -- by MOVNTI, a general
+                // register's word around the caches, with no MMX state to
+                // leave (Selector.SelectMachineIntrinsicL) -- and none of
+                // the MMX registers' scans.
+                if (_t.WordSize != 4 && name is not ("StreamPrefetch" or "StreamCopy64" or "StreamFill64" or "StreamEnd"))
                 {
                     Error(call, $"Sys.{name} is an i386 instruction; long mode has its own");
                     return Void();

@@ -1789,6 +1789,8 @@ public static class Driver
         }
         Corsac.Lang.X64.X64Backend x64Backend = new()
         {
+            // Under an operating system (Linux; --windows is refused for
+            // x86-64 above, and would have to be asked the same question).
             Hosted = ownsFpu,
             OptimizeSize = args.Contains("--opt-size"),
             PositionIndependent = x86Backend.PositionIndependent,

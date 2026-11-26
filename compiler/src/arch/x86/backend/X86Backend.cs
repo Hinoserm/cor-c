@@ -1016,6 +1016,9 @@ public sealed class X86Backend : IBackend
     public string Assembly(Module module)
     {
         X86Mode.Long = false;
+        // As Generate compiles it: the streaming routines where the module has them.
+        _streamCopy = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamCopy) ? Corsac.Lang.Lto.RuntimeAbi.StreamCopy : null;
+        _streamFill = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill) ? Corsac.Lang.Lto.RuntimeAbi.StreamFill : null;
         _fpuFree = FpuFree.Compute(module, SafepointPolls, out _fpuDefined);
         _fpuDeferred = null;
         StringBuilder sb = new();

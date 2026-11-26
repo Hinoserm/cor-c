@@ -930,11 +930,14 @@ public static class Prelude
             // registers in (Processor.Ask).
             public static int CpuidEax(int leaf) { return 0; }
             public static int CpuidEdx(int leaf) { return 0; }
-            // THE MMX REGISTERS' BULK AND SCANNING INSTRUCTIONS, i386 only, for
-            // the hosted runtime's routines that ask Processor first (each is
-            // an instruction the --cpu profile may not have): prefetchnta and
-            // 3DNow!'s prefetch; a cache line copied, or filled with the eight
-            // bytes at `pattern`, by movntq; sfence and emms after them; four
+            // THE BULK AND SCANNING INSTRUCTIONS, for the hosted runtime's
+            // routines that ask Processor first (each is an instruction the
+            // --cpu profile may not have): prefetchnta and 3DNow!'s prefetch;
+            // a cache line copied, or filled with the eight bytes at
+            // `pattern`, by movntq (in long mode by movnti, with no MMX
+            // register); sfence, and on i386 emms, after them. Those four --
+            // StreamPrefetch, StreamCopy64, StreamFill64, StreamEnd -- are
+            // both modes'; the rest are the MMX registers', i386 only: four
             // UTF-16 units at `at` against the four at `pattern` (a byte 0xFF
             // each that is equal), eight by pmovmskb (a bit each); eight bytes
             // alike (-1) or not; emms, or 3DNow!'s femms.

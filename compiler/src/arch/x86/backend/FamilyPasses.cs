@@ -62,10 +62,10 @@ internal static class FamilyPasses
     /// hosted code is entered no other way: the process's entry realigns
     /// (RealignsStack, itself left out), a thread starts on a stack the
     /// runtime's trampoline aligns (platforms/linux/threading.cor), the
-    /// kernel enters a signal's handler as the ABI says (test 2336 runs
-    /// spilling code on each), and every call this backend makes keeps
-    /// the sixteen
-    /// (Conventions.SystemV). FREESTANDING code is entered by whatever
+    /// kernel enters a signal's handler as the ABI says, and every call
+    /// this backend makes keeps the sixteen (Conventions.SystemV). Test
+    /// 2336 runs spilling code on a thread, a pool's worker, in a handler
+    /// and at every depth of calls. FREESTANDING code is entered by whatever
     /// wrote its stubs -- an interrupt's frame with or without an error
     /// code, a context switch -- and is promised nothing: its packed
     /// spills stay MOVUPS's. Which it is, is the function's own word

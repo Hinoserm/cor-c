@@ -1957,7 +1957,7 @@ internal sealed partial class Selector
                 // (Long mode: a small clear of known length as stores, any other by the string instructions.)
                 if (X86Mode.Long)
                 {
-                    if (!SmallSetL(i)) InlineMemSet(i);
+                    if (!SmallSetL(i)) SelectMemSet(i);
                     break;
                 }
                 if (SelectFrameSet(i)) break;
@@ -4004,23 +4004,50 @@ internal sealed partial class Selector
     /// </summary>
     private void StreamedOr(Instr i, string routine, Action inline)
     {
+        bool longMode = X86Mode.Long;
         MReg n = Temp();
-        Mov(n, RM(i.Operands[2]));
-        Emit(MOp.Cmp, n, Imm(StreamBytes));
+        if (longMode)
+        {
+            MovL(n, RL(i.Operands[2]));
+            EmitW(MOp.Cmp, 8, n, Imm(StreamBytes));
+        }
+        else
+        {
+            Mov(n, RM(i.Operands[2]));
+            Emit(MOp.Cmp, n, Imm(StreamBytes));
+        }
         MBlock big = Aside();
         MBlock done = _m.NewBlock($"{_cur.Name}.{_splits++}", big);
         Jcc(Cond.Ae, big);
         inline();
         Jmp(done);
         _cur = big;
-        // (Its three words in the registers it takes them in: RegisterArgs.)
-        Mov(Eax, RM(i.Operands[0]));
-        Mov(Edx, RM(i.Operands[1]));
-        Mov(Ecx, n);
-        Emit(new MInstr(MOp.Call, SymbolAddress(routine, 0), Eax, Edx, Ecx) { CallReloc = RelocKind.Rel32 });
+        // Its three words in the registers the convention gives a call's
+        // first three (Conventions.Current: EAX, EDX, ECX; RDI, RSI, RDX).
+        ArgPlace[] places = Conventions.Current.Arguments(StreamWords).Places;
+        MReg first = MReg.Of(places[0].Register), second = MReg.Of(places[1].Register), third = MReg.Of(places[2].Register);
+        if (longMode)
+        {
+            // Each value in a register of its own before any goes to its place.
+            MReg to = RL(i.Operands[0]), other = RL(i.Operands[1]);
+            MovL(first, to);
+            MovL(second, other);
+            MovL(third, n);
+            Emit(new MInstr(MOp.Call, MImm.Sym(routine, 0)) { IntArgs = 3 });
+        }
+        else
+        {
+            Mov(first, RM(i.Operands[0]));
+            Mov(second, RM(i.Operands[1]));
+            Mov(third, n);
+            Emit(new MInstr(MOp.Call, SymbolAddress(routine, 0), first, second, third) { CallReloc = RelocKind.Rel32 });
+        }
         Jmp(done);
         _cur = done;
     }
+
+    /// <summary>The stream routines' three arguments as the convention places them: three words (a long mode word's place is an int's too).</summary>
+    private static readonly IrType[] StreamWords = { IrType.I32, IrType.I32, IrType.I32 };
 
     // ---- the string instructions, a word of the mode at a time ------------------
     //
@@ -4102,7 +4129,9 @@ internal sealed partial class Selector
         // its own.
         if (X86Mode.Long)
         {
-            if (!SmallCopyL(i)) InlineMemCopy(i);
+            if (SmallCopyL(i)) return;
+            if (i.Operands[2] is not ImmOperand && _streamCopy is { } streamed) StreamedOr(i, streamed, () => InlineMemCopy(i));
+            else InlineMemCopy(i);
             return;
         }
         if (SelectMmxFrameCopy(i)) return;
