@@ -1,0 +1,16 @@
+// A DLL whose export calls back into its host (windows-wine64.sh, walk.c):
+// the host's callback walks the stack from inside, through this image's
+// frames -- the way-in stub's (Windows' convention to this compiler's) and
+// the body's -- by their unwind data (.pdata, .xdata), back to the host.
+using System.Runtime.InteropServices;
+
+static unsafe class Walk
+{
+    [UnmanagedCallersOnly(EntryPoint = "Through")]
+    static int Through(delegate* unmanaged<int, int> callback, int value)
+    {
+        int[] kept = new int[4];
+        kept[1] = value;
+        return callback(kept[1] + 1) + kept.Length;
+    }
+}

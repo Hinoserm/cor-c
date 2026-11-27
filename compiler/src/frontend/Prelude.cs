@@ -1046,7 +1046,8 @@ public static class Prelude
             public static void SetGs(int selector) { }
             // A word of this processor's area at `offset` from where GS is
             // based, read or written in one instruction (a kernel's per-CPU
-            // data: Linux's this_cpu_read and this_cpu_write).
+            // data: Linux's this_cpu_read and this_cpu_write; in a 64-bit
+            // Windows image, a word of the thread's TEB).
             public static nuint PerCpuRead(int offset) { return 0; }
             public static void PerCpuWrite(int offset, nuint value) { }
             public static int GetGs() { return 0; }

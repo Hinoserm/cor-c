@@ -4649,7 +4649,7 @@ internal sealed partial class Selector
         {
             MOperand callee = target is not null ? target : SymbolAddress(NativeCall.Symbol(i.Callee!), 0);
             MOp op = target is null ? MOp.Call : MOp.CallInd;
-            if (longMode) Emit(new MInstr(op, callee) { IntArgs = plan.Generals, FloatArgs = plan.Floats, NativeAl = native && !win64, Win64 = win64 });
+            if (longMode) Emit(new MInstr(op, callee) { IntArgs = plan.Generals, FloatArgs = plan.Floats, FloatMask = plan.FloatMask, NativeAl = native && !win64, Win64 = win64 });
             else
             {
                 reads.Insert(0, callee);

@@ -32,7 +32,7 @@ internal static class LongAbi
     private static readonly RegSet AllXmm = new(XmmFrom(0, 16)), CallDefs = new(CallerSaved.Concat(XmmFrom(0, 16)).ToArray());
     /// <summary>A call's reads by [AL named][integer arguments][float arguments]: RAX where a native callee reads AL, then the arguments' registers in order.</summary>
     private static readonly RegSet[][][] CallUses = MakeCallUses();
-    /// <summary>A call into Windows' reads by [positions][float positions]: RCX, RDX, R8, R9 to the first, XMM0 up to the second (Conventions.Windows64).</summary>
+    /// <summary>A call into Windows' reads by [positions][float positions' mask]: RCX, RDX, R8, R9 to the first, the XMM registers of the floats' positions (Conventions.Windows64, CallPlan.FloatMask).</summary>
     private static readonly RegSet[][] Win64CallUses = MakeWin64CallUses();
     /// <summary>A system call's reads by argument count: its number in RAX, then its arguments' registers.</summary>
     private static readonly RegSet[] SyscallUses = MakeSyscallUses();
@@ -78,13 +78,14 @@ internal static class LongAbi
         RegSet[][] made = new RegSet[positions.Length + 1][];
         for (int ints = 0; ints <= positions.Length; ints++)
         {
-            made[ints] = new RegSet[positions.Length + 1];
-            for (int floats = 0; floats <= positions.Length; floats++)
+            made[ints] = new RegSet[1 << positions.Length];
+            for (int mask = 0; mask < 1 << positions.Length; mask++)
             {
                 List<int> ids = new();
                 for (int k = 0; k < ints; k++) ids.Add((int)positions[k]);
-                for (int k = 0; k < floats; k++) ids.Add(MReg.XmmBase + k);
-                made[ints][floats] = new RegSet(ids.ToArray());
+                for (int k = 0; k < positions.Length; k++)
+                    if ((mask & 1 << k) != 0) ids.Add(MReg.XmmBase + k);
+                made[ints][mask] = new RegSet(ids.ToArray());
             }
         }
         return made;
@@ -110,7 +111,7 @@ internal static class LongAbi
         // exchange's its third in RCX (X64Backend.RefStoreStub).
         MOp.CallKeep or MOp.CallKeepRax => KeepUses,
         MOp.CallKeepCas => CasUses,
-        MOp.Call or MOp.CallInd when i.Win64 => Win64CallUses[i.IntArgs][i.FloatArgs],
+        MOp.Call or MOp.CallInd when i.Win64 => Win64CallUses[i.IntArgs][i.FloatMask],
         MOp.Call or MOp.CallInd => CallUses[i.NativeAl ? 1 : 0][i.IntArgs][i.FloatArgs],
         MOp.Syscall or MOp.SoftInt => SyscallUses[i.IntArgs],
         // Unwind's exception travels in RAX to the landing pad.

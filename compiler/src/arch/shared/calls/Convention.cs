@@ -29,6 +29,13 @@ internal sealed class CallPlan
     /// <summary>How many general and how many float registers carry arguments.</summary>
     public required int Generals { get; init; }
     public required int Floats { get; init; }
+    /// <summary>
+    /// WHICH FLOAT REGISTERS CARRY ONE, a bit each (XMM k as bit k), where the
+    /// registers are positional (Windows' x64: a float in position k is in
+    /// XMMk, whatever came before it); 0 where Floats says it (System V, whose
+    /// floats take XMM0 on in turn).
+    /// </summary>
+    public int FloatMask { get; init; }
 }
 
 /// <summary>

@@ -465,7 +465,9 @@ public sealed partial class Lowering
             // A WORD OF THIS PROCESSOR'S OWN AREA, gs-relative, as Linux's
             // this_cpu_read and this_cpu_write: one instruction, so no
             // preemption falls between finding the processor and reading it.
-            // Only where GS is a processor's (a kernel's ring 0).
+            // Where GS is a processor's (a kernel's ring 0) -- or, in a
+            // 64-bit Windows image, the thread's TEB, whose words it reads
+            // the same way (Win32.CurrentBlock: gs:[0x1780]).
             // A WORD, the target's: in long mode eight bytes, a pointer of the
             // higher half among them; typed as 32 bits, its high half was
             // cut on the way in and on the way out.

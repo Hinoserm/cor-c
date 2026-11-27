@@ -1508,8 +1508,16 @@ public static class Driver
                     // BY THE LIBRARY'S OWN FORMAT, not the program's: a CORSAC
                     // program of either may link libraries of either
                     // (docs/NATIVE-CALLS.md, "Later: both formats").
-                    mine = new HashSet<string>(image.Length >= 2 && image[0] == (byte)'M' && image[1] == (byte)'Z'
-                        ? Corsac.Lang.Pe.PeReader.ExportsOf(image) : ElfReader.ExportsOf(image), StringComparer.Ordinal);
+                    bool pe = image.Length >= 2 && image[0] == (byte)'M' && image[1] == (byte)'Z';
+                    // BUT OF THE PROGRAM'S WIDTH: a 64-bit image cannot load a
+                    // 32-bit library in its process, nor the other way round
+                    // (PE32 beside PE32+, ELFCLASS32 beside ELFCLASS64).
+                    const byte ElfClass64 = 2;      // e_ident[EI_CLASS], ELFCLASS64
+                    int libraryWord = pe ? Corsac.Lang.Pe.PeReader.WordBytes(image) : image.Length > 4 && image[4] == ElfClass64 ? 8 : 4;
+                    int programWord = target == Target.X86_64 ? 8 : 4;
+                    if (libraryWord != programWord)
+                        return Fail($"--link-shared '{lib}' is a {8 * libraryWord}-bit library, and this is a {8 * programWord}-bit compile");
+                    mine = new HashSet<string>(pe ? Corsac.Lang.Pe.PeReader.ExportsOf(image) : ElfReader.ExportsOf(image), StringComparer.Ordinal);
                 }
                 catch (Exception e) when (e is ElfFormatException or InvalidDataException)
                 {

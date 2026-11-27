@@ -54,10 +54,14 @@ public sealed class MInstr : MOperandList
     /// <summary>
     /// Long mode: a call into Windows by Windows' x64 convention
     /// (Conventions.Windows64): it reads the first IntArgs of RCX, RDX, R8,
-    /// R9 and XMM0 up to FloatArgs, and changes what a System V call does,
-    /// which holds every register Windows lets a callee change (LongAbi).
+    /// R9 and the XMM registers FloatMask names (a float's position), and
+    /// changes what a System V call does, which holds every register Windows
+    /// lets a callee change (LongAbi).
     /// </summary>
     public bool Win64 { get; init; }
+
+    /// <summary>Long mode, Win64: the XMM registers the call's float arguments are in, XMM k as bit k (CallPlan.FloatMask).</summary>
+    public int FloatMask { get; init; }
 
     /// <summary>
     /// The source line this came from, or 0 where there is none.
@@ -196,7 +200,7 @@ public sealed class MInstr : MOperandList
     /// <summary>The same, marked as selected inside a packed block or outside one (OwnsState): THE ONE LIST of what an instruction carries besides its operands, for every copy made of one (the allocator's rebuild, LoopRotate.Clone, Select.Owning).</summary>
     public MInstr Rebuilt(List<MBlock>? table, byte ownsState) => new(Op)
     {
-        Width = Width, SourceWidth = SourceWidth, To32 = To32, TableSymbol = TableSymbol, FloatArgs = FloatArgs, IntArgs = IntArgs, NativeAl = NativeAl,
+        Width = Width, SourceWidth = SourceWidth, To32 = To32, TableSymbol = TableSymbol, FloatArgs = FloatArgs, FloatMask = FloatMask, IntArgs = IntArgs, NativeAl = NativeAl,
         Line = Line, Cond = Cond, ZeroFirst = ZeroFirst, Native = Native, Lock = Lock, Probed = Probed, OwnsState = ownsState, Asm = Asm,
         Table = table, CallReloc = CallReloc,
     };

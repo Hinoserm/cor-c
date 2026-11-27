@@ -444,7 +444,12 @@ LLVM's, Cranelift's, GCC's, Wine's and .NET's implementations -- is in the
   `mov r,[base]; mov r,gs:[r]; add r,[offset]; mov r,[r]` -- where the base
   cell is 0x30 (the TEB) and the offset 0x1480 + 8k for a slot under 64, or
   the cell 0x1780 (TlsExpansionSlots) and 8(k - 64) above; written through
-  TlsSetValue (Win32.SetBlock), which makes the expansion array.
+  TlsSetValue (Win32.SetBlock), which makes the expansion array. A thread
+  that may never have had a block -- C calling in, a thread going away,
+  a park -- reads it through Win32.CurrentBlock instead: the same cells, but
+  0 where the thread has no expansion array (as kernelbase's TlsGetValue
+  answers, read from its disassembly), and without TlsGetValue itself,
+  which clears the thread's last error on every call.
 - FAULTS: a vectored handler (Win32.VectoredFault; XP x64 has them, and Go
   and the CLR use them), since x64 has no registration chain. It reads the
   x64 CONTEXT and sends a null access violation in the image's code on to

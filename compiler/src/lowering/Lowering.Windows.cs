@@ -150,10 +150,16 @@ public sealed partial class Lowering
         };
         VReg instance = f.NewReg(IrTypes.Word, "instance");
         f.Params.Add(instance);
-        VReg reason = f.NewReg(IrTypes.Word, "reason");
-        f.Params.Add(reason);
+        VReg passedReason = f.NewReg(IrTypes.Word, "reason");
+        f.Params.Add(passedReason);
         f.Params.Add(f.NewReg(IrTypes.Word, "reserved"));
         Builder e = new(f, f.NewBlock("entry"));
+        // `reason` IS A DWORD: Windows' x64 convention leaves the upper half
+        // of its register undefined, so it is compared by its low 32 bits
+        // (as a narrow parameter from C is made canonical, Lowering.Method).
+        VReg reason = Target.Current.WordSize == 8
+            ? e.Unary(Opcode.ZExt32, e.Unary(Opcode.Trunc64, passedReason))
+            : passedReason;
         foreach (MethodSymbol m in exports)
         {
             e.Call(MachineIntrinsics.KeepAlive, IrType.Void, RegOperand.Of(e.Address(CallLabel(m))));

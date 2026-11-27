@@ -97,7 +97,7 @@ internal static class Conventions
         public override CallPlan Arguments(IReadOnlyList<IrType> types, bool registers = true)
         {
             ArgPlace[] places = new ArgPlace[types.Count];
-            int stack = 0, floats = 0;
+            int stack = 0, floats = 0, mask = 0;
             for (int k = 0; k < types.Count; k++)
             {
                 int bytes = types[k] is IrType.I32 or IrType.F32 ? 4 : 8;
@@ -107,6 +107,7 @@ internal static class Conventions
                     {
                         places[k] = ArgPlace.InFloat(k, bytes);
                         floats = k + 1;
+                        mask |= 1 << k;
                     }
                     else places[k] = ArgPlace.InGeneral((int)Positions[k], bytes);
                 }
@@ -117,8 +118,10 @@ internal static class Conventions
                 }
             }
             // Generals: every position up to the last register argument, a
-            // float's too (its copy); Floats: XMM0 up to the last float's.
-            return new CallPlan { Places = places, StackBytes = stack, Generals = Math.Min(types.Count, Positions.Length), Floats = floats };
+            // float's too (its copy); Floats: XMM0 up to the last float's;
+            // FloatMask: the float positions alone, the XMM registers a call
+            // really fills (an integer's position leaves its XMM undefined).
+            return new CallPlan { Places = places, StackBytes = stack, Generals = Math.Min(types.Count, Positions.Length), Floats = floats, FloatMask = mask };
         }
 
         private static readonly ArgPlace[] None = [], Word = [ArgPlace.InGeneral((int)Gpr.Rax, 4)], Quad = [ArgPlace.InGeneral((int)Gpr.Rax, 8)],

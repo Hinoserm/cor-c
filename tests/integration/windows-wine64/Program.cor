@@ -4,18 +4,20 @@
 //
 //   hello          the image loads and its entry runs (the way in: a stub that
 //                  takes Windows' convention to this compiler's)
+//   args           the command line as the runtime's argv, words of eight
 //   null caught    a read through null is an access violation that the
 //                  vectored handler sends on as NullReferenceException
 //   threads        four threads started by CreateThread through ThreadStart,
 //                  each with its block in the TLS slot, allocating as they go
-//   collected      a collection while those blocks exist
+//   collected      a collection one thread asks for while the other three
+//                  run, each with its block in the slot: the count grew
 //   deep           frames of 16 KiB, ten deep: each probes its pages in
 //                  order, as Windows grows a stack one guard page at a time
 //   sorted         msvcrt's qsort calling back into an [UnmanagedCallersOnly]
 //                  method (Windows' convention in, by the stub), which
 //                  allocates
-//   printf         a variadic call with a double, which Windows' convention
-//                  passes in XMM2 and in R8 both
+//   printf         a variadic call with a double in the fourth position,
+//                  which Windows' convention passes in XMM3 and in R9 both
 //   pow            a call with two doubles in XMM0 and XMM1, one back in XMM0
 //   seven          the exit code
 using System;
@@ -50,6 +52,7 @@ static unsafe class Program
     static int Main(string[] args)
     {
         Console.WriteLine("hello 64");
+        Console.WriteLine("args " + string.Join(" ", args));
 
         string? none = args.Length > 99 ? "x" : null;
         try
@@ -63,6 +66,7 @@ static unsafe class Program
 
         long total = 0;
         object gate = new object();
+        int before = GC.CollectionCount(0);
         List<Thread> threads = new List<Thread>();
         for (int i = 0; i < 4; i++)
         {
@@ -74,6 +78,8 @@ static unsafe class Program
                 {
                     int[] junk = new int[8];
                     local += junk.Length;
+                    // Thread 0, halfway: a collection while the others run.
+                    if (k == 0 && j == 50000) GC.Collect();
                 }
                 lock (gate) total += local + k;
             });
@@ -82,8 +88,7 @@ static unsafe class Program
         }
         foreach (Thread t in threads) t.Join();
         Console.WriteLine("threads " + total);
-        GC.Collect();
-        Console.WriteLine("collected yes");
+        Console.WriteLine("collected " + (GC.CollectionCount(0) > before ? "yes" : "no"));
 
         Console.WriteLine("deep " + Deep(10));
 

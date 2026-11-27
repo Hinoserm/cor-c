@@ -253,8 +253,13 @@ internal static class AlignedSlots
                 MInstr i = instrs[after];
                 // Long mode's call changes every XMM register (LongAbi): the
                 // value is dead at one -- unless the register is one the
-                // call reads its float arguments in (XMM0 on, FloatArgs of them).
-                if (X86Mode.Long && i.Op is MOp.Call or MOp.CallInd) { dead = x.XmmNumber >= i.FloatArgs; break; }
+                // call reads its float arguments in (XMM0 on, FloatArgs of them;
+                // a Windows call's, the positions FloatMask names).
+                if (X86Mode.Long && i.Op is MOp.Call or MOp.CallInd)
+                {
+                    dead = i.Win64 ? (x.XmmNumber >= 4 || (i.FloatMask & 1 << x.XmmNumber) == 0) : x.XmmNumber >= i.FloatArgs;
+                    break;
+                }
                 if (!Names(i, x.Id)) continue;
                 bool read = false, written = false;
                 for (int o = 0; o < i.Operands.Count; o++)
