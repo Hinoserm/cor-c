@@ -14,7 +14,9 @@ public static class IrUnitCodec
     /// them again over the unit's archived IR (an archive taken before them
     /// holds the IR from before them, IrUnitCodec.Snapshot).
     /// PositionIndependent: the unit is part of a shared object -- a kernel
-    /// module's -- and its regenerated code must be too.
+    /// module's -- that reaches its kernel through the GOT, and its
+    /// regenerated code must too. A module's unit without it has relocated
+    /// text (--relocated-text: UnitBackend).
     /// Regions: whether its late passes may give objects to regions
     /// (RegionPointsTo), as its compile said -- never where there is no
     /// operating system to keep an arena, nor under --no-regions. Made again

@@ -89,11 +89,17 @@ public static partial class Linker
     /// </summary>
     /// <param name="relocatedText">
     /// THE MODULE'S TEXT RELOCATED AT LOAD (--relocated-text), its units
-    /// compiled without position-independent code: a static by its absolute
-    /// address, a call into the kernel a plain rel32 the binder fixes
-    /// (R_386_PC32), no GOT register and no call/pop to find one -- what a
-    /// ring-1 module's binder, which writes the module's own pages, applies
-    /// (os/gui/guimodules.cor). Ring 0's loader does not yet.
+    /// compiled with no GOT. On i386 no position-independent code: a static
+    /// by its absolute address, a call into the kernel a plain rel32 the
+    /// binder fixes (R_386_PC32), no GOT register and no call/pop to find one.
+    /// On x86-64 every kernel name in the text is reached RIP-relative, a
+    /// call `call rel32` and a datum `[rip + name]`, each an R_X86_64_PC32
+    /// (RELA, the place zero) the binder fixes, as Linux's and FreeBSD's
+    /// module loaders do; sound for a name that is an address in the
+    /// kernel's image, checked so here, the binder refusing one out of
+    /// reach of where it put the module. The kernel's
+    /// binder applies them (modules.cor Bind), as a ring-1 module's does
+    /// (os/gui/guimodules.cor).
     /// </param>
     public static byte[] LinkModule(IEnumerable<(string Name, ObjectFile Object)> objects, string fileName, KernelExports kernel, IReadOnlyList<string>? dependencies = null,
         bool relocatedText = false)
@@ -158,10 +164,24 @@ public static partial class Linker
         // WHAT THE KERNEL'S BINDER WILL BE ASKED TO DO, checked now.
         List<string> errors = new();
         if (dyn.TextRel && !relocatedText) errors.Add("a module may not relocate its text, and this one would have to (DT_TEXTREL); link it --relocated-text for a binder that does");
+        HashSet<string> outOfReach = new(StringComparer.Ordinal);
         foreach (DynReloc r in dyn.Relocations)
+        {
             if (r.Kind is not (RelocKind.Relative or RelocKind.Abs32 or RelocKind.Abs64 or RelocKind.GlobData or RelocKind.JumpSlot)
                 && !(relocatedText && r.Kind == RelocKind.Rel32))
                 errors.Add($"'{r.Symbol}' needs a {r.Kind} relocation, which the kernel's binder does not apply");
+            // A KERNEL NAME REACHED PC-RELATIVE FROM A LONG-MODE MODULE is an
+            // address in the kernel's image: a value that is none -- a
+            // layout's absolute one -- means nothing as a distance, and data
+            // holds it whole (R_X86_64_64). Whether the image is in reach of
+            // where the module loads is the binder's to say (its overflow
+            // refusal, as glibc's), the window being its kernel's choice:
+            // corsac86's lies within 2 GB of its image, as Linux's does. A
+            // depended-on module's name is in that window itself.
+            if (kernel.LongMode && r.Kind == RelocKind.Rel32 && kernel.Values.TryGetValue(r.Symbol, out ulong value)
+                && (value < kernel.ImageStart || value > kernel.ImageEnd) && outOfReach.Add(r.Symbol))
+                errors.Add($"'{r.Symbol}' is reached PC-relative from the module's text, and {kernel.Name} has it at 0x{value:x}, no address in its image (0x{kernel.ImageStart:x}..0x{kernel.ImageEnd:x}): it may be reached only through data");
+        }
         foreach (DynSymbol s in dyn.Symbols)
         {
             if (s.Name.Length == 0 || s.Definition is not null || kernel.Names.Contains(s.Name)) continue;

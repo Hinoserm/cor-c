@@ -72,4 +72,61 @@ through=$(awk 'NR == FNR { slot[sprintf("%x", strtonum("0x" $2))] = 1; next }
     /\tff 15 / && /call/ { if (match($0, /# [0-9a-f]+/)) { at = substr($0, RSTART + 2, RLENGTH - 2); sub(/^0+/, "", at); if (at in slot) n++ } }
     END { print n + 0 }' "$work/stubs.slots" "$work/ko.dis")
 test "$through" = "$calls" || fail "the module's link calls through a stub's slot $through times for $calls stub calls"
-echo "PASS modules-long-mode-sequences ($calls stub calls through the kernel's GOT slots)"
+
+# RELOCATED TEXT (--relocated-text): the same module with no GOT. Every
+# kernel name in its text is reached where it is -- a store stub's call
+# `call rel32` straight into the kernel's range -- each an R_X86_64_PC32 the
+# binder fixes (S + A - P), its place left zero and its addend in the entry;
+# DT_TEXTREL said; no GOT slot and no PLT entry; addresses in data as before.
+mkdir -p "$work/relocated"
+# shellcheck disable=SC2086
+"$corc" compile $flags --kernel "$work/kernel" --decl-index "$work/kernel.idx" --assembly Kernel --ring 0 \
+    $here/Sb16.cor --obj --relocated-text -o "$work/relocated/sb16.o" 2> "$work/relocated/sb16.log" || { tail -n 30 "$work/relocated/sb16.log"; fail "relocated module object"; }
+"$corc" link "$work/relocated/sb16.o" --kernel "$work/kernel" --relocated-text -o "$work/relocated/sb16.ko" 2> "$work/relocated/link.log" \
+    || { cat "$work/relocated/link.log"; fail "relocated module link"; }
+readelf -dW "$work/relocated/sb16.ko" | grep -q TEXTREL || fail "the relocated module does not say it relocates its text"
+readelf -rW "$work/relocated/sb16.ko" > "$work/relocated/ko.relocs"
+kinds=$(awk '$3 ~ /^R_X86_64_/ { print $3 }' "$work/relocated/ko.relocs" | sort -u | tr '\n' ' ')
+for kind in $kinds; do
+    case $kind in
+        R_X86_64_PC32|R_X86_64_64|R_X86_64_RELATIVE) ;;
+        *) fail "the relocated module asks its binder for $kind" ;;
+    esac
+done
+case " $kinds" in *" R_X86_64_PC32 "*) ;; *) fail "the relocated module reaches the kernel through no PC32 relocation" ;; esac
+# Each PC32 in the text: its place zero; a store stub's a `call rel32`
+# (E8) with the addend -4 -- straight into the kernel's range.
+python3 -I - "$work/relocated/sb16.ko" "$work/relocated/ko.relocs" > "$work/relocated/check.out" <<'PY' || { cat "$work/relocated/check.out"; fail "the relocated module's PC32 places"; }
+import sys
+image = open(sys.argv[1], 'rb').read()
+import struct
+# The file offset of an address, through the PT_LOADs.
+phoff, = struct.unpack_from('<Q', image, 0x20); phentsize, phnum = struct.unpack_from('<HH', image, 0x36)
+loads = []
+for i in range(phnum):
+    kind, flags, offset, vaddr, paddr, filesz = struct.unpack_from('<IIQQQQ', image, phoff + i * phentsize)
+    if kind == 1: loads.append((vaddr, offset, filesz))
+def at(address):
+    for vaddr, offset, filesz in loads:
+        if vaddr <= address < vaddr + filesz: return offset + address - vaddr
+    raise SystemExit('0x%x is in no loaded segment' % address)
+stubs = {'__corsac_refstore', '__corsac_cardstore', '__corsac_refxchg', '__corsac_refcas'}
+pc32 = calls = 0
+for line in open(sys.argv[2]):
+    f = line.split()
+    if len(f) < 3 or f[2] != 'R_X86_64_PC32': continue
+    pc32 += 1
+    place = at(int(f[0], 16))
+    if image[place:place + 4] != b'\0\0\0\0': raise SystemExit('PC32 place %s is not zero' % f[0])
+    name = f[4] if len(f) > 4 else ''
+    if name in stubs:
+        addend = line.split(name)[1].strip()
+        if image[place - 1] != 0xE8 or addend not in ('- 4', '-4'): raise SystemExit('stub %s at %s: not call rel32 with addend -4 (%r)' % (name, f[0], addend))
+        calls += 1
+print(pc32, calls)
+PY
+read -r pc32 direct < "$work/relocated/check.out"
+test "$direct" -gt 0 || fail "the relocated module makes no direct call to a kernel store stub"
+tab=$(printf '\t')
+if objdump -d "$work/relocated/sb16.ko" | grep -Eq "${tab}(ff 15|ff 25) "; then fail "the relocated module still calls through a slot"; fi
+echo "PASS modules-long-mode-sequences ($calls stub calls through the kernel's GOT slots; relocated text: $pc32 PC32, $direct direct stub calls)"

@@ -544,7 +544,11 @@ public sealed class UnitBackend : IUnitBackend
                 // As its compile said (the contract's word).
                 Hosted = cpu.AutomaticPacked,
                 OptimizeSize = read.Settings?.OptimizeSize ?? false,
-                PositionIndependent = positionIndependent,
+                // A module's unit whose compile said no GOT is one with
+                // relocated text (Driver: the settings' word is the GOT's):
+                // its image still moves, and its kernel names are direct.
+                PositionIndependent = positionIndependent || moduleUnit,
+                RelocatedText = moduleUnit && !positionIndependent,
                 EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
                 // As its compile said, unless the image has no collector.

@@ -53,6 +53,19 @@ public sealed class X64Backend : IBackend
     /// </summary>
     public bool PositionIndependent { get; set; }
 
+    /// <summary>
+    /// A KERNEL MODULE WHOSE TEXT ITS BINDER RELOCATES (--relocated-text),
+    /// with PositionIndependent: the image still moves, so every address held
+    /// in data is the loader's as above, but nothing goes through the GOT --
+    /// a call into the kernel is `call rel32`, the store sequences' stubs
+    /// included (straight into the kernel's range), and a kernel name is
+    /// reached `[rip + name]`, each a R_X86_64_PC32 the binder fixes
+    /// (Linker.LinkModule). The barrier's slow path is the object's own stub,
+    /// as a program's. -mcmodel=kernel's reach: the module window is within
+    /// 2 GB of the kernel, as Linux's is.
+    /// </summary>
+    public bool RelocatedText { get; set; }
+
     /// <summary>--opt-size: no loop head padded to its line (Encoder.OptimizeSize), as i386's.</summary>
     public bool OptimizeSize { get; set; }
 
@@ -310,9 +323,10 @@ public sealed class X64Backend : IBackend
         return definedNames;
     }
 
-    /// <summary>Whether a name is another object's to supply, reached through the loader's tables: every name not defined here in position-independent code, an imported one in a program; null where there is none.</summary>
+    /// <summary>Whether a name is another object's to supply, reached through the loader's tables: every name not defined here in position-independent code, an imported one in a program; null where there is none, and in a module whose text is relocated (RelocatedText), which reaches every name where it is.</summary>
     private Func<string, bool>? External(HashSet<string> definedNames)
-        => PositionIndependent ? name => !definedNames.Contains(name)
+        => RelocatedText ? null
+            : PositionIndependent ? name => !definedNames.Contains(name)
             : Imported.Count > 0 ? name => Imported.Contains(name) && !definedNames.Contains(name)
             : null;
 
@@ -357,7 +371,7 @@ public sealed class X64Backend : IBackend
         Corsac.Lang.Opt.SharedTrapFrees.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.RunLong(f, errors, isExternal, _streamCopy, _streamFill, PositionIndependent);
+        MFunction m = Selector.RunLong(f, errors, isExternal, _streamCopy, _streamFill, PositionIndependent && !RelocatedText);
         m.RealignsStack = entry;
         m.StackAtSixteen = Hosted;
         if (errors.Count > before)
@@ -399,7 +413,8 @@ public sealed class X64Backend : IBackend
     /// and no stack map: a collection while it runs finds none for the
     /// frames above and reads them whole, as for the store sequences'.
     /// Never in a position-independent object, whose selection calls the
-    /// runtime instead.
+    /// runtime instead -- except a module with relocated text, whose stub's
+    /// call is a direct one into the kernel (RelocatedText).
     /// </summary>
     private void EmitBarrierStub(Section text, ObjectFile obj, HashSet<string> defined)
     {
@@ -457,8 +472,10 @@ public sealed class X64Backend : IBackend
     /// at the call. K8 instructions only: CMPXCHG, XCHG, MOVDQU.
     ///
     /// Not in a position-independent object: a kernel's module makes none,
-    /// and calls its kernel's through their GOT slots (Selector.SequenceStub),
-    /// for the range no thread is stopped inside is the kernel's.
+    /// and calls its kernel's -- through their GOT slots
+    /// (Selector.SequenceStub), or straight with relocated text
+    /// (RelocatedText) -- for the range no thread is stopped inside is the
+    /// kernel's.
     /// </summary>
     private void EmitStoreSequences(Module module, Section text, ObjectFile obj, HashSet<string> defined)
     {

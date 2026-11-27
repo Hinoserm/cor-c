@@ -29,6 +29,8 @@ internal static class Elf64Object
         RelocKind.GlobData => GlobDat,
         RelocKind.JumpSlot => JumpSlot,
         RelocKind.Relative => Relative,
+        // A kernel's binder's alone: relocated text (Linker.LinkModule).
+        RelocKind.Rel32 => Pc32,
         _ => throw new ElfFormatException($"{kind} is not a relocation the x86-64 loader performs"),
     };
 

@@ -90,6 +90,18 @@ public sealed class KernelExports
     public HashSet<string> Names { get; }
 
     /// <summary>
+    /// What each exported name is, as the table says it: the kernel's
+    /// address for it, or a layout's absolute value. A module whose text is
+    /// relocated reaches a name PC-relative only where it is an address in
+    /// the kernel's image (ImageStart, ImageEnd; Linker.LinkModule).
+    /// </summary>
+    public Dictionary<string, ulong> Values { get; }
+
+    /// <summary>The lowest and the end of the highest address the kernel's loaded segments cover (PT_LOAD, their memory sizes): its image wherever it was linked.</summary>
+    public ulong ImageStart { get; }
+    public ulong ImageEnd { get; }
+
+    /// <summary>
     /// The state words of the types the kernel's link initialised, as it
     /// says them (Lto.KernelAssumptions: `y_init$` + the word's symbol). A
     /// module's code need not test such a word, and says that it did not
@@ -116,13 +128,38 @@ public sealed class KernelExports
         }
     }
 
-    private KernelExports(string path, string name, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names)
+    private KernelExports(string path, string name, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names, Dictionary<string, ulong> values,
+        (ulong Start, ulong End) image)
     {
-        Path = path; Name = name; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names;
+        Path = path; Name = name; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names; Values = values;
+        (ImageStart, ImageEnd) = image;
         Initialised = new(StringComparer.Ordinal);
         foreach (string exported in names)
             if (exported.StartsWith(Corsac.Lang.Lto.KernelAssumptions.InitPrefix, StringComparison.Ordinal))
                 Initialised.Add(exported[Corsac.Lang.Lto.KernelAssumptions.InitPrefix.Length..]);
+    }
+
+    /// <summary>The span a linked image's loaded segments cover in memory (PT_LOAD: p_vaddr to p_vaddr + p_memsz), or (0, 0) with none.</summary>
+    public static (ulong Start, ulong End) LoadedExtent(byte[] bytes)
+    {
+        bool wide = bytes[4] == Elf.Class64;
+        long table = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(32)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28));
+        int size = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 54 : 42));
+        int count = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 56 : 44));
+        ulong low = ulong.MaxValue, high = 0;
+        if (table <= 0 || size < (wide ? 56 : 32)) return (0, 0);
+        for (int i = 0; i < count; i++)
+        {
+            long at = table + (long)i * size;
+            if (at < 0 || at + size > bytes.Length) break;
+            ReadOnlySpan<byte> header = bytes.AsSpan((int)at, size);
+            if (BinaryPrimitives.ReadUInt32LittleEndian(header) != 1) continue;      // PT_LOAD
+            ulong start = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[16..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[8..]);
+            ulong memory = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[40..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[20..]);
+            low = Math.Min(low, start);
+            high = Math.Max(high, start + memory);
+        }
+        return low <= high ? (low, high) : (0, 0);
     }
 
     /// <summary>
@@ -197,8 +234,15 @@ public sealed class KernelExports
         if (symbols < 0 || symbols + count * entry > section.Length) throw new ElfFormatException(path + ": " + SectionName + " is malformed");
         ReadOnlySpan<byte> names = section.AsSpan((int)strings, (int)stringBytes);
         HashSet<string> exported = new(StringComparer.Ordinal);
+        Dictionary<string, ulong> values = new(StringComparer.Ordinal);
         for (long i = 1; i < count; i++)
-            exported.Add(StringTable.Read(names, BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan((int)(symbols + i * entry))), SectionName));
+        {
+            int at = (int)(symbols + i * entry);
+            string exportName = StringTable.Read(names, BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan(at)), SectionName);
+            exported.Add(exportName);
+            // Elf64_Sym's st_value at 8, Elf32_Sym's at 4 (Table).
+            values[exportName] = wide ? BinaryPrimitives.ReadUInt64LittleEndian(section.AsSpan(at + 8)) : BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan(at + 4));
+        }
         byte[]? Bytes(int at, int size)
         {
             if (!tags.TryGetValue(at, out long offset) || !tags.TryGetValue(size, out long length)) return null;
@@ -206,7 +250,7 @@ public sealed class KernelExports
             return section.AsSpan((int)offset, (int)length).ToArray();
         }
         return new KernelExports(path, System.IO.Path.GetFileName(path), Bytes(Elf.DtCorsacAbi, Elf.DtCorsacAbiSz), Bytes(Elf.DtCorsacCpu, Elf.DtCorsacCpuSz),
-            wide, exported);
+            wide, exported, values, LoadedExtent(bytes));
     }
 
     /// <summary>

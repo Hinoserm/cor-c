@@ -361,9 +361,10 @@ public static partial class Linker
         public bool TextRel { get; set; }
         /// <summary>
         /// A call to a name this image does not define goes straight to it, a
-        /// PC-relative word the loader fixes (R_386_PC32 in the text), not
-        /// through a PLT entry: a ring-1 module linked --relocated-text, whose
-        /// binder writes its text (Linker.LinkModule).
+        /// PC-relative word the loader fixes (R_386_PC32 in the text; on
+        /// x86-64 R_X86_64_PC32, for a datum `[rip + name]` too), not
+        /// through a PLT entry or a GOT slot: a module linked
+        /// --relocated-text, whose binder writes its text (Linker.LinkModule).
         /// </summary>
         public bool DirectCalls { get; set; }
 
@@ -417,7 +418,13 @@ public static partial class Linker
     /// rather than an address because these are decided before addresses
     /// are, and the GOT ones name a slot rather than a place at all.
     /// </summary>
-    private sealed record DynReloc(OutputSection Section, uint Offset, string Symbol, RelocKind Kind, bool InPlt);
+    /// <remarks>
+    /// Addend: a long-mode PC-relative one's (R_X86_64_PC32 in relocated
+    /// text), whose place is four bytes and left zero, so the RELA entry
+    /// takes its addend from here rather than from the place, as every other
+    /// kind's does.
+    /// </remarks>
+    private sealed record DynReloc(OutputSection Section, uint Offset, string Symbol, RelocKind Kind, bool InPlt, long Addend = 0);
 
     // ---- what needs a GOT slot, a PLT entry, or the loader's help -------
 
@@ -590,16 +597,24 @@ public static partial class Linker
                     errors.Add($"'{r.Symbol}' is reached by a 32-bit absolute address from {where}, which a {(dyn.Shared ? "shared object" : "program")} cannot relocate");
                 }
                 break;
+            // RELOCATED TEXT (DirectCalls: a kernel module linked
+            // --relocated-text): a call or a datum of the kernel's is reached
+            // where it is, an R_X86_64_PC32 the binder fixes in the text --
+            // never PLT32, there being no PLT; the module window is within
+            // 2 GB of the kernel (Linker.LinkModule checks the names).
             case RelocKind.Rel32:
-                if (d is null)
-                {
-                    errors.Add($"'{r.Symbol}' is reached PC-relative from {where}, but a shared object defines it: it needs its GOT slot");
-                }
-                break;
             case RelocKind.Plt32:
-                if (d is null)
+                if (d is null && dyn.DirectCalls)
+                {
+                    NeedDynReloc(dyn, p, r, RelocKind.Rel32, r.Addend);
+                }
+                else if (d is null && r.Kind == RelocKind.Plt32)
                 {
                     NeedPlt(dyn, r.Symbol);
+                }
+                else if (d is null)
+                {
+                    errors.Add($"'{r.Symbol}' is reached PC-relative from {where}, but a shared object defines it: it needs its GOT slot");
                 }
                 break;
             case RelocKind.GotPcRel:
@@ -754,7 +769,7 @@ public static partial class Linker
         dyn.Relocations.Add(new DynReloc(dyn.Got, 0, name, RelocKind.JumpSlot, true));
     }
 
-    private static void NeedDynReloc(Dyn dyn, Placed p, Relocation r, RelocKind kind)
+    private static void NeedDynReloc(Dyn dyn, Placed p, Relocation r, RelocKind kind, long addend = 0)
     {
         if (p.Output.Kind is SectionKind.Code or SectionKind.ReadOnlyData)
         {
@@ -763,7 +778,7 @@ public static partial class Linker
             // avoids ever asking in position-independent mode.
             dyn.TextRel = true;
         }
-        dyn.Relocations.Add(new DynReloc(p.Output, checked(p.Offset + (uint)r.Offset), r.Symbol, kind, false));
+        dyn.Relocations.Add(new DynReloc(p.Output, checked(p.Offset + (uint)r.Offset), r.Symbol, kind, false, addend));
     }
 
     // ---- sizes, then addresses ------------------------------------------
@@ -928,11 +943,14 @@ public static partial class Linker
                     value = (long)d.Value.Address + r.Addend - place;
                     return true;
                 }
-                // A direct call the loader fixes: REL keeps the addend in the
-                // word, and the loader adds the symbol less the place.
+                // A direct reference the loader fixes: REL (i386) keeps the
+                // addend in the word, and the loader adds the symbol less the
+                // place; RELA (x86-64) keeps it in the entry (DynReloc.Addend)
+                // and the place is zero, as Linux's module loader requires of
+                // a place it writes.
                 if (dyn.DirectCalls)
                 {
-                    value = r.Addend;
+                    value = dyn.LongMode ? 0 : r.Addend;
                     return true;
                 }
                 value = (long)PltAddress(dyn, r.Symbol) + r.Addend - place;
@@ -1096,6 +1114,7 @@ public static partial class Linker
                 // A GOT slot's import is bound whole (no addend); every
                 // other place holds, from Relocate, the value the addend is.
                 long addend = r.Kind is RelocKind.GlobData or RelocKind.JumpSlot ? 0
+                    : r.Kind == RelocKind.Rel32 ? r.Addend
                     : r.Section == dyn.Got ? BinaryPrimitives.ReadInt64LittleEndian(dyn.Got.Content.AsSpan((int)(at - dyn.Got.Addr)))
                     : PlacedWord64(r.Section, r.Offset);
                 into.U64(at);
