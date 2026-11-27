@@ -21,7 +21,8 @@ public static partial class Os
     const int BackupSemantics = 0x02000000;
     const int AttributeReadOnly = 0x1, AttributeDirectory = 0x10, AttributeReparse = 0x400;
     const int FileTypeChar = 2, FileTypePipe = 3;
-    const nuint InvalidHandle = 0xFFFFFFFF;
+    /// INVALID_HANDLE_VALUE: (HANDLE)-1, every bit set in either word size.
+    static nuint InvalidHandle => ~(nuint)0;
     /// FILETIME's epoch (1601) to Unix's (1970), in its 100 ns ticks.
     const long EpochTicks = 116444736000000000;
 

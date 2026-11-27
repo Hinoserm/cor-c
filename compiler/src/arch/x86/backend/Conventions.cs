@@ -83,7 +83,9 @@ internal static class Conventions
     {
         public override string Name => "Windows x64";
         public override int StackAlignment => 16;
-        // (Read only by a function's own way in, which is System V's: a stub makes the move.)
+        // (A callee's first stack argument, above its saved base, return
+        // address and shadow space; CallSequence takes the shadow's size
+        // from it. A function's own way in is System V's: a stub makes the move.)
         public override int StackArgumentsAt => 16 + ShadowBytes;
 
         /// <summary>The caller's shadow space: a home for each of the four register arguments.</summary>

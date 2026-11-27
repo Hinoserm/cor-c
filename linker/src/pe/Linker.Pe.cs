@@ -164,7 +164,7 @@ public static partial class Linker
         // compiler's own convention, is the name with "$sysv". A call of this
         // language's (Plt32, `call rel32`) is by the body's convention; only
         // an address taken -- what Windows is handed -- stays the stub's.
-        if (longMode) CallBodies(inputs);
+        if (longMode) CallBodies(inputs, options.RuntimeSymbols);
 
         // (LongMode: eight-byte addresses in data, the managed metadata's
         // words PC-relative; Relocate's long-mode static branch.)
@@ -688,13 +688,17 @@ public static partial class Linker
     public const string NativeEntryBody = "$sysv";
 
     /// <summary>
-    /// Every direct call (Plt32) to a symbol some input also defines with
-    /// NativeEntryBody after it, sent to that body: the input's own local
-    /// first, then a global.
+    /// Every direct call (Plt32) to a symbol some input -- or the runtime DLL
+    /// an image is linked over -- also defines with NativeEntryBody after
+    /// it, sent to that body: the input's own local first, then a global.
     /// </summary>
-    private static void CallBodies(List<Input> inputs)
+    private static void CallBodies(List<Input> inputs, IReadOnlyDictionary<string, string>? runtime)
     {
         HashSet<string> globalBodies = new(StringComparer.Ordinal);
+        // (The runtime DLL's bodies too, which it exports by name: an image over it calls them as its own.)
+        if (runtime is not null)
+            foreach (string name in runtime.Keys)
+                if (name.EndsWith(NativeEntryBody, StringComparison.Ordinal)) globalBodies.Add(name);
         foreach (Input input in inputs)
             foreach (Symbol sym in input.Object.Symbols)
                 if (sym.Global && sym.Section is not null && sym.Name.EndsWith(NativeEntryBody, StringComparison.Ordinal)) globalBodies.Add(sym.Name);

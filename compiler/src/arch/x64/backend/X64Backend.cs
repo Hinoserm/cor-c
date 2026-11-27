@@ -267,6 +267,8 @@ public sealed class X64Backend : IBackend
             // A WAY IN FROM WINDOWS (Function.NativeEntry): the body under a
             // name of its own, the function's name the stub (WindowsEntry).
             bool viaStub = Windows && f.NativeEntry;
+            if (f.NativeEntry && !Windows)
+                errors.Add($"{f.Name}: entered by Windows' x64 convention (Function.NativeEntry) in a unit the backend was not told is a Windows one (X64Backend.Windows)");
             string name = viaStub ? f.Name + NativeEntryBody : f.Name;
             if (Windows) Unwind(m, name, text, start, size, xdata!, unwindTable!, xdataBlobs, obj, errors);
             FunctionSizes.Add((f.Name, size));
@@ -291,7 +293,8 @@ public sealed class X64Backend : IBackend
 
             // Jump tables: eight-byte absolute addresses of the blocks, which
             // the loader relocates in a shared object.
-            Corsac.Lang.Backends.ObjectData.JumpTables<MBlock>(obj, PositionIndependent ? relocatedConstants : rodata, defined, f.Name,
+            // (Against the body's name: a way in from Windows' stub is under the function's, X86Backend's bodyName.)
+            Corsac.Lang.Backends.ObjectData.JumpTables<MBlock>(obj, PositionIndependent ? relocatedConstants : rodata, defined, name,
                 encoder.Tables, block => block.Offset, 8, RelocKind.Abs64);
             encoder.ReleaseFunction();
             // (Only where nothing reads a body after Generate: Driver sets

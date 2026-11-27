@@ -765,12 +765,22 @@ public sealed partial class Lowering
         _f = thunk;
         _e = new Builder(thunk, thunk.NewBlock("entry"));
         List<Operand> args = new();
+        int k = 0;
         foreach (VReg p in body.Params)
         {
             VReg mine = thunk.NewReg(p.Type, p.Name);
             mine.Number = p.Number;
             thunk.Params.Add(mine);
-            args.Add(RegOperand.Of(mine));
+            // A NARROW INTEGER FROM C, its upper bits undefined (Windows' x64
+            // and i386 conventions leave them so, as C's results: Native's
+            // Narrow on a result), made canonical for the body, which takes
+            // its parameters as this compiler's callers leave them.
+            VReg passed = mine;
+            if (k < m.Params.Count && !m.Params[k].ByRef && m.Params[k].Type.Prim is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char
+                && p.Type == IrType.I32)
+                passed = Narrow(_e, mine, m.Params[k].Type, m.Params[k].Type);
+            args.Add(RegOperand.Of(passed));
+            k++;
         }
         if (_t.WordSize == 4 && CalledStdcall(m))
         {

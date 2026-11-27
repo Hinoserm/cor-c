@@ -718,19 +718,13 @@ internal sealed partial class Selector
                 }
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.SetTlsBlock:
-            {
-                // WINDOWS x64: the block into the runtime's TLS slot, found as
-                // ThreadBlock finds it. A slot above 64 has its array only
-                // once TlsSetValue has made it for the thread: Win32's x64
-                // attach calls it first (runtime/src/platforms/win32).
-                MReg value = RL(i.Operands[0]);
-                MReg at = Temp();
-                MovL(at, SymbolWordL(TlsBaseSymbol));
-                MovL(at, new MMem(at, 0) { Segment = 0x65 });
-                EmitW(MOp.Add, 8, at, SymbolWordL(TlsOffsetSymbol));
-                MovL(new MMem(at, 0), value);
+                // WINDOWS x64 WRITES ITS BLOCK THROUGH TlsSetValue (Win32.SetBlock),
+                // which makes a slot's expansion array for the thread first; a
+                // store through the read's address would go through a null
+                // array on a thread that has none. Sys.SetThreadBlock is
+                // i386's on Windows.
+                _errors.Add($"{_m.Source.Name}: Sys.SetThreadBlock in a 64-bit Windows image: its block is written through TlsSetValue (Win32.SetBlock)");
                 return;
-            }
             case Corsac.Lang.X86.MachineIntrinsics.DoublePrecision:
                 // SSE2's doubles round once already.
                 return;

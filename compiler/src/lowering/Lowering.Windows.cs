@@ -211,10 +211,11 @@ public sealed partial class Lowering
         var notProcess = f.NewBlock("not_process");
         e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(0, IrTypes.Word), IrTypes.Word), detach, notProcess);
         e.SetBlock(detach);
-        if (!Dynamic && Win32Method("Detach") is MethodSymbol let)
+        if (!Dynamic && Win32Method("Detach", 1) is MethodSymbol let)
         {
+            // DllMain's third argument: 0 for a FreeLibrary, else the process's end (Win32.Detach).
             Require(let);
-            e.Call(CallLabel(let), IrType.Void);
+            e.Call(CallLabel(let), IrType.Void, RegOperand.Of(f.Params[2]));
         }
         e.Jump(yes);
 

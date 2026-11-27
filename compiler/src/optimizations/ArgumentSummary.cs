@@ -53,7 +53,8 @@ public static class ArgumentSummary
                 // async method's or a state machine's body; the entry; a
                 // helper the passes after this add calls to; a version made
                 // of another function, whose calls are that function's.
-                Fixed = f.CalleePops != 0 || f.KeepsCallerRegisters || f.Async is not null || f.InsideState || f.ProgramEntry || f.Version
+                // (NativeEntry: Windows calls it by its positions, which the stub maps one for one.)
+                Fixed = f.CalleePops != 0 || f.KeepsCallerRegisters || f.NativeEntry || f.Async is not null || f.InsideState || f.ProgramEntry || f.Version
                     || f.Name == m.Entry || f.Name == m.Main || f.Name.StartsWith(StackArguments, StringComparison.Ordinal) || helpers.Contains(f.Name),
                 // (Exported: a function local to its unit -- a throw moved
                 // out, a constant's version -- is that unit's alone, whatever
