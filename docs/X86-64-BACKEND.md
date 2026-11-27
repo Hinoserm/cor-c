@@ -340,6 +340,17 @@ the processor stands inside the kernel's range, which the kernel's handshake
 never stops a thread inside, wherever the module is loaded. An i386 module
 reads the same slot into a register first (`MOp.CallKeepInd`).
 
+A module built with `--relocated-text` has no GOT at all. Its text reaches the
+kernel's names where they are: a call is `call rel32`, the store stubs
+included, and a datum is `[rip + name]`. Each is an `R_X86_64_PC32` in
+`.rela.dyn` (the place zero, the addend in the entry, `DT_TEXTREL`), which the
+kernel's binder applies as S + A - P, refusing one that does not fit 32 bits.
+That is sound because corsac86 loads modules within 2 GB of its image, as
+Linux does. The module's own addresses held in data stay `R_X86_64_RELATIVE`
+and `R_X86_64_64` in `.data.rel.ro`, and its barrier's slow path is its own
+stub (`X64Backend.RelocatedText`). The link refuses a kernel name reached so
+that is no address in one of the kernel's loaded segments.
+
 The assembler writes 64-bit code (`.bits 64`, `corc asm --target x86-64`):
 REX prefixes, r8-r15 in every width, RIP-relative `[rip + x]`, CR8, `movabs`,
 `dq`, and long mode's own instructions. An object with 64-bit code in it is

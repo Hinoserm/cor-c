@@ -600,8 +600,10 @@ public static partial class Linker
             // RELOCATED TEXT (DirectCalls: a kernel module linked
             // --relocated-text): a call or a datum of the kernel's is reached
             // where it is, an R_X86_64_PC32 the binder fixes in the text --
-            // never PLT32, there being no PLT; the module window is within
-            // 2 GB of the kernel (Linker.LinkModule checks the names).
+            // never PLT32, there being no PLT. The link holds each such name
+            // to an address in the kernel's image (Linker.LinkModule); that
+            // the module lands within 2 GB of it is the binder's to check,
+            // its kernel choosing the window (corsac86's is, as Linux's).
             case RelocKind.Rel32:
             case RelocKind.Plt32:
                 if (d is null && dyn.DirectCalls)

@@ -127,6 +127,9 @@ print(pc32, calls)
 PY
 read -r pc32 direct < "$work/relocated/check.out"
 test "$direct" -gt 0 || fail "the relocated module makes no direct call to a kernel store stub"
-tab=$(printf '\t')
-if objdump -d "$work/relocated/sb16.ko" | grep -Eq "${tab}(ff 15|ff 25) "; then fail "the relocated module still calls through a slot"; fi
+# No GOT slot and no PLT entry: neither section holds more than the GOT's
+# three reserved words (the kinds above have no GLOB_DAT or JUMP_SLOT already).
+if readelf -SW "$work/relocated/sb16.ko" | awk '{ for (i = 1; i <= NF; i++) if ($i == ".plt" || $i == ".got") { if (strtonum("0x" $(i + 4)) > 24) bad = 1; break } } END { exit !bad }'; then
+    fail "the relocated module has a PLT entry or a GOT slot"
+fi
 echo "PASS modules-long-mode-sequences ($calls stub calls through the kernel's GOT slots; relocated text: $pc32 PC32, $direct direct stub calls)"

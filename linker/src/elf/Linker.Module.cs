@@ -25,11 +25,15 @@ namespace Corsac.Lang.Elf;
 /// (elfload.cor) binds it with what it binds a program's libraries with, and
 /// it asks nothing of that binder that a library does not:
 ///
-///   - REL relocations only, of the kinds a library has -- R_386_RELATIVE for
-///     its own addresses, R_386_32 for a kernel address held in its data,
-///     R_386_GLOB_DAT for a GOT slot -- and never R_386_COPY, R_386_PC32,
-///     a TLS relocation, or one in its text: a link that would need any of
-///     them fails here rather than at insmod;
+///   - the relocations a library has -- on i386 REL, R_386_RELATIVE for its
+///     own addresses, R_386_32 for a kernel address held in its data,
+///     R_386_GLOB_DAT for a GOT slot; on x86-64 RELA, R_X86_64_RELATIVE,
+///     R_X86_64_64, GLOB_DAT and JUMP_SLOT -- and never a COPY, a TLS
+///     relocation, or one in its text: a link that would need any of them
+///     fails here rather than at insmod. EXCEPT A MODULE LINKED
+///     --relocated-text, whose text holds R_386_PC32 or R_X86_64_PC32 (with
+///     R_386_32 and R_386_RELATIVE on i386) for each kernel name it reaches,
+///     with DT_TEXTREL, for a binder that writes its text;
 ///   - SysV DT_HASH, and one DT_INIT: __corsac_init, which hands the module's
 ///     statics (__data_start to _end) to the collector as roots and its
 ///     frame and stack-map directory (__corsac_units) to the stack walker,
@@ -179,8 +183,8 @@ public static partial class Linker
             // corsac86's lies within 2 GB of its image, as Linux's does. A
             // depended-on module's name is in that window itself.
             if (kernel.LongMode && r.Kind == RelocKind.Rel32 && kernel.Values.TryGetValue(r.Symbol, out ulong value)
-                && (value < kernel.ImageStart || value > kernel.ImageEnd) && outOfReach.Add(r.Symbol))
-                errors.Add($"'{r.Symbol}' is reached PC-relative from the module's text, and {kernel.Name} has it at 0x{value:x}, no address in its image (0x{kernel.ImageStart:x}..0x{kernel.ImageEnd:x}): it may be reached only through data");
+                && !kernel.Holds(value) && outOfReach.Add(r.Symbol))
+                errors.Add($"'{r.Symbol}' is reached PC-relative from the module's text, and {kernel.Name} has it at 0x{value:x}, no address in any of its loaded segments: it may be reached only through data");
         }
         foreach (DynSymbol s in dyn.Symbols)
         {

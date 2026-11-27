@@ -93,13 +93,25 @@ public sealed class KernelExports
     /// What each exported name is, as the table says it: the kernel's
     /// address for it, or a layout's absolute value. A module whose text is
     /// relocated reaches a name PC-relative only where it is an address in
-    /// the kernel's image (ImageStart, ImageEnd; Linker.LinkModule).
+    /// the kernel's image (Holds; Linker.LinkModule).
     /// </summary>
     public Dictionary<string, ulong> Values { get; }
 
-    /// <summary>The lowest and the end of the highest address the kernel's loaded segments cover (PT_LOAD, their memory sizes): its image wherever it was linked.</summary>
-    public ulong ImageStart { get; }
-    public ulong ImageEnd { get; }
+    /// <summary>The kernel's loaded segments (PT_LOAD), each its start and its end in memory: its image wherever it was linked.</summary>
+    public IReadOnlyList<(ulong Start, ulong End)> Segments { get; }
+
+    /// <summary>
+    /// Whether `value` is an address in one of the kernel's loaded segments,
+    /// its end included (`_end` is one). Each segment apart, not the span
+    /// from the lowest to the highest: a kernel loaded low and run high has
+    /// a gap there that holds no name.
+    /// </summary>
+    public bool Holds(ulong value)
+    {
+        foreach ((ulong start, ulong end) in Segments)
+            if (value >= start && value <= end) return true;
+        return false;
+    }
 
     /// <summary>
     /// The state words of the types the kernel's link initialised, as it
@@ -129,25 +141,25 @@ public sealed class KernelExports
     }
 
     private KernelExports(string path, string name, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names, Dictionary<string, ulong> values,
-        (ulong Start, ulong End) image)
+        IReadOnlyList<(ulong Start, ulong End)> segments)
     {
         Path = path; Name = name; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names; Values = values;
-        (ImageStart, ImageEnd) = image;
+        Segments = segments;
         Initialised = new(StringComparer.Ordinal);
         foreach (string exported in names)
             if (exported.StartsWith(Corsac.Lang.Lto.KernelAssumptions.InitPrefix, StringComparison.Ordinal))
                 Initialised.Add(exported[Corsac.Lang.Lto.KernelAssumptions.InitPrefix.Length..]);
     }
 
-    /// <summary>The span a linked image's loaded segments cover in memory (PT_LOAD: p_vaddr to p_vaddr + p_memsz), or (0, 0) with none.</summary>
-    public static (ulong Start, ulong End) LoadedExtent(byte[] bytes)
+    /// <summary>A linked image's loaded segments in memory (PT_LOAD: p_vaddr to p_vaddr + p_memsz).</summary>
+    public static List<(ulong Start, ulong End)> LoadedSegments(byte[] bytes)
     {
         bool wide = bytes[4] == Elf.Class64;
         long table = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(32)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28));
         int size = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 54 : 42));
         int count = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 56 : 44));
-        ulong low = ulong.MaxValue, high = 0;
-        if (table <= 0 || size < (wide ? 56 : 32)) return (0, 0);
+        List<(ulong Start, ulong End)> segments = new();
+        if (table <= 0 || size < (wide ? 56 : 32)) return segments;
         for (int i = 0; i < count; i++)
         {
             long at = table + (long)i * size;
@@ -156,10 +168,9 @@ public sealed class KernelExports
             if (BinaryPrimitives.ReadUInt32LittleEndian(header) != 1) continue;      // PT_LOAD
             ulong start = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[16..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[8..]);
             ulong memory = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[40..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[20..]);
-            low = Math.Min(low, start);
-            high = Math.Max(high, start + memory);
+            segments.Add((start, start + memory));
         }
-        return low <= high ? (low, high) : (0, 0);
+        return segments;
     }
 
     /// <summary>
@@ -250,7 +261,7 @@ public sealed class KernelExports
             return section.AsSpan((int)offset, (int)length).ToArray();
         }
         return new KernelExports(path, System.IO.Path.GetFileName(path), Bytes(Elf.DtCorsacAbi, Elf.DtCorsacAbiSz), Bytes(Elf.DtCorsacCpu, Elf.DtCorsacCpuSz),
-            wide, exported, values, LoadedExtent(bytes));
+            wide, exported, values, LoadedSegments(bytes));
     }
 
     /// <summary>

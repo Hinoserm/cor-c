@@ -61,8 +61,9 @@ public sealed class X64Backend : IBackend
     /// included (straight into the kernel's range), and a kernel name is
     /// reached `[rip + name]`, each a R_X86_64_PC32 the binder fixes
     /// (Linker.LinkModule). The barrier's slow path is the object's own stub,
-    /// as a program's. -mcmodel=kernel's reach: the module window is within
-    /// 2 GB of the kernel, as Linux's is.
+    /// as a program's. -mcmodel=kernel's reach: sound where the kernel loads
+    /// its modules within 2 GB of its image, as corsac86 and Linux do; the
+    /// binder refuses a reference that does not fit.
     /// </summary>
     public bool RelocatedText { get; set; }
 
