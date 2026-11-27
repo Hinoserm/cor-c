@@ -775,8 +775,8 @@ public sealed partial class Lowering
             // and i386 conventions leave them so, as C's results: Native's
             // Narrow on a result), made canonical for the body, which takes
             // its parameters as this compiler's callers leave them.
-            // A bool too (Roslyn lets one through, unmanaged if not
-            // blittable): C's is 0 or 1 in the low byte, the rest undefined,
+            // A bool too (Roslyn allows it, an unmanaged type, though not a
+            // blittable one): C's is 0 or 1 in the low byte, the rest undefined,
             // so it is zero-extended from its byte, never tested whole.
             VReg passed = mine;
             if (k < m.Params.Count && !m.Params[k].ByRef && m.Params[k].Type.Prim is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char

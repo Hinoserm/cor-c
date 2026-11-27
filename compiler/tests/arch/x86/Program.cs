@@ -21,6 +21,38 @@ internal static class Program
     /// <summary>The division-by-a-constant checkers _start calls (DivisionByConstant.AddI386).</summary>
     private static List<string> _divisionCheckers = new();
 
+    /// <summary>
+    /// MInstr.Rebuilt, THE ONE LIST of what an instruction carries besides its
+    /// operands, carries every property: each is set to a value no default has
+    /// and must come back the same through a copy. Win64 left out of it once
+    /// turned every Windows call into a System V one after the allocator, its
+    /// R8 and R9 arguments dropped as dead.
+    /// </summary>
+    private static void RebuiltCarriesEverything()
+    {
+        MInstr original = new(MOp.Call);
+        List<System.Reflection.PropertyInfo> set = new();
+        foreach (System.Reflection.PropertyInfo p in typeof(MInstr).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            // Op is the constructor's; Table and OwnsState are Rebuilt's arguments.
+            if (!p.CanWrite || p.Name is nameof(MInstr.Op) or nameof(MInstr.Table) or nameof(MInstr.OwnsState)) continue;
+            object? value = p.PropertyType == typeof(bool) ? true
+                : p.PropertyType == typeof(int) ? 7
+                : p.PropertyType == typeof(byte) ? (byte)3
+                : p.PropertyType == typeof(string) ? "carried"
+                : p.PropertyType.IsEnum ? Enum.GetValues(p.PropertyType).GetValue(Enum.GetValues(p.PropertyType).Length - 1)
+                : Nullable.GetUnderlyingType(p.PropertyType) is { IsEnum: true } inner ? Enum.GetValues(inner).GetValue(Enum.GetValues(inner).Length - 1)
+                : null;
+            if (value is null) continue;
+            p.SetValue(original, value);
+            set.Add(p);
+        }
+        MInstr copy = original.Rebuilt(null, original.OwnsState);
+        foreach (System.Reflection.PropertyInfo p in set)
+            Check(Equals(p.GetValue(copy), p.GetValue(original)), "MInstr.Rebuilt carries " + p.Name);
+        Check(set.Any(p => p.Name == nameof(MInstr.Win64)), "MInstr.Rebuilt's check reaches Win64");
+    }
+
     private static void DeferredFunctions()
     {
         Module shells = new("deferred");
@@ -144,6 +176,7 @@ internal static class Program
         EbpValueNotForwardedAcrossItsWrite();
         RepeatingMemoryRegions();
         DeferredFunctions();
+        RebuiltCarriesEverything();
         DeferredFpuFacts();
         PicExceptionEntry();
         string outDir = Path.Combine(Path.GetTempPath(), "corsac-x86tests");

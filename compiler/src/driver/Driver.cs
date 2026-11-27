@@ -1513,7 +1513,9 @@ public static class Driver
                     // 32-bit library in its process, nor the other way round
                     // (PE32 beside PE32+, ELFCLASS32 beside ELFCLASS64).
                     const byte ElfClass64 = 2;      // e_ident[EI_CLASS], ELFCLASS64
-                    int libraryWord = pe ? Corsac.Lang.Pe.PeReader.WordBytes(image) : image.Length > 4 && image[4] == ElfClass64 ? 8 : 4;
+                    bool elf = image.Length > 4 && image[0] == 0x7F && image[1] == (byte)'E' && image[2] == (byte)'L' && image[3] == (byte)'F';
+                    if (!pe && !elf) return Fail($"--link-shared '{lib}' is neither an ELF nor a PE image");
+                    int libraryWord = pe ? Corsac.Lang.Pe.PeReader.WordBytes(image) : image[4] == ElfClass64 ? 8 : 4;
                     int programWord = target == Target.X86_64 ? 8 : 4;
                     if (libraryWord != programWord)
                         return Fail($"--link-shared '{lib}' is a {8 * libraryWord}-bit library, and this is a {8 * programWord}-bit compile");

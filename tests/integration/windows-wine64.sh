@@ -63,14 +63,14 @@ got=$(run "$work" threads.exe threads.dll); for line in 'thread 0 ok' 'thread 1 
 # first, so the DLL's is in the thread's expansion array (gs:[0x1780]); a call
 # in leaves the thread's last error as it was (no TlsGetValue on the way in),
 # and a thread of the host's, with no expansion array of its own yet, calls in.
-x86_64-w64-mingw32-gcc -O1 tests/integration/windows-wine64/slots.c -o "$work/slots.exe"
+x86_64-w64-mingw32-gcc -O1 tests/integration/windows-wine64/slots.c -o "$work/slots.exe" || fail "the slots.c host"
 got=$(run "$work" slots.exe exports.dll); for line in 'slots taken past 64 1' 'call 1 lasterror 4321' 'foreign 1 lasterror 777'; do want "$got" "$line"; done
 
 # THE UNWIND DATA, WALKED: the host's callback, called from inside the DLL,
 # walks the stack by every image's .pdata and .xdata back through the DLL's
 # way-in stub and body to the host's function that called it.
 "$corc" compile $x64 --dll tests/integration/windows-wine64/Walk.cor -o "$work/walk.dll" > "$work/walk-dll.log" 2>&1 || { cat "$work/walk-dll.log"; fail "walk.dll"; }
-x86_64-w64-mingw32-gcc -O1 tests/integration/windows-wine64/walk.c -o "$work/walk.exe"
+x86_64-w64-mingw32-gcc -O1 tests/integration/windows-wine64/walk.c -o "$work/walk.exe" || fail "the walk.c host"
 got=$(run "$work" walk.exe walk.dll); for line in 'through 46' 'walked dll frames>0 1 caller 1'; do want "$got" "$line"; done
 
 # A 32-BIT DLL NAMES NO VECTORED HANDLER: those are a 64-bit image's

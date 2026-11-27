@@ -156,8 +156,10 @@ public static class Win32
 
     /// THE PROCESS TAKES THE IMAGE IN (DllMain, DLL_PROCESS_ATTACH, before
     /// anything else of the image runs): a TLS slot for the threads' blocks,
-    /// this thread's block in it, and the hooks. False -- the load fails --
-    /// when there is no slot the TEB holds.
+    /// this thread's block in it, and the hooks. False -- the load fails, what
+    /// it took given back (Release) -- when there is no slot the TEB holds, or
+    /// a 64-bit image's vectored handler, its scratch or its parking cannot
+    /// be had.
     public static bool Attach(nuint instance)
     {
         // The hooks first: with none, the bare-metal answers are the
@@ -183,14 +185,17 @@ public static class Win32
         // vectored handler -- XP x64 on, as Go's and the CLR's are -- sees it
         // first, whatever frames are between. One an image, added before the
         // slot is taken so a failure here holds nothing. Only in a 64-bit
-        // image, whose test is a constant: an i386 image names neither
-        // function, which Windows 95, NT 4 and 2000 do not have.
-        if (WordSize.Bytes == 8 && _vectored == 0)
+        // image, by the preprocessor -- not a test lowering would keep the
+        // call of: an i386 image names neither function, which Windows 95,
+        // NT 4 and 2000 do not have, whatever optimisation it was built with.
+#if TARGET_64BIT
+        if (_vectored == 0)
         {
             _vectored = AddVectoredExceptionHandler(1, Sys.AddressOf(VectoredFault));
             // (Without it a null read would end the process rather than throw: the load fails instead, plainly.)
             if (_vectored == 0) return false;
         }
+#endif
         int slot = TlsAlloc();
         if (slot == TlsOutOfIndexes)
         {
@@ -232,7 +237,7 @@ public static class Win32
         nuint scratch = VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
         if (scratch == 0)
         {
-            SetBlock(0);
+            // (The slot's cell in every thread is cleared by TlsFree.)
             Release();
             return false;
         }
@@ -313,16 +318,23 @@ public static class Win32
         Release();
     }
 
-    /// WHAT ATTACH TOOK, GIVEN BACK: the vectored handler (a 64-bit image's)
-    /// and the TLS slot. From a FreeLibrary's Detach, and from an Attach that
-    /// fails partway -- whether or not Windows then calls DLL_PROCESS_DETACH,
-    /// each is given back once (the words cleared as it goes).
+    /// WHAT ATTACH TOOK, GIVEN BACK: the vectored handler (a 64-bit image's),
+    /// the null stub and the TLS slot. From a FreeLibrary's Detach, and from
+    /// an Attach that fails partway (Windows calls no DLL_PROCESS_DETACH
+    /// then); each is given back once, its word cleared as it goes.
     static void Release()
     {
-        if (WordSize.Bytes == 8 && _vectored != 0)
+#if TARGET_64BIT
+        if (_vectored != 0)
         {
             RemoveVectoredExceptionHandler(_vectored);
             _vectored = 0;
+        }
+#endif
+        if (_nullStub != 0)
+        {
+            VirtualFree(_nullStub, 0, MemRelease);
+            _nullStub = 0;
         }
         if (_slotTaken != 0)
         {

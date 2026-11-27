@@ -30,7 +30,7 @@ public static class PeReader
         if (optional + 2 > bytes.Length) throw new InvalidDataException("not a PE image: no optional header");
         return BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(optional)) switch
         {
-            0x10B => 4,
+            PeFormat.Pe32Magic => 4,
             PeFormat.Pe32PlusMagic => 8,
             ushort magic => throw new InvalidDataException($"not a PE32 or PE32+ image (optional header magic 0x{magic:x})"),
         };
