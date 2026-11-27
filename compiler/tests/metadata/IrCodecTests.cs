@@ -105,6 +105,14 @@ public static class IrCodecTests
         // A string object's mark (HasHeader: placed with the image's objects) survives the archive, and its absence does.
         DataItem literal = new("str_0", new byte[24]) { ReadOnly = true, HasHeader = true };
         Check(IrDataCodec.Read(IrDataCodec.Write(literal)).HasHeader && !decoded.HasHeader, "A string object's HasHeader lost in the archive, or set where it was not");
+        // A STRING'S SYNC WORD IS NO CONSTANT (IsConstantAt), on either word size; the rest of it is.
+        foreach (int w in new[] { 4, 8 })
+        {
+            Check(!literal.IsConstantAt(0, 2 * w, w) && !literal.IsConstantAt(w, w, w) && !literal.IsConstantAt(w + 2, 2, w),
+                "A string's sync word taken for a constant (word " + w + ")");
+            Check(literal.IsConstantAt(0, w, w) && literal.IsConstantAt(2 * w, 4, w) && literal.IsConstantAt(w - 4, 4, w) && decoded.IsConstantAt(w, w, w),
+                "A string's other words, or an item with no header, refused as constants (word " + w + ")");
+        }
         DataItem bss = new("large-zero", new byte[4096]) { Zero = true };
         bytes = IrDataCodec.Write(bss);
         Check(bytes.Length < 100 && IrDataCodec.Read(bytes).Bytes.Length == 4096, "BSS encoding is not compact");

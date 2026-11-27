@@ -861,8 +861,11 @@ public static partial class Linker
         layout.ReadOnly.Add(dyn.Plt);
         layout.ReadOnly.Add(layout.Text);
         layout.ReadOnly.Add(layout.ReadOnlyData);
-        layout.Writable.Add(layout.Objects);
+        // The numbers first, then the loader-written runs together -- the
+        // strings, the relocated constants, the imports -- so the number
+        // tables share a page with a loader write at one end only.
         layout.Writable.Add(layout.Numbers);
+        layout.Writable.Add(layout.Objects);
         layout.Writable.Add(layout.RelocatedConstants);
         layout.Writable.Add(layout.RelocatedImports);
         layout.Writable.Add(layout.Data);

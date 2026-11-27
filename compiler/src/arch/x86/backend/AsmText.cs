@@ -40,9 +40,10 @@ internal static class AsmText
         string address = X86Mode.Long ? "dq" : "dd";
         foreach (string section in new[] { ".rodata", Corsac.Lang.Ir.Section.ObjectsName, ".data", ".bss" })
         {
-            // (A string object, read-only in its contents, is listed where the
-            // object places it: with the image's objects, writable for its
-            // lock word, ObjectData.Place.)
+            // (By its flags, not exactly by its section: a string object is
+            // listed with the image's objects, as the object places it, but
+            // numbers are listed under .data and relocated constants under
+            // .rodata, where ObjectData.Place gives them sections of their own.)
             List<Corsac.Lang.Ir.DataItem> items = module.Data.Where(d => (d.Zero ? ".bss" : d.ReadOnly && d.HasHeader ? Corsac.Lang.Ir.Section.ObjectsName : d.ReadOnly ? ".rodata" : ".data") == section).ToList();
             if (items.Count == 0) continue;
             sb.Append("section ").Append(section).Append('\n');

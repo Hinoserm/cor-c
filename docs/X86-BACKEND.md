@@ -589,7 +589,11 @@ literal's header are relocations, and a relocation in a read-only page is
 a page the loader must make writable and private to each process. In a
 shared object that is every such item; in an executable it is only the
 ones naming a library's symbol. The text segment itself is untouched
-either way.
+either way. A string literal is writable wherever it is, for a lock writes
+its header's sync word: every image keeps its strings in
+`.data.corsac.objects`, beside the numbers and outside the statics read as
+roots, their contents still read-only to everything that folds them
+(`DataItem.HasHeader`, `DataItem.IsConstantAt`).
 
 ### What it is worth
 

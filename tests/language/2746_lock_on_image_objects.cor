@@ -16,8 +16,8 @@
 // word, so the literal must lie in writable pages; it lay in the read-only
 // segment and the lock faulted (AccessViolation in Monitor.Enter) on both
 // targets. IsEntered reads the word the lock wrote, never the zero the
-// literal was laid down with (ReadOnlyFold leaves an object's sync word
-// alone). A const is the same literal, one object, so a second thread
+// literal was laid down with (no fold of read-only data takes an object's
+// sync word for a constant: DataItem.IsConstantAt). A const is the same literal, one object, so a second thread
 // cannot take it while it is held and can once it is let go; Wait and Pulse
 // on it work as on any object. typeof's object is its RuntimeType, a heap
 // object, locked as before. Output as .NET's.
