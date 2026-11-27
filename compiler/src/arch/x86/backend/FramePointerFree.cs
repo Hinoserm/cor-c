@@ -44,7 +44,13 @@ internal static class FramePointerFree
         // (Not long mode's function with a slot at sixteen: only a frame's
         // base is known to be a multiple of sixteen.)
         bool wideSlots = X86Mode.Long && m.Frame.Allocations.Any(a => a.Align > 8);
-        if (!m.Frameless && !wideSlots && OnlyColdCalls(m))
+        // NOT IN A 64-BIT WINDOWS IMAGE: a frame made after the prologue, on
+        // the way to a call, is one Windows' unwind data cannot describe (its
+        // frame register is the prologue's, and a chained entry must keep
+        // the primary's register and allocation: Microsoft's x64 exception
+        // handling). Such a function keeps its prologue's frame there, as Go
+        // keeps a frame pointer on Windows; a true leaf stays frameless.
+        if (!m.Frameless && !wideSlots && !X86Mode.Windows && OnlyColdCalls(m))
         {
             m.Frameless = true;
             m.ColdFrames = true;

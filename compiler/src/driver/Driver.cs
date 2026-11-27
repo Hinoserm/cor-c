@@ -2093,13 +2093,16 @@ public static class Driver
 
         if (windows)
         {
-            // A WINDOWS IMAGE: the same link with a PE32 file around it
-            // (Linker.LinkPe), based where Microsoft's linker bases one.
-            uint imageBase = dll ? Corsac.Lang.Pe.PeFormat.DefaultDllBase : Corsac.Lang.Pe.PeFormat.DefaultImageBase;
+            // A WINDOWS IMAGE: the same link with a PE file around it
+            // (Linker.LinkPe), PE32 for i386 and PE32+ for x64, based where
+            // Microsoft's linker bases one of its kind unless --base names
+            // another (the link takes the default of the mode).
+            ulong? imageBase = null;
             if (loadBase is { } given)
             {
                 if (given % 0x10000 != 0) return Fail($"--base 0x{given:x}: a Windows image's base is a multiple of 64 KiB");
-                imageBase = (uint)given;
+                if (!longMode && given > uint.MaxValue) return Fail($"--base 0x{given:x}: a 32-bit Windows image is based below four gigabytes");
+                imageBase = given;
             }
             if (Value(args, "--debug-keep-object") is string keepObject) ElfWriter.WriteObjectFile(obj, keepObject);
             TargetContract.Validate(link);

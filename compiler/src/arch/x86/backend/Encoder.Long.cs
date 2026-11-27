@@ -623,6 +623,7 @@ internal sealed partial class Encoder
             if (_frameBytes > 0)
             {
                 if (!first) NextInstr();
+                if (ProbeStack()) NextInstr();
                 AluL(5, MReg.Of(Gpr.Rsp), new MImm(_frameBytes), 8);
             }
             return;
@@ -633,6 +634,7 @@ internal sealed partial class Encoder
         if (_frameBytes > 0)
         {
             NextInstr();
+            if (ProbeStack()) NextInstr();
             AluL(5, MReg.Of(Gpr.Rsp), new MImm(_frameBytes), 8);
         }
         for (int k = 0; k < _m.SavedRegs.Count; k++)
@@ -641,6 +643,42 @@ internal sealed partial class Encoder
             OpL(8, (int)_m.SavedRegs[k], SaveSlot(k), 0x89);
         }
     }
+
+    /// <summary>
+    /// A WINDOWS FRAME OF A PAGE OR MORE TOUCHES ITS PAGES IN ORDER before
+    /// the stack pointer goes below them (X86Mode.Windows). Windows commits a
+    /// thread's stack as it grows through the one guard page below what is
+    /// committed, so a first touch two pages down faults: Microsoft's
+    /// __chkstk, MinGW's ___chkstk_ms and LLVM's Windows prologues probe
+    /// every 4 KiB first. Inline here, with no CRT to call: the stack
+    /// pointer does not move until the `sub` that follows, so the unwind
+    /// data needs no code for the loop (X64Backend.Unwind), and it uses R10
+    /// and R11 alone, which carry no argument in at a function's entry
+    /// (System V's arguments are RDI RSI RDX RCX R8 R9; the static chain,
+    /// R10, is not this compiler's). A read is the touch, as __chkstk's
+    /// `test [r11], r11b`. Writes the probe and answers true, or nothing.
+    ///
+    ///   mov r11, rsp ; mov r10d, pages
+    ///   L: sub r11, 4096 ; test [r11], r11b ; dec r10d ; jnz L
+    /// </summary>
+    private bool ProbeStack()
+    {
+        if (!X86Mode.Windows || _frameBytes < ProbePage) return false;
+        int pages = _frameBytes / ProbePage;
+        B(0x49, 0x89, 0xE3);                                                    // mov r11, rsp
+        B(0x41, 0xBA); D32(pages);                                              // mov r10d, pages
+        B(0x49, 0x81, 0xEB); D32(ProbePage);                                    // L: sub r11, 4096
+        B(0x45, 0x84, 0x1B);                                                    // test [r11], r11b
+        B(0x41, 0xFF, 0xCA);                                                    // dec r10d
+        B(0x75, unchecked((byte)-(7 + 3 + 3 + 2)));                             // jnz L
+        return true;
+    }
+
+    /// <summary>A page, as Windows' stack grows: the size a frame is probed by (ProbeStack).</summary>
+    public const int ProbePage = 4096;
+
+    /// <summary>The probe's bytes (ProbeStack), which X64Backend.Unwind steps over in a prologue.</summary>
+    public const int ProbeBytes = 3 + 6 + 7 + 3 + 3 + 2;
 
     /// <summary>
     /// Where the function's k-th saved register is kept: its slot below the

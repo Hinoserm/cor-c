@@ -32,8 +32,12 @@ public static partial class Linker
         /// <summary>A DLL: IMAGE_FILE_DLL, an export directory, and an entry point only if one is named.</summary>
         public bool Dll { get; init; }
 
-        /// <summary>The address it is linked to, a multiple of 64 KiB as Windows requires.</summary>
-        public uint ImageBase { get; init; } = PeFormat.DefaultImageBase;
+        /// <summary>
+        /// The address it is linked to, a multiple of 64 KiB as Windows
+        /// requires; null for the default of its kind and mode (PeFormat:
+        /// 0x400000 or 0x10000000 for i386, 0x140000000 or 0x180000000 for x64).
+        /// </summary>
+        public ulong? ImageBase { get; init; }
 
         /// <summary>The symbol the loader enters: a program's start, a DLL's DllMain. Null: a DLL with none.</summary>
         public string? Entry { get; init; }
@@ -88,8 +92,20 @@ public static partial class Linker
     /// <summary>One function an image calls in a DLL, and the symbol its objects name it by.</summary>
     private sealed record PeImport(string Dll, string? Export, ushort Ordinal, string Symbol);
 
-    /// <summary>A thunk: `jmp dword [IAT slot]`, six bytes.</summary>
+    /// <summary>
+    /// A thunk: `jmp [IAT slot]`, six bytes, FF 25 and a 32-bit field -- the
+    /// slot's absolute address in a PE32 image (a HIGHLOW fix-up), its
+    /// distance from the thunk's end in a PE32+ one, where FF 25 is
+    /// RIP-relative and the jump takes the slot's eight bytes (MSVC's form;
+    /// no fix-up).
+    /// </summary>
     private const int PeThunkBytes = 6;
+
+    /// <summary>The name of the table each long-mode object's functions are described in (UnwindTable), read here into .pdata.</summary>
+    public const string UnwindTableSection = ".corsac.unwind";
+
+    /// <summary>One record of UnwindTableSection: the function's start, its end and its UNWIND_INFO, each an Abs64.</summary>
+    public const int UnwindRecordBytes = 24;
 
     public static void LinkPeTo(string path, IEnumerable<(string Name, ObjectFile Object)> objects, PeOptions options)
         => File.WriteAllBytes(path, LinkPe(objects, options));
@@ -98,10 +114,6 @@ public static partial class Linker
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(options);
-        if (options.ImageBase % 0x10000 != 0)
-        {
-            throw new ArgumentException($"image base 0x{options.ImageBase:x} is not a multiple of 64 KiB, which Windows requires", nameof(options));
-        }
         List<Input> inputs = objects.Select(o => new Input(o.Name, o.Object)).ToList();
         if (inputs.Count == 0)
         {
@@ -109,9 +121,23 @@ public static partial class Linker
         }
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
-        if (inputs.Any(i => TargetContract.IsLongMode(i.Object)))
+        // PE32 FOR i386 OBJECTS, PE32+ FOR LONG-MODE ONES (Validate has seen
+        // that they are all of one mode): eight-byte addresses in data and in
+        // the import tables, DIR64 fix-ups, RIP-relative thunks, and .pdata
+        // describing every function's frame for Windows' unwinder.
+        bool longMode = inputs.Any(i => TargetContract.IsLongMode(i.Object));
+        int word = longMode ? 8 : 4;
+        RelocKind absolute = longMode ? RelocKind.Abs64 : RelocKind.Abs32;
+        ulong imageBase = options.ImageBase
+            ?? (longMode ? options.Dll ? PeFormat.DefaultDllBase64 : PeFormat.DefaultImageBase64
+                         : options.Dll ? PeFormat.DefaultDllBase : PeFormat.DefaultImageBase);
+        if (imageBase % 0x10000 != 0)
         {
-            throw new LinkException(new[] { "a Windows image is made for i386 only: x86-64's PE32+ is not made yet" });
+            throw new ArgumentException($"image base 0x{imageBase:x} is not a multiple of 64 KiB, which Windows requires", nameof(options));
+        }
+        if (!longMode && imageBase > uint.MaxValue)
+        {
+            throw new ArgumentException($"image base 0x{imageBase:x} is above four gigabytes, where an i386 image cannot be", nameof(options));
         }
         // EVERY UNIT FINDS ITS THREAD BLOCK IN THE TEB: one compiled for GS
         // (Linux) or for one global word (bare metal) reads the wrong place.
@@ -126,10 +152,10 @@ public static partial class Linker
         // The copies chosen, each object's descriptors packed (DescriptorPacker).
         Corsac.Lang.Lto.DescriptorPacker.Run(inputs.Select(i => i.Object));
         List<string> errors = new();
-        if (ProgramInitializers(inputs, longMode: false) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
-        if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), false) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
+        if (ProgramInitializers(inputs, longMode) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
+        if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), longMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
 
-        Layout layout = new(options.ImageBase);
+        Layout layout = new(imageBase);
         layout.ArrangeStatic();
         AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);
@@ -165,7 +191,7 @@ public static partial class Linker
             foreach (Placed p in input.Placed)
                 if (p.Output.IsAllocated)
                     foreach (Relocation r in p.Section.Relocs)
-                        if (r.Kind == RelocKind.Abs32 && runtimeImports.Contains(r.Symbol) && !input.Locals.ContainsKey(r.Symbol))
+                        if (r.Kind == absolute && runtimeImports.Contains(r.Symbol) && !input.Locals.ContainsKey(r.Symbol))
                             dataImports.Add((p, r));
         OutputSection? dataImportTable = null;
         if (options.RuntimeSymbols is not null)
@@ -186,17 +212,21 @@ public static partial class Linker
         OutputSection? importSection = null;
         if (imports.Count > 0)
         {
-            importSection = new OutputSection(".idata", SectionKind.Data) { Align = 4 };
-            importSection.Size = PeImportBytes(imports);
+            importSection = new OutputSection(".idata", SectionKind.Data) { Align = (uint)word };
+            importSection.Size = PeImportBytes(imports, word);
             importSection.Content = new byte[importSection.Size];
             layout.Extra.Add(importSection);
         }
         // THE GOT IS THE IMPORT ADDRESS TABLE. Code reaches another image's
-        // data through a slot holding its address (RelocKind.GotAddr), and an
-        // import's slot is that: the loader fills it. A symbol this image
-        // defines gets a slot of its own, in a small table beside the
-        // constants. Each such relocation becomes an absolute one to its slot.
-        Dictionary<string, uint> importSlots = ImportSlotOffsets(imports);
+        // data through a slot holding its address -- i386's GotAddr, an
+        // absolute slot address; long mode's GotPcRel, the slot RIP-relative
+        // -- and an import's slot is that: the loader fills it. A symbol this
+        // image defines gets a slot of its own, in a small table beside the
+        // constants, but for long mode's `mov r64, [rip + slot]`, which
+        // becomes `lea r64, [rip + symbol]` (the GOTPCRELX relaxation, as
+        // Dynamic.RelaxableGotLoad does it). Each such relocation becomes an
+        // absolute one to its slot on i386, a RIP-relative one in long mode.
+        Dictionary<string, uint> importSlots = ImportSlotOffsets(imports, word);
         Dictionary<string, (Input Input, string Symbol, uint Offset)> ownSlots = new(StringComparer.Ordinal);
         OutputSection? ownGot = null;
         for (int n = 0; n < inputs.Count; n++)
@@ -207,7 +237,7 @@ public static partial class Linker
                 for (int i = 0; i < section.Relocs.Count; i++)
                 {
                     Relocation r = section.Relocs[i];
-                    if (r.Kind != RelocKind.GotAddr) continue;
+                    if (r.Kind != (longMode ? RelocKind.GotPcRel : RelocKind.GotAddr)) continue;
                     bool local = input.Locals.ContainsKey(r.Symbol);
                     string slot;
                     if (!local && importSlots.TryGetValue(r.Symbol, out uint offset))
@@ -215,21 +245,53 @@ public static partial class Linker
                         slot = "got$" + r.Symbol;
                         layout.Globals[slot] = new Definition("the import directory", importSection!, offset, null);
                     }
+                    else if (longMode && RelaxableLoad(section, r))
+                    {
+                        // mov r64, [rip + slot]  ->  lea r64, [rip + symbol]
+                        section.Bytes[r.Offset - 2] = 0x8D;
+                        section.Relocs[i] = r with { Kind = RelocKind.Rel32 };
+                        continue;
+                    }
                     else
                     {
                         slot = "got$" + (local ? n + "$" : "") + r.Symbol;
-                        if (!ownSlots.ContainsKey(slot)) ownSlots[slot] = (input, r.Symbol, (uint)ownSlots.Count * 4);
+                        if (!ownSlots.ContainsKey(slot)) ownSlots[slot] = (input, r.Symbol, (uint)(ownSlots.Count * word));
                     }
-                    section.Relocs[i] = r with { Kind = RelocKind.Abs32, Symbol = slot };
+                    section.Relocs[i] = r with { Kind = longMode ? RelocKind.Rel32 : RelocKind.Abs32, Symbol = slot };
                 }
             }
         }
         if (ownSlots.Count > 0)
         {
-            ownGot = new OutputSection(".rdata$got", SectionKind.ReadOnlyData) { Align = 4, Size = (uint)ownSlots.Count * 4 };
+            ownGot = new OutputSection(".rdata$got", SectionKind.ReadOnlyData) { Align = (uint)word, Size = (uint)(ownSlots.Count * word) };
             ownGot.Content = new byte[ownGot.Size];
             foreach ((string slot, (Input _, string _, uint offset)) in ownSlots)
                 layout.Globals[slot] = new Definition("the image's GOT", ownGot, offset, null);
+        }
+        // AN ABSOLUTE 32-BIT ADDRESS IN A PE32+ IMAGE cannot be moved: the
+        // image is above four gigabytes and .reloc has no 32-bit form there.
+        // The long-mode backend writes none; an object that has one says so.
+        if (longMode)
+        {
+            foreach (Input input in inputs)
+                foreach (Section section in input.Object.Sections)
+                    if (section.Kind != SectionKind.Note)
+                        foreach (Relocation r in section.Relocs)
+                            if (r.Kind is RelocKind.Abs32 or RelocKind.Abs32S)
+                                errors.Add($"{input.Name} ({section.Name}+0x{r.Offset:x}): a 32-bit absolute address of '{r.Symbol}', which a 64-bit Windows image above four gigabytes cannot hold or move");
+        }
+
+        // .pdata: a RUNTIME_FUNCTION for every function the objects describe
+        // (UnwindTableSection), filled once addresses are known.
+        int unwindRecords = 0;
+        foreach (Input input in inputs)
+            foreach (Section section in input.Object.Sections)
+                if (section.Name == UnwindTableSection) unwindRecords += section.Size / UnwindRecordBytes;
+        OutputSection? pdata = null;
+        if (unwindRecords > 0)
+        {
+            pdata = new OutputSection(".pdata", SectionKind.ReadOnlyData) { Align = 4, Size = (uint)unwindRecords * PeFormat.RuntimeFunctionBytes };
+            pdata.Content = new byte[pdata.Size];
         }
         if (errors.Count != 0)
         {
@@ -240,6 +302,7 @@ public static partial class Linker
         {
             new PeSection(".text", PeSectionFlags.Code | PeSectionFlags.Execute | PeSectionFlags.Read, layout.Text, thunks),
             new PeSection(".rdata", PeSectionFlags.InitializedData | PeSectionFlags.Read, layout.ReadOnlyData, ownGot, dataImportTable, exportSection),
+            new PeSection(".pdata", PeSectionFlags.InitializedData | PeSectionFlags.Read, pdata),
             new PeSection(".data", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, layout.Numbers, layout.Data, layout.Bss),
             new PeSection(".idata", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, importSection),
         };
@@ -247,13 +310,15 @@ public static partial class Linker
 
         // .reloc is last, and whether it is there at all is known now: an
         // image with no absolute address in it moves without one.
-        bool hasFixups = thunks is not null || inputs.Any(input => input.Placed.Any(p => p.Output.IsAllocated && p.Section.Relocs.Any(r => r.Kind == RelocKind.Abs32)));
+        bool hasFixups = (thunks is not null && !longMode) || ownSlots.Count > 0
+            || inputs.Any(input => input.Placed.Any(p => p.Output.IsAllocated && p.Section.Relocs.Any(r => r.Kind == absolute)));
         int sectionCount = sections.Count + (hasFixups ? 1 : 0);
-        uint headerBytes = (uint)(PeFormat.DosBytes + 4 + PeFormat.CoffHeaderBytes + PeFormat.OptionalHeaderBytes + sectionCount * PeFormat.SectionHeaderBytes);
+        int optionalHeaderBytes = longMode ? PeFormat.OptionalHeader64Bytes : PeFormat.OptionalHeaderBytes;
+        uint headerBytes = (uint)(PeFormat.DosBytes + 4 + PeFormat.CoffHeaderBytes + optionalHeaderBytes + sectionCount * PeFormat.SectionHeaderBytes);
         uint sizeOfHeaders = PeFormat.AlignUp(headerBytes, PeFormat.FileAlignment);
         uint nextRva = 0, nextFile = 0;
         Place(layout, l => (nextRva, nextFile) = AssignPeAddresses(l, sections, sizeOfHeaders));
-        BelowFourGigabytes(layout);
+        if (!longMode) BelowFourGigabytes(layout);
         DefineLinkerSymbols(layout);
         Relocate(inputs, layout, errors);
 
@@ -268,7 +333,7 @@ public static partial class Linker
             }
             else
             {
-                entryRva = checked((uint)(entry.Address - options.ImageBase));
+                entryRva = checked((uint)(entry.Address - imageBase));
             }
         }
         else if (!options.Dll)
@@ -292,14 +357,15 @@ public static partial class Linker
                     errors.Add($"'{symbol}' is reached through the GOT from {input.Name}, and nothing defines it");
                     continue;
                 }
-                BinaryPrimitives.WriteUInt32LittleEndian(ownGot.Content!.AsSpan((int)offset), checked((uint)d.Address));
-                ownGotFixups.Add(checked((uint)(ownGot.Addr - options.ImageBase + offset)));
+                if (longMode) BinaryPrimitives.WriteUInt64LittleEndian(ownGot.Content!.AsSpan((int)offset), d.Address);
+                else BinaryPrimitives.WriteUInt32LittleEndian(ownGot.Content!.AsSpan((int)offset), checked((uint)d.Address));
+                ownGotFixups.Add(checked((uint)(ownGot.Addr - imageBase + offset)));
             }
         }
-        Dictionary<string, uint> slots = new(StringComparer.Ordinal);
+        Dictionary<string, ulong> slots = new(StringComparer.Ordinal);
         if (thunks is not null && importSection is not null)
         {
-            slots = FillImports(imports, importSection, thunks, options.ImageBase);
+            slots = FillImports(imports, importSection, thunks, imageBase, word);
         }
         // Each word's place and its import's slot, as RVAs; the word itself
         // keeps only the addend, which the runtime adds the slot's value to.
@@ -308,14 +374,15 @@ public static partial class Linker
         {
             (Placed p, Relocation r) = dataImports[i];
             ulong site = p.Output.Addr + p.Offset + (ulong)r.Offset;
-            p.Bytes.WriteUInt32((int)r.Offset, unchecked((uint)r.Addend));
+            if (longMode) p.Bytes.WriteInt64((int)r.Offset, r.Addend);
+            else p.Bytes.WriteUInt32((int)r.Offset, unchecked((uint)r.Addend));
             filledAtStart.Add(site);
-            BinaryPrimitives.WriteUInt32LittleEndian(dataImportTable!.Content!.AsSpan(i * 8), checked((uint)(site - options.ImageBase)));
-            BinaryPrimitives.WriteUInt32LittleEndian(dataImportTable.Content.AsSpan(i * 8 + 4), checked(slots[r.Symbol] - options.ImageBase));
+            BinaryPrimitives.WriteUInt32LittleEndian(dataImportTable!.Content!.AsSpan(i * 8), checked((uint)(site - imageBase)));
+            BinaryPrimitives.WriteUInt32LittleEndian(dataImportTable.Content.AsSpan(i * 8 + 4), checked((uint)(slots[r.Symbol] - imageBase)));
         }
         if (exportSection is not null)
         {
-            FillExports(exports, exportSection, layout, options.ImageBase, options.Name, errors, options.ExportAll);
+            FillExports(exports, exportSection, layout, imageBase, options.Name, errors, options.ExportAll);
             if (errors.Count != 0)
             {
                 throw new LinkException(errors);
@@ -335,25 +402,31 @@ public static partial class Linker
                 }
                 foreach (Relocation r in p.Section.Relocs)
                 {
-                    if (r.Kind == RelocKind.Abs32 && !filledAtStart.Contains(p.Output.Addr + p.Offset + (ulong)r.Offset))
+                    if (r.Kind == absolute && !filledAtStart.Contains(p.Output.Addr + p.Offset + (ulong)r.Offset))
                     {
-                        fixups.Add(checked((uint)(p.Output.Addr - options.ImageBase + p.Offset + (uint)r.Offset)));
+                        fixups.Add(checked((uint)(p.Output.Addr - imageBase + p.Offset + (uint)r.Offset)));
                     }
                 }
             }
         }
         fixups.AddRange(ownGotFixups);
-        if (thunks is not null)
+        // (A PE32+ thunk's field is RIP-relative, and moves with the image.)
+        if (thunks is not null && !longMode)
         {
             for (int i = 0; i < imports.Count; i++)
             {
-                fixups.Add(checked((uint)(thunks.Addr - options.ImageBase + (ulong)(i * PeThunkBytes) + 2)));
+                fixups.Add(checked((uint)(thunks.Addr - imageBase + (ulong)(i * PeThunkBytes) + 2)));
             }
+        }
+        if (pdata is not null) FillPdata(inputs, pdata, imageBase, errors);
+        if (errors.Count != 0)
+        {
+            throw new LinkException(errors);
         }
         PeSection? relocSection = null;
         if (hasFixups)
         {
-            byte[] blocks = BaseRelocations(fixups);
+            byte[] blocks = BaseRelocations(fixups, longMode ? PeBaseRelocation.Dir64 : PeBaseRelocation.HighLow);
             OutputSection reloc = new(".reloc", SectionKind.ReadOnlyData) { Align = 4, Size = (uint)blocks.Length, Content = blocks };
             relocSection = new PeSection(".reloc", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Discardable, reloc)
             {
@@ -362,7 +435,7 @@ public static partial class Linker
                 VirtualSize = reloc.Size,
                 RawSize = PeFormat.AlignUp(reloc.Size, PeFormat.FileAlignment),
             };
-            reloc.Addr = options.ImageBase + nextRva;
+            reloc.Addr = imageBase + nextRva;
             reloc.FileOffset = nextFile;
             sections.Add(relocSection);
             nextRva = PeFormat.AlignUp(nextRva + reloc.Size, PeFormat.SectionAlignment);
@@ -370,7 +443,7 @@ public static partial class Linker
         }
 
         byte[] image = new byte[nextFile];
-        WritePeHeaders(image, sections, options, sizeOfHeaders, nextRva, entryRva, exportSection, importSection, thunks, imports, relocSection);
+        WritePeHeaders(image, sections, options, imageBase, longMode, sizeOfHeaders, nextRva, entryRva, exportSection, importSection, thunks, imports, relocSection, pdata);
         foreach (PeSection section in sections)
         {
             foreach (OutputSection s in section.Parts)
@@ -483,11 +556,11 @@ public static partial class Linker
     /// (all of them together, which is the IAT the data directory names);
     /// the hint-and-name entries, each an even number of bytes; the DLLs' names.
     /// </summary>
-    private static uint PeImportBytes(List<PeImport> imports)
+    private static uint PeImportBytes(List<PeImport> imports, int word)
     {
         List<string> dlls = imports.Select(i => i.Dll).Distinct(StringComparer.Ordinal).ToList();
         uint size = (uint)(dlls.Count + 1) * PeFormat.ImportDescriptorBytes;
-        size += 2 * (uint)(imports.Count + dlls.Count) * 4;
+        size += 2 * (uint)(imports.Count + dlls.Count) * (uint)word;
         foreach (PeImport import in imports)
         {
             if (import.Export is not null) size += HintNameBytes(import.Export);
@@ -501,14 +574,18 @@ public static partial class Linker
 
     private static uint HintNameBytes(string export) => PeFormat.AlignUp(2 + (uint)export.Length + 1, 2);
 
-    /// <summary>The import directory's bytes, and each thunk's jump through its IAT slot.</summary>
-    private static Dictionary<string, uint> FillImports(List<PeImport> imports, OutputSection idata, OutputSection thunks, uint imageBase)
+    /// <summary>
+    /// The import directory's bytes, and each thunk's jump through its IAT
+    /// slot. Lookup and address entries are a word each: four bytes in PE32,
+    /// eight in PE32+, whose import by ordinal is bit 63.
+    /// </summary>
+    private static Dictionary<string, ulong> FillImports(List<PeImport> imports, OutputSection idata, OutputSection thunks, ulong imageBase, int word)
     {
         byte[] b = idata.Content!;
         uint rva = checked((uint)(idata.Addr - imageBase));
         List<string> dlls = imports.Select(i => i.Dll).Distinct(StringComparer.Ordinal).ToList();
         uint lookups = (uint)(dlls.Count + 1) * PeFormat.ImportDescriptorBytes;
-        uint tables = 4 * (uint)(imports.Count + dlls.Count);
+        uint tables = (uint)word * (uint)(imports.Count + dlls.Count);
         uint addresses = lookups + tables;
         uint names = addresses + tables;
         uint dllNames = names;
@@ -522,17 +599,17 @@ public static partial class Linker
         for (int d = 0; d < dlls.Count; d++)
         {
             uint descriptor = (uint)d * PeFormat.ImportDescriptorBytes;
-            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)descriptor), rva + lookups + slot * 4);        // OriginalFirstThunk
-            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)descriptor + 12), rva + dllName);               // Name
-            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)descriptor + 16), rva + addresses + slot * 4);  // FirstThunk
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)descriptor), rva + lookups + slot * (uint)word);        // OriginalFirstThunk
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)descriptor + 12), rva + dllName);                        // Name
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)descriptor + 16), rva + addresses + slot * (uint)word);  // FirstThunk
             Encoding.ASCII.GetBytes(dlls[d], b.AsSpan((int)dllName));
             dllName += (uint)dlls[d].Length + 1;
             foreach (PeImport import in imports.Where(i => i.Dll == dlls[d]))
             {
-                uint entry;
+                ulong entry;
                 if (import.Export is null)
                 {
-                    entry = PeFormat.ImportByOrdinal | import.Ordinal;
+                    entry = (word == 8 ? PeFormat.ImportByOrdinal64 : PeFormat.ImportByOrdinal) | import.Ordinal;
                 }
                 else
                 {
@@ -543,8 +620,16 @@ public static partial class Linker
                     Encoding.ASCII.GetBytes(import.Export, b.AsSpan((int)name + 2));
                     name += HintNameBytes(import.Export);
                 }
-                BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)(lookups + slot * 4)), entry);
-                BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)(addresses + slot * 4)), entry);
+                if (word == 8)
+                {
+                    BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan((int)(lookups + slot * 8)), entry);
+                    BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan((int)(addresses + slot * 8)), entry);
+                }
+                else
+                {
+                    BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)(lookups + slot * 4)), (uint)entry);
+                    BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan((int)(addresses + slot * 4)), (uint)entry);
+                }
                 slotOf[import.Symbol] = slot;
                 slot++;
             }
@@ -555,28 +640,78 @@ public static partial class Linker
         for (int i = 0; i < imports.Count; i++)
         {
             int at = i * PeThunkBytes;
-            t[at] = 0xFF;      // jmp dword [disp32]
+            t[at] = 0xFF;      // jmp [disp32]: absolute in PE32, RIP-relative (from the thunk's end) in PE32+
             t[at + 1] = 0x25;
-            BinaryPrimitives.WriteUInt32LittleEndian(t.AsSpan(at + 2), checked((uint)(idata.Addr + addresses + slotOf[imports[i].Symbol] * 4)));
+            ulong slotAddress = idata.Addr + addresses + slotOf[imports[i].Symbol] * (uint)word;
+            uint field = word == 8 ? unchecked((uint)checked((int)((long)slotAddress - (long)(thunks.Addr + (ulong)at + PeThunkBytes))))
+                                   : checked((uint)slotAddress);
+            BinaryPrimitives.WriteUInt32LittleEndian(t.AsSpan(at + 2), field);
         }
         // Each import's slot in the IAT, by address.
-        return slotOf.ToDictionary(kv => kv.Key, kv => checked((uint)(idata.Addr + addresses + kv.Value * 4)), StringComparer.Ordinal);
+        return slotOf.ToDictionary(kv => kv.Key, kv => idata.Addr + addresses + kv.Value * (uint)word, StringComparer.Ordinal);
     }
 
     /// <summary>Each import's IAT slot, as an offset in the import section (FillImports lays them out so).</summary>
-    private static Dictionary<string, uint> ImportSlotOffsets(List<PeImport> imports)
+    private static Dictionary<string, uint> ImportSlotOffsets(List<PeImport> imports, int word)
     {
         Dictionary<string, uint> offsets = new(StringComparer.Ordinal);
         List<string> dlls = imports.Select(i => i.Dll).Distinct(StringComparer.Ordinal).ToList();
         uint lookups = (uint)(dlls.Count + 1) * PeFormat.ImportDescriptorBytes;
-        uint addresses = lookups + 4 * (uint)(imports.Count + dlls.Count);
+        uint addresses = lookups + (uint)word * (uint)(imports.Count + dlls.Count);
         uint slot = 0;
         foreach (string dll in dlls)
         {
-            foreach (PeImport import in imports.Where(i => i.Dll == dll)) offsets[import.Symbol] = addresses + slot++ * 4;
+            foreach (PeImport import in imports.Where(i => i.Dll == dll)) offsets[import.Symbol] = addresses + slot++ * (uint)word;
             slot++;
         }
         return offsets;
+    }
+
+    /// <summary>`mov r64, [rip + slot]` (REX.W 8B, ModRM mod 00 r/m 101) ending at the relocation's field: the GOT load a defined symbol's address relaxes from.</summary>
+    private static bool RelaxableLoad(Section section, Relocation r)
+    {
+        Span<byte> before = stackalloc byte[3];
+        return r.Offset >= 3 && r.Addend == -4 && section.ReadAt(r.Offset - 3, before)
+            && (before[0] & 0xF8) == 0x48 && before[1] == 0x8B && (before[2] & 0xC7) == 0x05;
+    }
+
+    /// <summary>
+    /// .pdata: a RUNTIME_FUNCTION -- the begin, end and UNWIND_INFO RVAs --
+    /// for each record of every object's UnwindTableSection, whose three
+    /// Abs64 words the link has resolved by now; sorted by address, as
+    /// Windows' unwinder searches it (RtlLookupFunctionEntry: a binary search).
+    /// </summary>
+    private static void FillPdata(List<Input> inputs, OutputSection pdata, ulong imageBase, List<string> errors)
+    {
+        List<(uint Begin, uint End, uint Info)> records = new();
+        foreach (Input input in inputs)
+        {
+            foreach (Placed p in input.Placed)
+            {
+                if (p.Section.Name != UnwindTableSection) continue;
+                for (int at = 0; at + UnwindRecordBytes <= p.Bytes.Count; at += UnwindRecordBytes)
+                {
+                    ulong begin = (ulong)p.Bytes.ReadInt64(at), end = (ulong)p.Bytes.ReadInt64(at + 8), info = (ulong)p.Bytes.ReadInt64(at + 16);
+                    if (begin < imageBase || end <= begin || info < imageBase || end - imageBase > uint.MaxValue || info - imageBase > uint.MaxValue)
+                    {
+                        errors.Add($"{input.Name}: an unwind record at +0x{at:x} does not name a function and its UNWIND_INFO in the image");
+                        continue;
+                    }
+                    records.Add(((uint)(begin - imageBase), (uint)(end - imageBase), (uint)(info - imageBase)));
+                }
+            }
+        }
+        records.Sort((a, b) => a.Begin.CompareTo(b.Begin));
+        for (int i = 1; i < records.Count; i++)
+            if (records[i].Begin < records[i - 1].End)
+                errors.Add($"two functions' unwind records overlap at RVA 0x{records[i].Begin:x}");
+        byte[] b = pdata.Content!;
+        for (int i = 0; i < records.Count; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(i * 12), records[i].Begin);
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(i * 12 + 4), records[i].End);
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(i * 12 + 8), records[i].Info);
+        }
     }
 
     /// <summary>The ends of the table of words an import's address goes in (DataImports), which the entry hands the runtime.</summary>
@@ -593,7 +728,7 @@ public static partial class Linker
             .Select(name => (inputs[0], name, name)).ToList();
 
     /// <summary>The export directory's bytes: ordinals from 1, in the order of the names.</summary>
-    private static void FillExports(List<(Input Input, string Export, string Symbol)> exports, OutputSection edata, Layout layout, uint imageBase, string name, List<string> errors, bool allData = false)
+    private static void FillExports(List<(Input Input, string Export, string Symbol)> exports, OutputSection edata, Layout layout, ulong imageBase, string name, List<string> errors, bool allData = false)
     {
         byte[] b = edata.Content!;
         uint rva = checked((uint)(edata.Addr - imageBase));
@@ -631,10 +766,11 @@ public static partial class Linker
 
     /// <summary>
     /// .reloc's bytes: the fix-ups by page, a block a page, each entry the
-    /// HIGHLOW type and the offset in the page, a block padded to four bytes
+    /// type (HIGHLOW for a PE32 image's four-byte words, DIR64 for a PE32+
+    /// one's eight) and the offset in the page, a block padded to four bytes
     /// with an ABSOLUTE entry the loader skips.
     /// </summary>
-    private static byte[] BaseRelocations(List<uint> fixups)
+    private static byte[] BaseRelocations(List<uint> fixups, PeBaseRelocation type)
     {
         List<byte> bytes = new();
         foreach (IGrouping<uint, uint> page in fixups.Distinct().Order().GroupBy(rva => rva & ~(PeFormat.SectionAlignment - 1)))
@@ -648,7 +784,7 @@ public static partial class Linker
             bytes.AddRange(header.ToArray());
             foreach (uint rva in entries)
             {
-                ushort entry = (ushort)((ushort)PeBaseRelocation.HighLow << 12 | (rva & (PeFormat.SectionAlignment - 1)));
+                ushort entry = (ushort)((ushort)type << 12 | (rva & (PeFormat.SectionAlignment - 1)));
                 bytes.Add((byte)entry);
                 bytes.Add((byte)(entry >> 8));
             }
@@ -709,11 +845,13 @@ public static partial class Linker
 
     /// <summary>
     /// The headers: MS-DOS's (with a stub that says the program is not for
-    /// MS-DOS), the PE signature, the COFF header, the PE32 optional header
-    /// with its data directories, and the section table.
+    /// MS-DOS), the PE signature, the COFF header, the optional header --
+    /// PE32's for i386, PE32+'s for x64 (no BaseOfData, eight-byte ImageBase
+    /// and stack and heap sizes, the directories at 112) -- with its data
+    /// directories, and the section table.
     /// </summary>
-    private static void WritePeHeaders(byte[] b, List<PeSection> sections, PeOptions options, uint sizeOfHeaders, uint sizeOfImage, uint entryRva,
-                                       OutputSection? exports, OutputSection? imports, OutputSection? thunks, List<PeImport> importList, PeSection? reloc)
+    private static void WritePeHeaders(byte[] b, List<PeSection> sections, PeOptions options, ulong imageBase, bool longMode, uint sizeOfHeaders, uint sizeOfImage, uint entryRva,
+                                       OutputSection? exports, OutputSection? imports, OutputSection? thunks, List<PeImport> importList, PeSection? reloc, OutputSection? pdata)
     {
         // THE MS-DOS HEADER: what makes the file MZ, and e_lfanew. The stub
         // after it prints the sentence and exits with 1.
@@ -742,18 +880,22 @@ public static partial class Linker
         b[at] = (byte)'P'; b[at + 1] = (byte)'E';
         at += 4;
 
-        // THE COFF HEADER.
-        PeCharacteristics characteristics = PeCharacteristics.ExecutableImage | PeCharacteristics.Machine32Bit
-            | PeCharacteristics.LineNumsStripped | PeCharacteristics.LocalSymsStripped | PeCharacteristics.DebugStripped;
+        // THE COFF HEADER. A PE32+ image is large-address aware (it may be
+        // put anywhere, HighEntropyVa below) and not a 32-bit machine's.
+        PeCharacteristics characteristics = PeCharacteristics.ExecutableImage
+            | PeCharacteristics.LineNumsStripped | PeCharacteristics.LocalSymsStripped | PeCharacteristics.DebugStripped
+            | (longMode ? PeCharacteristics.LargeAddressAware : PeCharacteristics.Machine32Bit);
         if (options.Dll) characteristics |= PeCharacteristics.Dll;
-        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(at), (ushort)PeMachine.I386);
+        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(at), (ushort)(longMode ? PeMachine.Amd64 : PeMachine.I386));
         BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(at + 2), (ushort)sections.Count);
-        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(at + 16), PeFormat.OptionalHeaderBytes);
+        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(at + 16), (ushort)(longMode ? PeFormat.OptionalHeader64Bytes : PeFormat.OptionalHeaderBytes));
         BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(at + 18), (ushort)characteristics);
         at += PeFormat.CoffHeaderBytes;
 
         // THE OPTIONAL HEADER. Windows 95's and NT 4's loaders refuse a
-        // subsystem or system version above 4.0, so both are 4.0.
+        // subsystem or system version above 4.0, so both are 4.0 for PE32.
+        // PE32+ names 5.2, the first 64-bit Windows (XP x64, Server 2003),
+        // as MinGW's linker does, with the system version 4.0 as it writes.
         int o = at;
         uint code = 0, initialised = 0;
         foreach (PeSection s in sections)
@@ -763,45 +905,60 @@ public static partial class Linker
         }
         PeSection? text = sections.FirstOrDefault(s => (s.Flags & PeSectionFlags.Code) != 0);
         PeSection? data = sections.FirstOrDefault(s => (s.Flags & PeSectionFlags.Code) == 0);
-        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o), PeFormat.Pe32Magic);
+        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o), longMode ? PeFormat.Pe32PlusMagic : PeFormat.Pe32Magic);
         b[o + 2] = 1;                                                                   // linker version 1.0
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 4), code);
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 8), initialised);
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 16), entryRva);
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 20), text?.Rva ?? 0);    // BaseOfCode
-        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 24), data?.Rva ?? 0);    // BaseOfData
-        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 28), options.ImageBase);
+        if (longMode)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan(o + 24), imageBase);     // ImageBase, eight bytes where PE32 has BaseOfData and its own
+        }
+        else
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 24), data?.Rva ?? 0);    // BaseOfData
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 28), checked((uint)imageBase));
+        }
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 32), PeFormat.SectionAlignment);
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 36), PeFormat.FileAlignment);
         BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o + 40), 4);                 // operating system 4.0
-        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o + 48), 4);                 // subsystem 4.0
+        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o + 48), longMode ? PeFormat.Subsystem64Major : (ushort)4);
+        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o + 50), longMode ? PeFormat.Subsystem64Minor : (ushort)0);
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 56), sizeOfImage);
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 60), sizeOfHeaders);
         BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o + 68), (ushort)options.Subsystem);
         PeDllCharacteristics dll = PeDllCharacteristics.NxCompatible | (reloc is not null ? PeDllCharacteristics.DynamicBase : 0);
+        if (longMode && reloc is not null) dll |= PeDllCharacteristics.HighEntropyVa;
         if (!options.Dll) dll |= PeDllCharacteristics.TerminalServerAware;
         BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o + 70), (ushort)dll);
-        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 72), 0x100000);          // stack reserved
-        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 76), 0x1000);            // stack committed
-        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 80), 0x100000);          // heap reserved
-        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 84), 0x1000);            // heap committed
-        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + 92), PeFormat.DataDirectoryCount);
+        // The stack and heap sizes: four bytes each in PE32, eight in PE32+.
+        int sizes = 72, width = longMode ? 8 : 4;
+        foreach (ulong value in new ulong[] { 0x100000, 0x1000, 0x100000, 0x1000 })   // stack reserved, committed; heap reserved, committed
+        {
+            if (longMode) BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan(o + sizes), value);
+            else BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + sizes), (uint)value);
+            sizes += width;
+        }
+        int directories = longMode ? 112 : 96;
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o + directories - 4), PeFormat.DataDirectoryCount);
         void Directory(PeDirectory which, ulong address, uint size)
         {
-            int d = o + 96 + 8 * (int)which;
-            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(d), checked((uint)(address - options.ImageBase)));
+            int d = o + directories + 8 * (int)which;
+            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(d), checked((uint)(address - imageBase)));
             BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(d + 4), size);
         }
         if (exports is not null) Directory(PeDirectory.Export, exports.Addr, exports.Size);
         if (imports is not null)
         {
             int dllCount = importList.Select(i => i.Dll).Distinct(StringComparer.Ordinal).Count();
-            uint tables = 4 * (uint)(importList.Count + dllCount);
+            uint tables = (uint)(longMode ? 8 : 4) * (uint)(importList.Count + dllCount);
             Directory(PeDirectory.Import, imports.Addr, (uint)(dllCount + 1) * PeFormat.ImportDescriptorBytes);
             Directory(PeDirectory.ImportAddressTable, imports.Addr + (uint)(dllCount + 1) * PeFormat.ImportDescriptorBytes + tables, tables);
         }
-        if (reloc is not null) Directory(PeDirectory.BaseRelocation, options.ImageBase + reloc.Rva, reloc.VirtualSize);
-        at += PeFormat.OptionalHeaderBytes;
+        if (reloc is not null) Directory(PeDirectory.BaseRelocation, imageBase + reloc.Rva, reloc.VirtualSize);
+        if (pdata is not null) Directory(PeDirectory.Exception, pdata.Addr, pdata.Size);
+        at += longMode ? PeFormat.OptionalHeader64Bytes : PeFormat.OptionalHeaderBytes;
 
         // THE SECTION TABLE.
         foreach (PeSection s in sections)

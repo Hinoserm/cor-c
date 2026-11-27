@@ -67,6 +67,9 @@ public sealed class X64Backend : IBackend
     /// </summary>
     public bool RelocatedText { get; set; }
 
+    /// <summary>A unit of a Windows image (PE32+): X86Mode.Windows for its selection and encoding, and unwind data for every function (Unwind).</summary>
+    public bool Windows { get; set; }
+
     /// <summary>--opt-size: no loop head padded to its line (Encoder.OptimizeSize), as i386's.</summary>
     public bool OptimizeSize { get; set; }
 
@@ -171,6 +174,7 @@ public sealed class X64Backend : IBackend
     {
         // Long mode, for the machine IR the two backends share (X86Mode).
         X86Mode.Long = true;
+        X86Mode.Windows = Windows;
         FindStreams(module);
         ObjectFile obj = new();
         // The processor --cpu named, its instructions what this unit may use.
@@ -202,6 +206,18 @@ public sealed class X64Backend : IBackend
 
         HashSet<string> defined = new(StringComparer.Ordinal);
         Encoder encoder = new(text, OptimizeSize);
+        // A WINDOWS IMAGE'S UNWIND DATA (Unwind): the UNWIND_INFO blobs, one
+        // of each shape, and the table naming each function's range and blob,
+        // which the PE link turns into .pdata.
+        Section? xdata = null, unwindTable = null;
+        Dictionary<string, string> xdataBlobs = new(StringComparer.Ordinal);
+        if (Windows)
+        {
+            xdata = new Section(".xdata", SectionKind.ReadOnlyData) { Align = 4 };
+            unwindTable = new Section(Corsac.Lang.Elf.Linker.UnwindTableSection, SectionKind.Note) { Align = 8 };
+            obj.Sections.Add(xdata);
+            obj.Sections.Add(unwindTable);
+        }
         List<Corsac.Lang.X86.FrameTable.Entry> frames = new();
         // The stack maps' records as each function is encoded (StackMapRecorder, both backends').
         Corsac.Lang.Backends.StackMapRecorder maps = new(StackMapLayout.X64);
@@ -248,6 +264,7 @@ public sealed class X64Backend : IBackend
                 continue;
             }
             if (EmitLinkSummary) FamilyObject.DirectCalls(f, encoder, start, summary, eligible);
+            if (Windows) Unwind(m, text, start, size, xdata!, unwindTable!, xdataBlobs, obj, errors);
             FunctionSizes.Add((f.Name, size));
             obj.Symbols.Add(new Symbol
             {
@@ -276,7 +293,7 @@ public sealed class X64Backend : IBackend
         }
 
         EmitStoreSequences(module, text, obj, defined);
-        if (barrierStub) EmitBarrierStub(text, obj, defined);
+        if (barrierStub) EmitBarrierStub(text, obj, defined, xdata, unwindTable, xdataBlobs, errors);
 
         // The stack-map table (version 1 in x86-64's layout), one an object.
         // Its base is the distance from the header's word to the first
@@ -337,6 +354,7 @@ public sealed class X64Backend : IBackend
         // Long mode, as Generate says it: the selection, the allocation and
         // the listing all read it.
         X86Mode.Long = true;
+        X86Mode.Windows = Windows;
         FindStreams(module);
         StringBuilder sb = new();
         List<string> errors = new();
@@ -417,7 +435,8 @@ public sealed class X64Backend : IBackend
     /// runtime instead -- except a module with relocated text, whose stub's
     /// call is a direct one into the kernel (RelocatedText).
     /// </summary>
-    private void EmitBarrierStub(Section text, ObjectFile obj, HashSet<string> defined)
+    private void EmitBarrierStub(Section text, ObjectFile obj, HashSet<string> defined, Section? xdata = null, Section? unwindTable = null,
+                                 Dictionary<string, string>? xdataBlobs = null, List<string>? errors = null)
     {
         ChunkedBytes b = text.Bytes;
         int gap = (FunctionAlign - b.Count % FunctionAlign) % FunctionAlign;
@@ -448,11 +467,167 @@ public sealed class X64Backend : IBackend
         Bytes(0xC3);                                                                            // ret
         obj.Symbols.Add(new Symbol { Name = Corsac.Lang.X86.X86Backend.BarrierStub, Section = text, Offset = start, Size = b.Count - start, IsFunction = true, Global = false });
         defined.Add(Corsac.Lang.X86.X86Backend.BarrierStub);
+        // A Windows image's description of it: nine pushes and 256 bytes,
+        // its stack pointer fixed after them (its call's stack is aligned by
+        // the 72 + 256 + 8 it holds).
+        if (Windows && xdata is not null)
+        {
+            List<(int End, int Op, int Info)> codes = new();
+            int[] regs = { 0, 1, 2, 6, 7, 8, 9, 10, 11 };
+            int end = 0;
+            foreach (int r in regs) { end += r >= 8 ? 2 : 1; codes.Add((end, 0, r)); }
+            codes.Add((end + 7, 1, 256));
+            WriteUnwind(Corsac.Lang.X86.X86Backend.BarrierStub, b.Count - start, codes, 0, xdata, unwindTable!, xdataBlobs!, obj, errors!);
+        }
     }
 
     /// <summary>The store sequences' stubs, named as i386's (RuntimeAbi; CardMarks.FuseStores).</summary>
     public const string RefStoreStub = Corsac.Lang.Lto.RuntimeAbi.RefStore, CardStoreStub = Corsac.Lang.Lto.RuntimeAbi.CardStore;
     public const string RefExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefExchange, RefCompareExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefCompareExchange;
+    /// <summary>
+    /// A FUNCTION'S UNWIND DATA FOR WINDOWS (X86Mode.Windows): the
+    /// UNWIND_INFO Windows' unwinder reads to find its caller's frame
+    /// (Microsoft's "x64 exception handling"), version 1, which every
+    /// 64-bit Windows and Wine read. The prologue is read back from the bytes
+    /// just written, and only two shapes are taken (any other is an error
+    /// here, never data that might mislead):
+    ///
+    ///   - A FRAME: `push rbp ; mov rbp, rsp` first. PUSH_NONVOL rbp after
+    ///     the push and SET_FPREG (RBP, offset 0) after the move, as Go
+    ///     describes every function. Whatever follows -- the saves, `and rsp,
+    ///     -16`, the probe, `sub rsp`, and the body's own pushes -- needs no
+    ///     code: the unwinder recovers RSP from RBP. The registers the body
+    ///     saves are not described (their values are the caller's again once
+    ///     the walk reaches the way in from Windows, whose stub saved and
+    ///     describes every one Windows' convention keeps).
+    ///   - A LEAF (MFunction.Frameless): pushes, then an optional probe, then
+    ///     an optional `sub rsp, n` -- PUSH_NONVOL for each push and an
+    ///     allocation for the `sub`, since a leaf calls nothing and its stack
+    ///     pointer stays where its prologue left it. A leaf that does neither
+    ///     needs no entry: the unwinder takes a function with none for one,
+    ///     the return address at [RSP].
+    ///
+    /// Identical blobs are written once an object (as Go's linker does); the
+    /// table's record is the function's start and end and its blob, three
+    /// Abs64 words the PE link turns into a RUNTIME_FUNCTION.
+    /// </summary>
+    private static void Unwind(Corsac.Lang.X86.MFunction m, Section text, int start, int size, Section xdata, Section table,
+                               Dictionary<string, string> blobs, ObjectFile obj, List<string> errors)
+    {
+        string name = m.Source.Name;
+        if (m.ColdFrames || m.ReservedFrame)
+        {
+            errors.Add($"{name}: a frame made after its prologue, which Windows' unwind data cannot describe (FramePointerFree keeps it off in a Windows image)");
+            return;
+        }
+        Corsac.Lang.Ir.ChunkedBytes b = text.Bytes;
+        byte At(int k) => k < size ? b[start + k] : (byte)0xCC;
+        // (end of the instruction, operation, operand): 0 PUSH_NONVOL, 1 allocation, 3 SET_FPREG.
+        List<(int End, int Op, int Info)> codes = new();
+        int frameRegister = 0;
+        int pos = 0;
+        if (!m.Frameless)
+        {
+            if (At(0) != 0x55 || At(1) != 0x48 || At(2) != 0x89 || At(3) != 0xE5)
+            {
+                errors.Add($"{name}: its prologue is not `push rbp ; mov rbp, rsp`, the frame Windows' unwind data is written for");
+                return;
+            }
+            codes.Add((1, 0, 5));
+            codes.Add((4, 3, 0));
+            frameRegister = 5;
+        }
+        else
+        {
+            for (; ; )
+            {
+                if (At(pos) is >= 0x50 and <= 0x57) { codes.Add((pos + 1, 0, At(pos) - 0x50)); pos += 1; continue; }
+                if (At(pos) == 0x41 && At(pos + 1) is >= 0x50 and <= 0x57) { codes.Add((pos + 2, 0, 8 + At(pos + 1) - 0x50)); pos += 2; continue; }
+                break;
+            }
+            if (At(pos) == 0x49 && At(pos + 1) == 0x89 && At(pos + 2) == 0xE3) pos += Corsac.Lang.X86.Encoder.ProbeBytes;
+            if (At(pos) == 0x48 && At(pos + 1) == 0x83 && At(pos + 2) == 0xEC) { codes.Add((pos + 4, 1, At(pos + 3))); pos += 4; }
+            else if (At(pos) == 0x48 && At(pos + 1) == 0x81 && At(pos + 2) == 0xEC)
+            {
+                codes.Add((pos + 7, 1, b[start + pos + 3] | b[start + pos + 4] << 8 | b[start + pos + 5] << 16 | b[start + pos + 6] << 24));
+                pos += 7;
+            }
+            if (codes.Count != m.SavedRegs.Count + (Corsac.Lang.X86.Encoder.FramelessBytes(m) > 0 ? 1 : 0))
+            {
+                errors.Add($"{name}: its leaf prologue was not read back as its {m.SavedRegs.Count} pushes and its frame");
+                return;
+            }
+            if (codes.Count == 0) return;
+        }
+        WriteUnwind(name, size, codes, frameRegister, xdata, table, blobs, obj, errors);
+    }
+
+    /// <summary>
+    /// One function's UNWIND_INFO from its prologue's operations, in prologue
+    /// order -- (end of the instruction, 0 PUSH_NONVOL / 1 allocation / 3
+    /// SET_FPREG / 8 SAVE_XMM128, operand; for SAVE_XMM128 the register, and
+    /// the offset from the frame's base in Extra) -- written once an object
+    /// (Unwind), and its record in the table.
+    /// </summary>
+    private static void WriteUnwind(string name, int size, List<(int End, int Op, int Info)> codes, int frameRegister, Section xdata, Section table,
+                                    Dictionary<string, string> blobs, ObjectFile obj, List<string> errors, int frameOffset = 0, List<int>? extra = null)
+    {
+        int prologBytes = codes[^1].End;
+        if (prologBytes > 255)
+        {
+            errors.Add($"{name}: a prologue of {prologBytes} bytes, more than the 255 Windows' unwind data can describe");
+            return;
+        }
+        // THE CODES, the last operation first (descending offset), each one
+        // node, or two or three for a large allocation; padded to an even count.
+        List<ushort> nodes = new();
+        for (int k = codes.Count - 1; k >= 0; k--)
+        {
+            (int end, int op, int info) = codes[k];
+            if (op == 1)
+            {
+                if (info % 8 != 0 || info <= 0)
+                {
+                    errors.Add($"{name}: a frame of {info} bytes, not a multiple of eight, which Windows' unwind data cannot describe");
+                    return;
+                }
+                if (info <= 128) nodes.Add((ushort)(end | (2 | ((info - 8) / 8) << 4) << 8));                 // UWOP_ALLOC_SMALL
+                else if (info <= 512 * 1024 - 8) { nodes.Add((ushort)(end | 0x01 << 8)); nodes.Add((ushort)(info / 8)); }   // UWOP_ALLOC_LARGE, size/8
+                else { nodes.Add((ushort)(end | 0x11 << 8)); nodes.Add((ushort)info); nodes.Add((ushort)(info >> 16)); }     // UWOP_ALLOC_LARGE, size
+            }
+            else if (op is 4 or 8)
+            {
+                // SAVE_NONVOL (scaled by 8) or SAVE_XMM128 (scaled by 16): its offset from the frame's base in the next node.
+                int offset = extra![k];
+                nodes.Add((ushort)(end | (op | info << 4) << 8));
+                nodes.Add((ushort)(offset / (op == 8 ? 16 : 8)));
+            }
+            else nodes.Add((ushort)(end | (op | info << 4) << 8));
+        }
+        int count = nodes.Count;
+        if ((nodes.Count & 1) != 0) nodes.Add(0);
+        byte[] blobBytes = new byte[4 + 2 * nodes.Count];
+        blobBytes[0] = 1;                              // version 1, no handler
+        blobBytes[1] = (byte)prologBytes;
+        blobBytes[2] = (byte)count;
+        blobBytes[3] = (byte)(frameRegister | frameOffset << 4);   // FrameOffset in sixteens
+        for (int k = 0; k < nodes.Count; k++) { blobBytes[4 + 2 * k] = (byte)nodes[k]; blobBytes[5 + 2 * k] = (byte)(nodes[k] >> 8); }
+        string key = Convert.ToHexString(blobBytes);
+        if (!blobs.TryGetValue(key, out string? blob))
+        {
+            blob = "__corsac_xdata_" + blobs.Count;
+            int at = xdata.Bytes.Count;
+            xdata.Bytes.AddRange(blobBytes);
+            obj.Symbols.Add(new Symbol { Name = blob, Section = xdata, Offset = at, Size = blobBytes.Length, Global = false });
+            blobs[key] = blob;
+        }
+        int record = table.Bytes.Count;
+        table.Bytes.AddRange(new byte[Corsac.Lang.Elf.Linker.UnwindRecordBytes]);
+        table.Relocs.Add(new Relocation(record, name, 0, RelocKind.Abs64));
+        table.Relocs.Add(new Relocation(record + 8, name, size, RelocKind.Abs64));
+        table.Relocs.Add(new Relocation(record + 16, blob, 0, RelocKind.Abs64));
+    }
+
     private const string MarkingFlag = "s_Runtime_Marking_t$V$I32", CardTable = "s_Runtime_Cards_t$V$NUInt";
 
     /// <summary>

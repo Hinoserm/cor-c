@@ -248,6 +248,7 @@ public sealed class X86Backend : IBackend
         // by whichever backend generates, as Target.Current is said once a
         // process -- one target a process, both of them.
         X86Mode.Long = false;
+        X86Mode.Windows = false;
         // The runtime's streaming copy and fill, where the module has them to
         // call (Module.RuntimeHelpers: lowering kept them) and its code owns
         // the x87 state (Selector.StreamedOr).
@@ -788,6 +789,7 @@ public sealed class X86Backend : IBackend
     public string Assembly(Module module)
     {
         X86Mode.Long = false;
+        X86Mode.Windows = false;
         // As Generate compiles it: the streaming routines where the module has them.
         FindStreams(module);
         _fpuFree = FpuFree.Compute(module, SafepointPolls, out _fpuDefined);

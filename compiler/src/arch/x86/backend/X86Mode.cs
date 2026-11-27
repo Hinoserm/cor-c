@@ -19,6 +19,18 @@ public static class X86Mode
     /// <summary>Long mode (x86-64) rather than i386.</summary>
     public static bool Long { get; set; }
 
+    /// <summary>
+    /// LONG MODE FOR A WINDOWS IMAGE (PE32+; docs/WIN32-TARGET.md): the
+    /// selection calls into Windows by Windows' x64 convention and finds the
+    /// thread block through a TLS slot of the TEB; every function's frame is
+    /// one Windows' unwinder can walk (no frame made after the prologue,
+    /// FramePointerFree), described in unwind data (X64Backend.Unwind), and a
+    /// frame of a page or more probes its pages in order as it is made
+    /// (Encoder's PrologueL), as Windows grows a thread's stack one guard
+    /// page at a time. Set with Long, by X64Backend.Windows.
+    /// </summary>
+    public static bool Windows { get; set; }
+
     /// <summary>A machine word, a frame slot's least size and an instruction's default width: 4 or 8 bytes.</summary>
     public static int Word => Long ? 8 : 4;
 
