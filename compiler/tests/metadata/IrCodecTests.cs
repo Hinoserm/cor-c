@@ -102,6 +102,9 @@ public static class IrCodecTests
         DataItem decoded = IrDataCodec.Read(bytes);
         Check(bytes.SequenceEqual(IrDataCodec.Write(decoded)) && decoded.Relocs.Single().Symbol == "target", "IR data round trip");
         Reject(() => IrDataCodec.Read(bytes[..^1]));
+        // A string object's mark (HasHeader: placed with the image's objects) survives the archive, and its absence does.
+        DataItem literal = new("str_0", new byte[24]) { ReadOnly = true, HasHeader = true };
+        Check(IrDataCodec.Read(IrDataCodec.Write(literal)).HasHeader && !decoded.HasHeader, "A string object's HasHeader lost in the archive, or set where it was not");
         DataItem bss = new("large-zero", new byte[4096]) { Zero = true };
         bytes = IrDataCodec.Write(bss);
         Check(bytes.Length < 100 && IrDataCodec.Read(bytes).Bytes.Length == 4096, "BSS encoding is not compact");

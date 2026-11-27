@@ -97,7 +97,7 @@ public sealed class SpillCounter
     /// <summary>A zero static made to hold `bytes`, everything else about it as it was.</summary>
     private static DataItem Filled(DataItem d, byte[] bytes, bool noReferences) => new(d.Name, bytes)
     {
-        Align = d.Align, ReadOnly = d.ReadOnly, Exported = d.Exported, Coalescible = d.Coalescible, NoReferences = noReferences || d.NoReferences,
+        Align = d.Align, ReadOnly = d.ReadOnly, HasHeader = d.HasHeader, Exported = d.Exported, Coalescible = d.Coalescible, NoReferences = noReferences || d.NoReferences,
         Volatile = true, FromLibrary = d.FromLibrary, SystemCode = d.SystemCode, SourcePath = d.SourcePath, SourceFile = d.SourceFile,
         Line = d.Line, Display = d.Display, SharedCopies = d.SharedCopies,
     };

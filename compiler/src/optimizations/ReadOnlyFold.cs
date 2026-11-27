@@ -109,6 +109,14 @@ public sealed class ReadOnlyFold : IParallelModulePass
                         continue;
                     }
                     int relocBytes = IrTypes.Word.Bytes();
+                    // AN OBJECT'S SYNC WORD (DataItem.HasHeader), its second
+                    // header word, is the one word of it a lock writes:
+                    // never folded to the zero it starts as, or IsEntered
+                    // and Exit inlined over a literal read 0 while it is held.
+                    if (item.HasHeader && at < 2 * relocBytes && at + i.Size > relocBytes)
+                    {
+                        continue;
+                    }
                     if (item.Relocs.Any(rel => rel.Offset < at + i.Size && rel.Offset + relocBytes > at))
                     {
                         // THE LINKER FILLS THIS WORD, so its value is not here --

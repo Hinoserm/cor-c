@@ -91,8 +91,10 @@ internal static class ObjectData
     /// (ImportConstantsSection): immutable relocations need the loader's
     /// writes, not the collector's conservative reading as roots. Writable
     /// data with no reference in it goes outside the roots
-    /// (NumbersSection). Those two sections are made, aligned to the
-    /// target's `word`, only where an item goes in them.
+    /// (NumbersSection). A string object, read-only in its contents, goes
+    /// with the image's objects (Section.ObjectsName, DataItem.HasHeader):
+    /// writable, for a lock writes its sync word. Those three sections are
+    /// made, aligned to the target's `word`, only where an item goes in them.
     ///
     /// `release`: a placed item's bytes are the section's now, and were
     /// held twice over to the end of the compile -- a zero-filled one an
@@ -106,7 +108,7 @@ internal static class ObjectData
         HashSet<string> moduleDefines = new(StringComparer.Ordinal);
         foreach (Function f in module.Functions) moduleDefines.Add(f.Name);
         foreach (DataItem d in module.Data) moduleDefines.Add(d.Name);
-        Section? imports = null, plain = null;
+        Section? imports = null, plain = null, objects = null;
         Section Made(ref Section? made, string name)
         {
             if (made is null) obj.Sections.Add(made = new Section(name, SectionKind.Data) { Align = word });
@@ -114,11 +116,16 @@ internal static class ObjectData
         }
         Section importConstants() => Made(ref imports, ImportConstantsSection);
         Section numbers() => Made(ref plain, NumbersSection);
+        Section imageObjects() => Made(ref objects, Section.ObjectsName);
         foreach (DataItem d in module.Data)
         {
             bool loaderWrites = d.Relocs.Count > 0 && (positionIndependent || d.Relocs.Any(r => suppliedByAnother(r.Symbol)));
             bool namesImport = loaderWrites && d.Relocs.Any(r => !moduleDefines.Contains(r.Symbol));
+            // AN OBJECT OF THE IMAGE'S, read-only or not in its contents, has
+            // a header a lock writes (DataItem.HasHeader): with the image's
+            // objects, writable, whatever its relocations.
             Section s = d.Zero ? bss
+                : d.ReadOnly && d.HasHeader ? imageObjects()
                 : d.ReadOnly ? (loaderWrites ? (namesImport && positionIndependent ? importConstants() : relocatedConstants) : rodata)
                 : d.NoReferences ? numbers() : data;
             int align = Math.Max(d.Align, 1);

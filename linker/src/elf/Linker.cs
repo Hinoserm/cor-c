@@ -587,10 +587,12 @@ public static partial class Linker
         public OutputSection RelocatedImports { get; } = new(".data.rel.ro.imports", SectionKind.Data);
 
         /// <summary>
-        /// Writable data that holds no reference -- a static array of numbers --
-        /// ahead of .data and so outside __data_start.._end, the statics the
-        /// collector reads as roots: read there, its words looked like
-        /// addresses and kept whatever the heap held at them.
+        /// Writable data that holds no reference to the heap -- a static array
+        /// of numbers, and the image's objects (Section.ObjectsName: its
+        /// strings, which name only their descriptors) -- ahead of .data and
+        /// so outside __data_start.._end, the statics the collector reads as
+        /// roots: read there, its words looked like addresses and kept
+        /// whatever the heap held at them.
         /// </summary>
         public OutputSection Numbers { get; } = new(".data.corsac.numbers", SectionKind.Data);
         public OutputSection Bss { get; } = new(".bss", SectionKind.Uninitialised);
@@ -674,7 +676,10 @@ public static partial class Linker
             if (s.Kind == SectionKind.Data && (s.Name == ".data.rel.ro"
                 || s.Name.StartsWith(".data.rel.ro.", StringComparison.Ordinal)))
                 return Dyn is null ? ReadOnlyData : RelocatedConstants;
-            if (s.Kind == SectionKind.Data && s.Name == ".data.corsac.numbers")
+            // THE IMAGE'S OBJECTS (Section.ObjectsName) with the numbers:
+            // writable, for a lock writes their headers, and outside the
+            // roots, for they name nothing but the image's own.
+            if (s.Kind == SectionKind.Data && (s.Name == ".data.corsac.numbers" || s.Name == Section.ObjectsName))
                 return Numbers;
             switch (s.Kind)
             {
@@ -1493,8 +1498,11 @@ public static partial class Linker
                 // local VARIABLE, in data or bss: a C file's static counter is
                 // what one looks for in a debugger, and the compiler's objects
                 // hold a few dozen of them against ten thousand constants.
+                // (A literal is a constant though it lies in writable pages,
+                // with the image's objects: its input section says so,
+                // Section.ContentsReadOnly.)
                 if (!sym.IsFunction && !KeepsLocalName(sym.Name)
-                    && d.Section?.Kind is not (SectionKind.Data or SectionKind.Uninitialised))
+                    && (d.Section?.Kind is not (SectionKind.Data or SectionKind.Uninitialised) || sym.Section?.ContentsReadOnly == true))
                 {
                     continue;
                 }

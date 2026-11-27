@@ -13,7 +13,9 @@ namespace Corsac.Lang.Lto;
 ///
 /// A CONSTANT IS NOTHING THE ESCAPE ENGINE NEEDS TO FOLLOW (RegionEscape:
 /// Graph and Unified, whose calls are bound by their targets alone). It is no site's object,
-/// it is never written (it lies in read-only memory), and what is read out
+/// it is never written (it lies in read-only memory, or a string's in the
+/// image's objects, of which only a lock's header word is ever written --
+/// no reference), and what is read out
 /// of it is a constant again, by the relocations' closure. So a node that
 /// holds one holds nothing the solvers care about: storing it somewhere
 /// makes nothing escape, loading from it finds nothing, and a call handed
@@ -234,7 +236,8 @@ internal static class RegionConstants
                 if (_known.TryGetValue(s, out bool settled)) { if (!settled) bad.Add(s); continue; }
                 SectionKind kind = s.Section!.Kind;
                 if (kind == SectionKind.Code) continue;
-                if (kind != SectionKind.ReadOnlyData || s.Size <= 0) { bad.Add(s); continue; }
+                // (The image's objects too: their contents never change, Section.ContentsReadOnly.)
+                if (!s.Section.ContentsReadOnly || s.Size <= 0) { bad.Add(s); continue; }
                 ObjectFile obj = _objectOf[s];
                 foreach (Relocation r in Within(s))
                 {

@@ -2054,7 +2054,7 @@ public sealed partial class Lowering
         sym = SharedLiterals ? "str_" + System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(block.AsSpan(_t.ArrayHeaderBytes)))[..32]
             : $"str_{_strings.Count}";
         _strings[text] = sym;
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = SharedLiterals, Coalescible = SharedLiterals };
+        DataItem item = new(sym, block) { ReadOnly = true, HasHeader = true, Align = _t.Align64, Exported = SharedLiterals, Coalescible = SharedLiterals };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(0, StringDescriptor(), _t.DescriptorBytes));
         return sym;

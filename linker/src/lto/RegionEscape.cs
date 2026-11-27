@@ -4819,7 +4819,9 @@ internal sealed class RegionEscape
                             }
                 foreach (int o in Reached(new[] { 0 }))
                 {
-                    // NOT A CONSTANT: it lies in read-only memory, and what the
+                    // NOT A CONSTANT: it lies in read-only memory (a string's
+                    // header word aside, which only a lock writes, never a
+                    // reference), and what the
                     // unknown object's holder writes cannot land there; what is
                     // read out of it is a constant again (RegionConstants).
                     if (o == 0 || _kind[o] != Kind.Made || IsConstant(o) || _unknownMade.Contains(o)) continue;

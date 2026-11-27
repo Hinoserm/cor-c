@@ -1,0 +1,82 @@
+// test: lock_on_image_objects
+// expect-exit: 0
+// expect-output:
+// literal locked held True
+// const locked
+// same literal True
+// held elsewhere False
+// free again True
+// typeof locked
+// wait/pulse 1
+//
+// A LOCK ON AN OBJECT THE IMAGE HOLDS. A string literal is an object the
+// program's image lays down, not the heap, and C# lets any object be locked:
+// `lock ("literal")` takes the monitor in the literal's own header, as .NET
+// does with a literal in its non-GC heap. Monitor writes the header's sync
+// word, so the literal must lie in writable pages; it lay in the read-only
+// segment and the lock faulted (AccessViolation in Monitor.Enter) on both
+// targets. IsEntered reads the word the lock wrote, never the zero the
+// literal was laid down with (ReadOnlyFold leaves an object's sync word
+// alone). A const is the same literal, one object, so a second thread
+// cannot take it while it is held and can once it is let go; Wait and Pulse
+// on it work as on any object. typeof's object is its RuntimeType, a heap
+// object, locked as before. Output as .NET's.
+
+using System;
+using System.Threading;
+
+public static class Program
+{
+    const string Name = "a shared literal";
+
+    public static int Main()
+    {
+        lock ("literal") { Console.WriteLine("literal locked held " + Monitor.IsEntered("literal")); }
+        lock (Name) { Console.WriteLine("const locked"); }
+        object a = Name, b = "a shared literal";
+        Console.WriteLine("same literal " + ReferenceEquals(a, b));
+
+        bool elsewhere = true;
+        lock (Name)
+        {
+            Thread other = new Thread(() =>
+            {
+                elsewhere = Monitor.TryEnter(Name);
+                if (elsewhere) Monitor.Exit(Name);
+            });
+            other.Start();
+            other.Join();
+        }
+        Console.WriteLine("held elsewhere " + elsewhere);
+        bool free = false;
+        Thread after = new Thread(() =>
+        {
+            free = Monitor.TryEnter(Name);
+            if (free) Monitor.Exit(Name);
+        });
+        after.Start();
+        after.Join();
+        Console.WriteLine("free again " + free);
+
+        lock (typeof(Program)) { Console.WriteLine("typeof locked"); }
+
+        int woken = 0;
+        Thread waiter;
+        lock ("monitor")
+        {
+            waiter = new Thread(() =>
+            {
+                lock ("monitor")
+                {
+                    woken++;
+                    Monitor.Pulse("monitor");
+                }
+            });
+            waiter.Start();
+            Monitor.Wait("monitor");
+        }
+        waiter.Join();
+        Console.WriteLine("wait/pulse " + woken);
+        return 0;
+    }
+}

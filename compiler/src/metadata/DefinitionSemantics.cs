@@ -54,7 +54,7 @@ public static class DefinitionSemantics
                 active.Add(symbol, active.Count);
                 if (data.TryGetValue(symbol, out DataItem? item))
                 {
-                    writer.Write((byte)1); writer.Write(item.Align); writer.Write(item.ReadOnly); writer.Write(item.Zero);
+                    writer.Write((byte)1); writer.Write(item.Align); writer.Write(item.ReadOnly); writer.Write(item.HasHeader); writer.Write(item.Zero);
                     writer.Write(item.Bytes.Length); writer.Write(item.Bytes);
                     writer.Write(item.Relocs.Count);
                     foreach (DataReloc relocation in item.Relocs.OrderBy(value => value.Offset))

@@ -12,7 +12,8 @@ namespace Corsac.Lang.X86;
 ///
 /// Per function: instruction selection (Select.cs), register allocation
 /// (RegAlloc.cs), encoding (Encoder.cs). The module's data items are placed
-/// in .rodata, .data or .bss by their flags, and every name the code or data
+/// in .rodata, .data or .bss by their flags (a string object with the image's
+/// objects, ObjectData.Place), and every name the code or data
 /// refers to without defining becomes an undefined symbol for the linker.
 ///
 /// Static, non-PIC code. The pieces a position-independent mode will need

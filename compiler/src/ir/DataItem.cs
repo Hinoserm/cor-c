@@ -30,6 +30,19 @@ public sealed class DataItem
     public bool NoReferences { get; init; }
 
     /// <summary>
+    /// AN OBJECT A PROGRAM CAN REACH AND LOCK, with the header any object has
+    /// -- a string literal (the compiler's other read-only objects, type
+    /// names, enum tables, UTF-8 data and context tokens, are never handed
+    /// out as objects, and stay read-only): the runtime may lock it, which
+    /// writes its sync word (Monitor.Enter, Sys.SyncWord), so a read-only one
+    /// is not placed in read-only pages but with the image's objects
+    /// (Section.ObjectsName, ObjectData.Place). Its contents stay ReadOnly to
+    /// everything that reads them. `lock ("literal")` faulted on both
+    /// targets while literals lay in the read-only segment.
+    /// </summary>
+    public bool HasHeader { get; init; }
+
+    /// <summary>
     /// A volatile static's: written where the program's IR cannot see -- by
     /// native code, a device, another thread through its address, the
     /// backend's own counting (SpillCount) -- so never taken for the zero

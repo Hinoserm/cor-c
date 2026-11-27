@@ -278,7 +278,7 @@ public sealed partial class Lowering
         byte[] block = StringBlock(text);
         sym = "str_" + System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(block.AsSpan(_t.ArrayHeaderBytes)))[..32];
         _strings[key] = sym;
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = true, Coalescible = true };
+        DataItem item = new(sym, block) { ReadOnly = true, HasHeader = true, Align = _t.Align64, Exported = true, Coalescible = true };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(0, StringDescriptor(), _t.DescriptorBytes));
         return sym;

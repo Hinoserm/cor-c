@@ -329,7 +329,9 @@ public sealed class PreinitWorld
         {
             Kind = RegionKind.Data, Symbol = symbol, Local = local ? owner : null, Bytes = bytes,
             Maker = !local && _statics.TryGetValue(symbol, out Preinit.StaticNote? st) ? st.Owner : null,
-            ReadOnly = section.Kind == SectionKind.ReadOnlyData, Align = Math.Max(1, Math.Min(16, section.Align)),
+            // The image's objects too: their contents never change, only a
+            // lock's header word (Section.ContentsReadOnly).
+            ReadOnly = section.ContentsReadOnly, Align = Math.Max(1, Math.Min(16, section.Align)),
         };
         if (section.Kind != SectionKind.Uninitialised)
         {

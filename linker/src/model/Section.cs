@@ -32,6 +32,20 @@ public sealed class Section
     }
 
     /// <summary>
+    /// THE IMAGE'S OBJECTS -- its string literals: what a program may lock (Monitor writes an object's sync word,
+    /// its second header word), so writable, yet whose contents never change
+    /// (DataItem.HasHeader, ObjectData.Place). The link lays it out with the
+    /// writable data outside the statics read as roots (Layout.For: the
+    /// numbers), as NativeAOT puts its frozen objects in its data section;
+    /// what reads an image's contents as constants reads these as read-only
+    /// (ContentsReadOnly).
+    /// </summary>
+    public const string ObjectsName = ".data.corsac.objects";
+
+    /// <summary>Whether the section's contents never change while the image runs: read-only data, or the image's objects, of which only a header word is ever written.</summary>
+    public bool ContentsReadOnly => Kind == SectionKind.ReadOnlyData || Kind == SectionKind.Data && Name == ObjectsName;
+
+    /// <summary>
     /// CONTENT LEFT IN THE FILE IT WAS READ FROM: a unit's IR archive, which
     /// a link reads a record at a time and never holds whole, the notes it
     /// reads and drops, and the code and data it lays out only at the end

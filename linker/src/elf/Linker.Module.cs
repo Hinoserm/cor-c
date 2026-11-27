@@ -16,7 +16,7 @@ namespace Corsac.Lang.Elf;
 ///           .rel.dyn                                   |
 ///           .text, .rodata                             /
 ///   next page
-///           .data.rel.ro (descriptors, string objects)  \
+///           .data.rel.ro (descriptors), the strings     \
 ///           .data.rel.ro.imports                        |  PT_LOAD RW
 ///           .data, .got, .dynamic, .bss                 /
 ///           .corsac.modinfo   name, ring, aliases, dependencies

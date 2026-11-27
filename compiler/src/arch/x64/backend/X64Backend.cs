@@ -18,7 +18,7 @@ using Encoder = Corsac.Lang.X86.Encoder;
 /// Per function: instruction selection (x86/backend/Select.Long.cs), address arithmetic
 /// folded into the addressing modes (AddressFold.cs), register allocation
 /// (RegAlloc.cs), encoding (the family's Encoder, x86/backend). Data items go in .rodata, .data or
-/// .bss by their flags, holding 64-bit absolute relocations where they hold
+/// .bss by their flags (a string object with the image's objects, ObjectData.Place), holding 64-bit absolute relocations where they hold
 /// addresses; the frame table is the x86 format. The stack maps are the
 /// same table i386 writes (StackMapTable), in this target's layout: at each
 /// call the spill slots, the IR frame slot words and the callee-saved

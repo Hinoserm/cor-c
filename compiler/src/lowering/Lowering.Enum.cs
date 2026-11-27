@@ -18,7 +18,7 @@ using Type = Corsac.Lang.Type;
 /// TWO ARRAYS RATHER THAN ONE BLOB, and both of them real managed arrays,
 /// because everything that reads them is written in the language:
 /// `Runtime.EnumName` walks them the way any other code walks a `string[]`,
-/// and `Enum.GetNames` can hand one straight back. The names are the same
+/// and `Enum.GetNames` copies one. The names are the same
 /// interned literals the program's own strings are, so a table costs a word
 /// and four bytes per member and nothing at all for the text.
 ///
