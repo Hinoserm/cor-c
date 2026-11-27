@@ -127,9 +127,15 @@ print(pc32, calls)
 PY
 read -r pc32 direct < "$work/relocated/check.out"
 test "$direct" -gt 0 || fail "the relocated module makes no direct call to a kernel store stub"
-# No GOT slot and no PLT entry: neither section holds more than the GOT's
-# three reserved words (the kinds above have no GLOB_DAT or JUMP_SLOT already).
-if readelf -SW "$work/relocated/sb16.ko" | awk '{ for (i = 1; i <= NF; i++) if ($i == ".plt" || $i == ".got") { if (strtonum("0x" $(i + 4)) > 24) bad = 1; break } } END { exit !bad }'; then
-    fail "the relocated module has a PLT entry or a GOT slot"
-fi
+# No GOT slot and no PLT entry, by the sections: .got exactly the three
+# reserved words (24 bytes), .plt absent or empty (the kinds above have no
+# GLOB_DAT or JUMP_SLOT already). awk says 0 when so, 1 when not, 2 when it
+# found no .got -- and anything else is a failure too.
+status=0
+readelf -SW "$work/relocated/sb16.ko" | awk '
+    { for (i = 1; i <= NF; i++) {
+        if ($i == ".got") { got = strtonum("0x" $(i + 4)); seen = 1; break }
+        if ($i == ".plt") { plt = strtonum("0x" $(i + 4)); break } } }
+    END { if (!seen) exit 2; exit (got > 24 || plt > 0) ? 1 : 0 }' || status=$?
+test "$status" = 0 || fail "the relocated module has a PLT entry or a GOT slot, or no .got to read (awk $status)"
 echo "PASS modules-long-mode-sequences ($calls stub calls through the kernel's GOT slots; relocated text: $pc32 PC32, $direct direct stub calls)"

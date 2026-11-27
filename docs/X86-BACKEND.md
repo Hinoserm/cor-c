@@ -383,8 +383,11 @@ addend implicit in the word being relocated. Exactly four types appear:
 **`R_386_COPY` never appears, and neither does `R_386_PC32`.** No copy
 relocation, because a type descriptor's identity IS its address and a
 duplicate in the executable's `.bss` would make `x is Stream` compare two
-addresses of one type. Nothing PC-relative survives to the output: every
-relative call is resolved when the image is linked.
+addresses of one type. Nothing PC-relative survives to a program or a
+library: every relative call is resolved when the image is linked. (A kernel
+module linked `--relocated-text` is the exception: its kernel's binder fixes
+an `R_386_PC32` -- `R_X86_64_PC32` on x86-64 -- in its text for each kernel
+name it reaches, `Linker.LinkModule`.)
 
 How an executable reaches a library's DATA without a copy relocation is
 the one place this differs from a C toolchain. The executable is not
