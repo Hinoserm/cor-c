@@ -32,6 +32,8 @@ internal static class LongAbi
     private static readonly RegSet AllXmm = new(XmmFrom(0, 16)), CallDefs = new(CallerSaved.Concat(XmmFrom(0, 16)).ToArray());
     /// <summary>A call's reads by [AL named][integer arguments][float arguments]: RAX where a native callee reads AL, then the arguments' registers in order.</summary>
     private static readonly RegSet[][][] CallUses = MakeCallUses();
+    /// <summary>A call into Windows' reads by [positions][float positions]: RCX, RDX, R8, R9 to the first, XMM0 up to the second (Conventions.Windows64).</summary>
+    private static readonly RegSet[][] Win64CallUses = MakeWin64CallUses();
     /// <summary>A system call's reads by argument count: its number in RAX, then its arguments' registers.</summary>
     private static readonly RegSet[] SyscallUses = MakeSyscallUses();
     /// <summary>A return's reads by [an integer result][a float result]: RAX, XMM0.</summary>
@@ -70,6 +72,24 @@ internal static class LongAbi
         return made;
     }
 
+    private static RegSet[][] MakeWin64CallUses()
+    {
+        Gpr[] positions = { Gpr.Rcx, Gpr.Rdx, Gpr.R8, Gpr.R9 };
+        RegSet[][] made = new RegSet[positions.Length + 1][];
+        for (int ints = 0; ints <= positions.Length; ints++)
+        {
+            made[ints] = new RegSet[positions.Length + 1];
+            for (int floats = 0; floats <= positions.Length; floats++)
+            {
+                List<int> ids = new();
+                for (int k = 0; k < ints; k++) ids.Add((int)positions[k]);
+                for (int k = 0; k < floats; k++) ids.Add(MReg.XmmBase + k);
+                made[ints][floats] = new RegSet(ids.ToArray());
+            }
+        }
+        return made;
+    }
+
     private static RegSet[] MakeSyscallUses()
     {
         RegSet[] made = new RegSet[SyscallArgs.Length + 1];
@@ -90,6 +110,7 @@ internal static class LongAbi
         // exchange's its third in RCX (X64Backend.RefStoreStub).
         MOp.CallKeep or MOp.CallKeepRax => KeepUses,
         MOp.CallKeepCas => CasUses,
+        MOp.Call or MOp.CallInd when i.Win64 => Win64CallUses[i.IntArgs][i.FloatArgs],
         MOp.Call or MOp.CallInd => CallUses[i.NativeAl ? 1 : 0][i.IntArgs][i.FloatArgs],
         MOp.Syscall or MOp.SoftInt => SyscallUses[i.IntArgs],
         // Unwind's exception travels in RAX to the landing pad.

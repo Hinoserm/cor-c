@@ -962,7 +962,6 @@ public static class Driver
         // DllMain and at the methods it exports (Lowering.Windows).
         bool dll = args.Contains("--dll");
         bool windows = dll || args.Contains("--windows");
-        if (windows && longMode) return Fail("--windows makes an i386 image: x86-64's PE32+ is not made yet");
         if (windows && (flat || kernelPath is not null || args.Contains("--obj")))
             return Fail("--windows links a PE image whole: not with --flat, --obj or --kernel");
         // --windows --shared: THE RUNTIME DLL, the runtime and its library
@@ -1001,6 +1000,13 @@ public static class Driver
         // none and calls its kernel's through their GOT slots, as an i386
         // module does: the range its kernel stops no thread inside is the
         // kernel's, wherever the module is loaded (Selector.SequenceStub).
+        // NOT A 64-BIT WINDOWS IMAGE'S: the sequences save registers after
+        // their first test, a prologue in the middle of a function, which
+        // Windows' unwind data cannot describe -- and a Windows process's
+        // collector stops its threads where they cooperate, never at any
+        // instruction as a kernel's does, which is what they are for.
+        if (longMode && windows && args.Contains("--store-sequences"))
+            return Fail("--store-sequences is for a kernel and its modules, not a 64-bit Windows image (--windows, --dll)");
         Corsac.Lang.Lower.Lowering.StoreSequences = args.Contains("--store-sequences");
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
         Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && freestanding;
@@ -1788,9 +1794,10 @@ public static class Driver
         }
         Corsac.Lang.X64.X64Backend x64Backend = new()
         {
-            // Under an operating system (Linux; --windows is refused for
-            // x86-64 above, and would have to be asked the same question).
+            // Under an operating system: Linux, or Windows (PE32+, Windows:
+            // its convention at the edges, its TLS slot, unwind data).
             Hosted = ownsFpu,
+            Windows = windows,
             ReleaseBodies = x86Backend.ReleaseBodies,
             OptimizeSize = args.Contains("--opt-size"),
             // A module with relocated text still moves: its data's addresses

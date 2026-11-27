@@ -102,7 +102,9 @@ public sealed partial class Lowering
     private void SehEnter()
     {
         _sehRecord = null;
-        if (!Windows || Win32Method("Fault", 4) is not MethodSymbol fault) return;
+        // (A 64-bit image has no registration chain: Windows finds handlers
+        // in .pdata, and the runtime's is a vectored one, Win32.Attach.)
+        if (!Windows || _t.WordSize == 8 || Win32Method("Fault", 4) is not MethodSymbol fault) return;
         Require(fault);
         int w = _t.WordSize;
         FrameSlot slot = _f.NewSlot(2 * w, w, "seh");
@@ -139,7 +141,13 @@ public sealed partial class Lowering
     /// </summary>
     private void EmitDllEntry(List<MethodSymbol> exports)
     {
-        Function f = new(DllEntryName, IrTypes.Word) { CalleePops = 3 * Target.Current.WordSize };
+        // stdcall's three words taken off by the callee on i386; Windows' x64
+        // convention for the loader's call in a 64-bit image (NativeEntry).
+        Function f = new(DllEntryName, IrTypes.Word)
+        {
+            CalleePops = Target.Current.WordSize == 4 ? 3 * Target.Current.WordSize : 0,
+            NativeEntry = Target.Current.WordSize == 8,
+        };
         VReg instance = f.NewReg(IrTypes.Word, "instance");
         f.Params.Add(instance);
         VReg reason = f.NewReg(IrTypes.Word, "reason");
@@ -270,7 +278,8 @@ public sealed partial class Lowering
     /// </summary>
     private void EmitWindowsEntry(MethodSymbol entry)
     {
-        Function f = new(EntryName, IrType.Void) { ProgramEntry = true };
+        // The loader calls it with nothing, by Windows' x64 convention in a 64-bit image (NativeEntry).
+        Function f = new(EntryName, IrType.Void) { ProgramEntry = true, NativeEntry = _t.WordSize == 8 };
         Builder e = new(f, f.NewBlock("entry"));
         _f = f;
         _e = e;

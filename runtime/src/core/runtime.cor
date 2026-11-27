@@ -4728,6 +4728,9 @@ public static partial class Runtime
     /// 50 to 41 57 for R8 to R15 (`reg` 0 to 15); `sub rsp, n` is 48 83 EC n
     /// or 48 81 EC n32. A reserved frame's last push may be the word that
     /// keeps the stack a multiple of sixteen (the compiler's ReservedPad).
+    /// In a 64-bit Windows image a leaf's frame of a page or more is probed
+    /// before its `sub` (the compiler's ProbeStack: `mov r11, rsp ; mov r10d,
+    /// pages ; ...`, 24 bytes that leave RSP alone), stepped over here.
     static nuint Prologue(nuint at, nuint pc, int reg, out nuint depth, out nuint body) {
         nuint made = 0;
         depth = 0;
@@ -4756,6 +4759,10 @@ public static partial class Runtime
                 continue;
             }
             if (reserved || high != 0) { break; }
+            if (b == 0x49 && Sys.Read8(at + 1) == 0x89 && Sys.Read8(at + 2) == 0xE3 && Sys.Read8(at + 3) == 0x41 && Sys.Read8(at + 4) == 0xBA) {
+                at = at + 24;
+                continue;
+            }
             if (b == 0x48 && Sys.Read8(at + 1) == 0x83 && Sys.Read8(at + 2) == 0xEC) {
                 if (pc >= at + 4) { made = made + Sys.Read8(at + 3); }
                 at = at + 4;

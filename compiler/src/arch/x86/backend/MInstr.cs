@@ -52,6 +52,14 @@ public sealed class MInstr : MOperandList
     public bool NativeAl { get; init; }
 
     /// <summary>
+    /// Long mode: a call into Windows by Windows' x64 convention
+    /// (Conventions.Windows64): it reads the first IntArgs of RCX, RDX, R8,
+    /// R9 and XMM0 up to FloatArgs, and changes what a System V call does,
+    /// which holds every register Windows lets a callee change (LongAbi).
+    /// </summary>
+    public bool Win64 { get; init; }
+
+    /// <summary>
     /// The source line this came from, or 0 where there is none.
     ///
     /// Carried this far so the encoder can write down which byte of the image

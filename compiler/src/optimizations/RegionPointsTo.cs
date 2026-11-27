@@ -1061,6 +1061,7 @@ public sealed class RegionPointsTo : IModulePass
             KeepsCallerRegisters = f.KeepsCallerRegisters,
             // Not ProgramEntry: a version is another function, never the stub
             // the loader jumps to (which has no loop, and is never versioned).
+            // Not NativeEntry either: only this image's code calls a version.
         };
         Dictionary<VReg, VReg> regs = new();
         Dictionary<FrameSlot, FrameSlot> slots = new();

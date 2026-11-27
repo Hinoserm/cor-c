@@ -117,6 +117,9 @@ internal sealed partial class Selector
     /// </summary>
     private MOperand SequenceStub(string stub) => _sequencesThroughGot ? MMem.RipGot(stub) : MImm.Sym(stub, 0);
 
+    /// <summary>A word of the image's data by name: RIP-relative, or through its GOT slot where another image defines it (GotAddress).</summary>
+    private MMem SymbolWordL(string symbol) => External(symbol) ? new MMem(GotAddress(symbol, 0), 0) : new MMem(null, 0) { Symbol = symbol };
+
     // ---- emission ----------------------------------------------------------
 
     private MReg FTemp() => _m.NewFloat();
@@ -693,11 +696,41 @@ internal sealed partial class Selector
             case Corsac.Lang.X86.MachineIntrinsics.ThreadBlock:
                 // The self pointer at gs:[0]: the first word of the block is
                 // its own address, as glibc's thread control block is.
-                if (i.Dest is not null)
+                if (i.Dest is not null && X86Mode.Windows)
+                {
+                    // WINDOWS x64: GS is the thread's TEB, not ours. The block
+                    // is in the TLS slot the runtime took (TlsAlloc), found
+                    // as i386's is, with no branch: the image's two words
+                    // (filled by Win32.Attach) name the TEB's cell that holds
+                    // the slots' array -- 0x30, its own address, whose array
+                    // is TlsSlots at 0x1480, for a slot under 64; 0x1780,
+                    // TlsExpansionSlots, for one above -- and the slot's
+                    // place in it (Go's TEB_TlsSlots 0x1480).
+                    MReg r = V(i.Dest);
+                    MovL(r, SymbolWordL(TlsBaseSymbol));
+                    MovL(r, new MMem(r, 0) { Segment = 0x65 });
+                    EmitW(MOp.Add, 8, r, SymbolWordL(TlsOffsetSymbol));
+                    MovL(r, new MMem(r, 0));
+                }
+                else if (i.Dest is not null)
                 {
                     MovL(V(i.Dest), new MMem(null, 0) { Segment = 0x65 });
                 }
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.SetTlsBlock:
+            {
+                // WINDOWS x64: the block into the runtime's TLS slot, found as
+                // ThreadBlock finds it. A slot above 64 has its array only
+                // once TlsSetValue has made it for the thread: Win32's x64
+                // attach calls it first (runtime/src/platforms/win32).
+                MReg value = RL(i.Operands[0]);
+                MReg at = Temp();
+                MovL(at, SymbolWordL(TlsBaseSymbol));
+                MovL(at, new MMem(at, 0) { Segment = 0x65 });
+                EmitW(MOp.Add, 8, at, SymbolWordL(TlsOffsetSymbol));
+                MovL(new MMem(at, 0), value);
+                return;
+            }
             case Corsac.Lang.X86.MachineIntrinsics.DoublePrecision:
                 // SSE2's doubles round once already.
                 return;

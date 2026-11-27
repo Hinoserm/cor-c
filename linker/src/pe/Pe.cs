@@ -61,9 +61,11 @@ public static class PeFormat
     public const ulong DefaultImageBase64 = 0x140000000, DefaultDllBase64 = 0x180000000;
 
     /// <summary>
-    /// The subsystem (and operating system) version a 64-bit image names:
-    /// 5.2, Windows XP x64 and Server 2003 x64, the first 64-bit Windows,
-    /// which refuses a higher one. MinGW's linker writes the same.
+    /// The subsystem version a 64-bit image names: 5.2, Windows XP x64 and
+    /// Server 2003 x64, the first 64-bit Windows -- a loader older than an
+    /// image's subsystem version refuses it ("not a valid Win32 application",
+    /// Microsoft's report of a 5.02 image on XP), so the oldest 64-bit one is
+    /// named. MinGW's linker writes the same.
     /// </summary>
     public const ushort Subsystem64Major = 5, Subsystem64Minor = 2;
 

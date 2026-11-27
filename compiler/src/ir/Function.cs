@@ -146,6 +146,21 @@ public sealed class Function
     public bool ProgramEntry { get; set; }
 
     /// <summary>
+    /// ENTERED BY WINDOWS' x64 CONVENTION, in a 64-bit Windows image: DllMain,
+    /// the program's entry, and the way in from C to a method C calls (an
+    /// export, a callback). Its body is compiled as every function is, by
+    /// System V's convention, under a name of its own; the function's name is
+    /// a stub the backend writes (X64Backend.WindowsEntry) that keeps what
+    /// Windows' convention has a callee keep -- RBX RBP RDI RSI R12-R15 and
+    /// XMM6-XMM15, which System V lets the body change -- takes the arguments
+    /// from Windows' places to System V's, and calls the body: Go's design
+    /// for its own convention (PUSH_REGS_HOST_TO_ABI0). Never copied to a
+    /// version of the function (RegionPointsTo.CloneBody), which only this
+    /// image's code calls.
+    /// </summary>
+    public bool NativeEntry { get; set; }
+
+    /// <summary>
     /// What an analysis keeps of this function between questions, with the
     /// instruction count it was made at (Escape.StampOf): asked again of a
     /// function that has grown since, it is made again.

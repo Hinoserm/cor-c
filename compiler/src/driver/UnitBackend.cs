@@ -39,6 +39,10 @@ public sealed class UnitBackend : IUnitBackend
         // The unit says which machine it was compiled for (its ABI note):
         // every pass below reads the word size from Target.Current.
         bool longMode = TargetContract.IsLongMode(original);
+        // A unit of a Windows image (its contract's TLS model): its thread
+        // block in a TLS slot of the TEB, and in long mode Windows' unwind
+        // data and convention at its edges, regenerated as it was compiled.
+        bool windows = TargetContract.IsWindows(original);
         Target.Current = longMode ? Target.X86_64 : Target.X86;
         // Each invocation must restore its own permissions; a previous unit may
         // have selected a newer CPU or explicitly disabled an extension.
@@ -554,6 +558,7 @@ public sealed class UnitBackend : IUnitBackend
                 // As its compile said, unless the image has no collector.
                 SafepointPolls = module.SafepointPolls && module.LinkHeap != false,
                 StackMaps = unit.StackMaps,
+                Windows = windows,
             };
             result = backend.Generate(module, errors);
             (peakFunctions, peakBytes) = (backend.PeakBatchFunctions, backend.PeakBatchBytes);
@@ -563,6 +568,7 @@ public sealed class UnitBackend : IUnitBackend
             X86Backend backend = new()
             {
                 PositionIndependent = positionIndependent,
+                WindowsTls = windows,
                 AutomaticPacked = cpu.AutomaticPacked,
                 OptimizeSize = read.Settings?.OptimizeSize ?? false,
                 // Not again: the link judged the units' own facts

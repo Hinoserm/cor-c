@@ -31,7 +31,8 @@ public static class Win32
     const int PageReadWrite = 0x04;
     const int StdInputHandle = -10, StdOutputHandle = -11, StdErrorHandle = -12;
     const int TlsOutOfIndexes = -1;
-    const nuint InvalidHandle = 0xFFFFFFFF;
+    /// INVALID_HANDLE_VALUE: (HANDLE)-1, every bit set in either word size.
+    static nuint InvalidHandle => ~(nuint)0;
 
     /// WHERE THE TLS SLOTS ARE. NT keeps 64 in the TEB, at 0xE10 of it, and
     /// a slot past them in an expansion array (Windows 2000 on) this does not
@@ -41,11 +42,25 @@ public static class Win32
     const int TebSelf = 0x18;
     const int TebTlsSlots = 0xE10;
     const int TibTlsArray9x = 0x2C;
+    /// THE x64 TEB, read through GS: its own address at gs:[0x30], the 64
+    /// slots at 0x1480 of it, and at gs:[0x1780] the expansion array
+    /// (TlsExpansionSlots) a slot from 64 on is in -- made for a thread by
+    /// TlsSetValue (SetBlock), which every write of a block goes through
+    /// (Go's TEB_TlsSlots 0x1480; the x64 TEB, Windows' winternl.h).
+    const int TebSelf64 = 0x30;
+    const int TebTlsSlots64 = 0x1480;
+    const int TebTlsExpansion64 = 0x1780;
     /// GetVersion's top bit: Windows 9x (and Win32s), not NT.
     const uint NotNt = 0x80000000;
 
-    /// MEMORY_BASIC_INFORMATION's size on i386.
-    const int InfoBytes = 28;
+    /// MEMORY_BASIC_INFORMATION's size: 28 on i386; 48 on x64, where
+    /// BaseAddress, AllocationBase and RegionSize are eight bytes and the
+    /// structure is padded (winnt.h).
+    const int InfoBytes = WordSize.Bytes == 8 ? 48 : 28;
+    /// Its fields' places: AllocationBase, RegionSize, State.
+    const int InfoAllocationBase = WordSize.Bytes;
+    const int InfoRegionSize = WordSize.Bytes == 8 ? 24 : 12;
+    const int InfoState = WordSize.Bytes == 8 ? 32 : 16;
 
     /// FaultAddress's answer for an address it cannot say (also Windows 9x's -1).
     const nuint NoAddress = 0xFFFFFFFF;
@@ -113,6 +128,18 @@ public static class Win32
     [DllImport("kernel32"), SuppressGCTransition]
     static extern int VirtualProtect(nuint at, nuint bytes, uint protect, nuint old);
 
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int TlsSetValue(int slot, nuint value);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern nuint AddVectoredExceptionHandler(uint first, nuint handler);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern uint RemoveVectoredExceptionHandler(nuint handler);
+
+    /// The vectored handler a 64-bit image added (VectoredFault), or 0.
+    static nuint _vectored;
+
     /// The slot taken, plus one: 0, none. No initialiser, so touching the
     /// class runs nothing before the thread has a block.
     static int _slotTaken;
@@ -149,25 +176,42 @@ public static class Win32
         FindWaitOnAddress();
         int slot = TlsAlloc();
         if (slot == TlsOutOfIndexes) return false;
-        bool nt = (GetVersion() & NotNt) == 0;
-        if (nt && slot >= TlsSlotsInTeb)
+        if (WordSize.Bytes == 8)
         {
-            TlsFree(slot);
-            return false;
+            // 64-BIT WINDOWS (every one NT): a slot under 64 in the TEB, one
+            // from 64 on in its expansion array -- read as the TEB's own
+            // address plus the slot's place, or the array's plus its place.
+            _slotTaken = slot + 1;
+            if (slot < TlsSlotsInTeb) Sys.SetThreadBlockSlot(TebSelf64, TebTlsSlots64 + 8 * slot);
+            else Sys.SetThreadBlockSlot(TebTlsExpansion64, 8 * (slot - TlsSlotsInTeb));
         }
-        _slotTaken = slot + 1;
-        if (nt) Sys.SetThreadBlockSlot(TebSelf, TebTlsSlots + 4 * slot);
-        else Sys.SetThreadBlockSlot(TibTlsArray9x, 4 * slot);
+        else
+        {
+            bool nt = (GetVersion() & NotNt) == 0;
+            if (nt && slot >= TlsSlotsInTeb)
+            {
+                TlsFree(slot);
+                return false;
+            }
+            _slotTaken = slot + 1;
+            if (nt) Sys.SetThreadBlockSlot(TebSelf, TebTlsSlots + 4 * slot);
+            else Sys.SetThreadBlockSlot(TibTlsArray9x, 4 * slot);
+        }
 
         // The image's own extent, which a fault must be in to be ours:
         // SizeOfImage from the PE header e_lfanew names.
         _imageStart = instance;
         _imageEnd = instance + Sys.Read32(instance + Sys.Read32(instance + 0x3C) + 0x50);
         _nullStub = NullStub();
+        // A FAULT IN A 64-BIT IMAGE'S CODE comes to a vectored handler: x64
+        // has no registration chain (Lowering.SehEnter's is i386's), and a
+        // vectored handler -- XP x64 on, as Go's and the CLR's are -- sees it
+        // first, whatever frames are between. Added once a process.
+        if (WordSize.Bytes == 8 && _vectored == 0) _vectored = AddVectoredExceptionHandler(1, Sys.AddressOf(VectoredFault));
 
         nuint block = Sys.MainThreadBlock();
         Sys.WriteAddress(block + Tls.Self, block);
-        Sys.SetThreadBlock(block);
+        SetBlock(block);
         nuint scratch = VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
         if (scratch == 0) return false;
         Sys.WriteAddress(block + Tls.StackBase, StackTop(scratch));
@@ -192,8 +236,35 @@ public static class Win32
         if (block == 0) ExitProcess(137);
         nuint top = StackTop(block + Tls.Bytes);
         Sys.WriteAddress(block + Tls.Self, block);
-        Sys.SetThreadBlock(block);
+        SetBlock(block);
         Runtime.RegisterThread(block, top);
+    }
+
+    /// THIS THREAD'S BLOCK INTO THE SLOT: on i386 the word the image's two
+    /// names find (Sys.SetThreadBlock); on x64 through TlsSetValue, which
+    /// for a slot from 64 on first makes the thread's expansion array the
+    /// block is read from. Every write of a block on Windows comes here
+    /// (Platform.SetThreadBlock too).
+    public static void SetBlock(nuint block)
+    {
+        if (WordSize.Bytes == 8) TlsSetValue(_slotTaken - 1, block);
+        else Sys.SetThreadBlock(block);
+    }
+
+    /// THE PROCESS LETS THE IMAGE GO (DllMain, DLL_PROCESS_DETACH): the slot
+    /// back, and a 64-bit image's vectored handler taken off.
+    public static void Detach()
+    {
+        if (_vectored != 0)
+        {
+            RemoveVectoredExceptionHandler(_vectored);
+            _vectored = 0;
+        }
+        if (_slotTaken != 0)
+        {
+            TlsFree(_slotTaken - 1);
+            _slotTaken = 0;
+        }
     }
 
     /// A THREAD GOING AWAY (DLL_THREAD_DETACH): one this image gave a block
@@ -213,7 +284,7 @@ public static class Win32
             Runtime.EndBlocking();
             Runtime.EndThread();
         }
-        Sys.SetThreadBlock(0);
+        SetBlock(0);
         if (block != Sys.MainThreadBlock()) VirtualFree(block, 0, MemRelease);
     }
 
@@ -232,6 +303,20 @@ public static class Win32
         if (stub == 0) return 0;
         nuint entry = Sys.AddressOf(Runtime.NullFault);
         nuint at = 0;
+        if (WordSize.Bytes == 8)
+        {
+            // x64: the return address in RAX, the frame in RDX, the
+            // instruction in RCX (VectoredFault); NullFault(frame, pc) by
+            // this compiler's convention, System V's: RDI and RSI.
+            Sys.Write8(stub + at++, 0x48); Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xE4); Sys.Write8(stub + at++, 0xF0); // and rsp, -16
+            Sys.Write8(stub + at++, 0x50);                                                                  // push rax   the return address: aligned as a call leaves it
+            Sys.Write8(stub + at++, 0x48); Sys.Write8(stub + at++, 0x89); Sys.Write8(stub + at++, 0xD7); // mov rdi, rdx   the frame
+            Sys.Write8(stub + at++, 0x48); Sys.Write8(stub + at++, 0x89); Sys.Write8(stub + at++, 0xCE); // mov rsi, rcx   the instruction
+            Sys.Write8(stub + at++, 0x49); Sys.Write8(stub + at++, 0xBB);                                 // mov r11, NullFault
+            for (int i = 0; i < 8; i++) Sys.Write8(stub + at++, (byte)(entry >> (8 * i)));
+            Sys.Write8(stub + at++, 0x41); Sys.Write8(stub + at++, 0xFF); Sys.Write8(stub + at++, 0xE3); // jmp r11
+            return stub;
+        }
         Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xE4); Sys.Write8(stub + at++, 0xF0); // and esp, -16
         Sys.Write8(stub + at++, 0x50);                                                                  // push eax   the return address: aligned as a call leaves it
         Sys.Write8(stub + at++, 0x89); Sys.Write8(stub + at++, 0xD0);                                 // mov eax, edx   the frame
@@ -296,6 +381,56 @@ public static class Win32
         Sys.Write32(ctx + 0xAC, Sys.Low32(stoppedPc));
         Sys.Write32(ctx + 0xB8, Sys.Low32(_nullStub));
         return ContinueExecution;
+    }
+
+    /// THE VECTORED HANDLER of a 64-bit image (Attach), which Windows calls
+    /// with EXCEPTION_POINTERS -- the record, then the context -- by its own
+    /// x64 convention ([StackArguments]: the platform's C convention, which
+    /// Function.NativeEntry's stub takes in for this compiler's). As Fault on
+    /// i386: an access violation by this image's code (or one the runtime
+    /// knows, Runtime.KnowsCode) at an address a null reference reaches
+    /// goes on as a NullReferenceException, the thread continuing in
+    /// NullStub; anything else is searched on (EXCEPTION_CONTINUE_SEARCH,
+    /// 0). EXCEPTION_RECORD: ExceptionCode at 0, NumberParameters 24, the
+    /// address 40 (ExceptionInformation[1]). CONTEXT (winnt.h, x64): Rax
+    /// 0x78, Rcx 0x80, Rdx 0x88, Rbx 0x90, Rsp 0x98, Rbp 0xA0, R12 0xD8 to
+    /// R15 0xF0, Rip 0xF8.
+    [StackArguments]
+    public static int VectoredFault(nuint pointers)
+    {
+        nuint rec = Sys.ReadAddress(pointers);
+        nuint ctx = Sys.ReadAddress(pointers + 8);
+        if (Sys.Read32(rec) != AccessViolation || _nullStub == 0 || Sys.Read32(rec + 24) < 2) return 0;
+        nuint pc = Sys.ReadAddress(ctx + 0xF8);
+        if ((pc < _imageStart || pc >= _imageEnd) && !Runtime.KnowsCode(pc)) return 0;
+        nuint address = Sys.ReadAddress(rec + 40);
+        if (!Runtime.NullFaultCatchable(address)) return 0;
+
+        // As Linux's long-mode Fault does it: the faulting function's frame
+        // link (Runtime.FrameAt), made RBP; a leaf stands as the call it was
+        // in its caller, its caller's RBX and R12-R15 put back from where it
+        // pushed them (Runtime.LeafSaved).
+        nuint stoppedPc = pc;
+        nuint stoppedSp = Sys.ReadAddress(ctx + 0x98);
+        nuint frame = Runtime.FrameAt(ref pc, stoppedSp, Sys.ReadAddress(ctx + 0xA0));
+        if (pc != stoppedPc)
+        {
+            nuint saved = Runtime.LeafSaved(stoppedPc, stoppedSp, 3);
+            if (saved != 0) Sys.WriteAddress(ctx + 0x90, Sys.ReadAddress(saved));
+            int r = 12;
+            while (r <= 15)
+            {
+                saved = Runtime.LeafSaved(stoppedPc, stoppedSp, r);
+                if (saved != 0) Sys.WriteAddress(ctx + 0xD8 + (nuint)((r - 12) * 8), Sys.ReadAddress(saved));
+                r = r + 1;
+            }
+        }
+        Sys.WriteAddress(ctx + 0xA0, frame);
+        Sys.WriteAddress(ctx + 0x78, pc);
+        Sys.WriteAddress(ctx + 0x88, frame);
+        Sys.WriteAddress(ctx + 0x80, stoppedPc);
+        Sys.WriteAddress(ctx + 0xF8, _nullStub);
+        return -1;                                   // EXCEPTION_CONTINUE_EXECUTION
     }
 
     /// THE ADDRESS AN INSTRUCTION FAULTED ON, read from the instruction itself
@@ -399,15 +534,15 @@ public static class Win32
     static bool MakeParking()
     {
         if (_parkSemaphores != 0) return true;
-        nuint table = VirtualAlloc(0, ParkBuckets * 8, MemCommit | MemReserve, PageReadWrite);
+        nuint table = VirtualAlloc(0, ParkBuckets * (WordSize.Bytes + 4), MemCommit | MemReserve, PageReadWrite);
         if (table == 0) return false;
         for (int i = 0; i < ParkBuckets; i++)
         {
             nuint semaphore = CreateSemaphoreA(0, 0, 0x7FFFFFFF, 0);
             if (semaphore == 0) return false;
-            Sys.Write32(table + 4 * (nuint)i, Sys.Low32(semaphore));      // a HANDLE is 32 bits here
+            Sys.WriteAddress(table + WordSize.Bytes * (nuint)i, semaphore);   // a HANDLE is a word
         }
-        _parkWaiters = table + 4 * ParkBuckets;
+        _parkWaiters = table + WordSize.Bytes * ParkBuckets;
         _parkSemaphores = table;
         return true;
     }
@@ -494,7 +629,7 @@ public static class Win32
         nuint waiters = _parkWaiters + b * 4;
         Sys.AtomicAdd32(waiters, 1);
         if (Sys.Read32(at) == (uint)expect)
-            WaitForSingleObject(Sys.Read32(_parkSemaphores + b * 4), most);
+            WaitForSingleObject(Sys.ReadAddress(_parkSemaphores + b * WordSize.Bytes), most);
         Sys.AtomicAdd32(waiters, -1);
     }
 
@@ -514,7 +649,7 @@ public static class Win32
         uint waiting = Sys.Read32(_parkWaiters + b * 4);
         if (waiting == 0) return;
         uint wake = (uint)count;
-        ReleaseSemaphore(Sys.Read32(_parkSemaphores + b * 4), wake < waiting ? wake : waiting, 0);
+        ReleaseSemaphore(Sys.ReadAddress(_parkSemaphores + b * WordSize.Bytes), wake < waiting ? wake : waiting, 0);
     }
 
     /// The runtime is running: what wants it.
@@ -569,9 +704,10 @@ public static class Win32
         }
         for (nuint at = table; at < end; at = at + 8)
         {
+            // (A word of the image: four bytes in PE32, eight in PE32+.)
             nuint word = instance + Sys.Read32(at);
             nuint slot = instance + Sys.Read32(at + 4);
-            Sys.Write32(word, Sys.Read32(word) + Sys.Read32(slot));
+            Sys.WriteAddress(word, Sys.ReadAddress(word) + Sys.ReadAddress(slot));
         }
         for (nuint i = 0; i < sections; i++)
         {
@@ -590,8 +726,8 @@ public static class Win32
     static nuint StackTop(nuint scratch)
     {
         VirtualQuery(Sys.FramePointer(), scratch, InfoBytes);
-        // BaseAddress and RegionSize are a PVOID and a SIZE_T: 32 bits here.
-        return (nuint)Sys.Read32(scratch) + Sys.Read32(scratch + 12);
+        // BaseAddress and RegionSize are a PVOID and a SIZE_T: a word each.
+        return Sys.ReadAddress(scratch) + Sys.ReadAddress(scratch + InfoRegionSize);
     }
 
     /// Zeroed pages, or 0: VirtualAlloc's are zeroed.
@@ -626,19 +762,19 @@ public static class Win32
             // made over the same addresses would have been taken for ours.
             if (_query == 0) _query = VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
             nuint info = _query;
-            nuint reservation = info != 0 && VirtualQuery(at, info, InfoBytes) != 0 ? Sys.Read32(info + 4) : 0;
+            nuint reservation = info != 0 && VirtualQuery(at, info, InfoBytes) != 0 ? Sys.ReadAddress(info + InfoAllocationBase) : 0;
             VirtualFree(at, bytes, MemDecommit);
             if (reservation == 0) return 0;
             // MEMORY_BASIC_INFORMATION: BaseAddress, AllocationBase,
-            // AllocationProtect, RegionSize, State -- 32 bits each here.
+            // AllocationProtect, RegionSize, State (InfoBytes' places).
             // Every run of the reservation in turn, from its base: any still
             // committed keeps it.
             nuint walk = reservation;
             while (true)
             {
-                if (VirtualQuery(walk, info, InfoBytes) == 0 || Sys.Read32(info + 4) != reservation) break;
-                if (Sys.Read32(info + 16) == MemCommit) return 0;
-                nuint size = Sys.Read32(info + 12);
+                if (VirtualQuery(walk, info, InfoBytes) == 0 || Sys.ReadAddress(info + InfoAllocationBase) != reservation) break;
+                if (Sys.Read32(info + InfoState) == MemCommit) return 0;
+                nuint size = Sys.ReadAddress(info + InfoRegionSize);
                 if (size == 0) return 0;
                 walk = walk + size;
             }
@@ -672,12 +808,15 @@ public static class Win32
 
     [DllImport("kernel32")] static extern void GetSystemInfo(nuint info);
 
-    /// How many processors (Os.ProcessorCount): SYSTEM_INFO's count, at 20.
+    /// How many processors (Os.ProcessorCount): SYSTEM_INFO's count, at 20
+    /// of its 36 bytes on i386 and 32 of its 48 on x64, where the two
+    /// application addresses and the processor mask are words (winbase.h).
     static nuint Processors(nuint a, nuint b, nuint c)
     {
-        byte[] info = new byte[36];
+        int at = WordSize.Bytes == 8 ? 32 : 20;
+        byte[] info = new byte[WordSize.Bytes == 8 ? 48 : 36];
         GetSystemInfo(Sys.ArrayData(info));
-        return (nuint)(info[20] | (info[21] << 8) | (info[22] << 16) | (info[23] << 24));
+        return (nuint)(info[at] | (info[at + 1] << 8) | (info[at + 2] << 16) | (info[at + 3] << 24));
     }
 
     static nuint Exit(nuint code, nuint b, nuint c)

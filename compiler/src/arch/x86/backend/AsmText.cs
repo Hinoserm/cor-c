@@ -131,6 +131,18 @@ internal static class AsmText
         }
     }
 
+    /// <summary>A 64-bit Windows frame's page probe, as the encoder writes it before the `sub` (Encoder.ProbeStack).</summary>
+    private static void Probe(List<string> lines, int frame)
+    {
+        if (!X86Mode.Windows || frame < Encoder.ProbePage) return;
+        lines.Add("mov r11, rsp ; the frame's pages touched in order, as Windows grows a stack");
+        lines.Add($"mov r10d, {frame / Encoder.ProbePage}");
+        lines.Add($".probe: sub r11, {Encoder.ProbePage}");
+        lines.Add("test [r11], r11b");
+        lines.Add("dec r10d");
+        lines.Add("jnz .probe");
+    }
+
     private static IEnumerable<string> Lines(MFunction m, MInstr i)
     {
         if (X86Mode.Long && LongLines(m, i) is { } own)
@@ -679,13 +691,13 @@ internal static class AsmText
                 if (m.Frameless)
                 {
                     foreach (Gpr g in m.SavedRegs) lines.Add("push " + Q(g));
-                    if (frame > 0) lines.Add($"sub rsp, {frame}");
+                    if (frame > 0) { Probe(lines, frame); lines.Add($"sub rsp, {frame}"); }
                     return lines;
                 }
                 lines.Add("push rbp");
                 lines.Add("mov rbp, rsp");
                 if (m.RealignsStack) lines.Add("and rsp, -16");
-                if (frame > 0) lines.Add($"sub rsp, {frame}");
+                if (frame > 0) { Probe(lines, frame); lines.Add($"sub rsp, {frame}"); }
                 for (int k = 0; k < m.SavedRegs.Count; k++) lines.Add($"mov {SaveSlot(k)}, {Q(m.SavedRegs[k])}");
                 return lines;
             case MOp.Epilogue:

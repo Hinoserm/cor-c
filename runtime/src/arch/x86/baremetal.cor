@@ -509,7 +509,13 @@ public static class Platform
     public static void SetThreadBlock(nuint block)
     {
         Sys.WriteAddress(block + Tls.Self, block);
+#if TARGET_WINDOWS
+        // Through the platform's own (Win32.SetBlock): on x64 TlsSetValue,
+        // which makes a slot's expansion array for the thread first.
+        Win32.SetBlock(block);
+#else
         Sys.SetThreadBlock(block);
+#endif
     }
 
     /// Nobody else can change the word, so a wait would never end: the

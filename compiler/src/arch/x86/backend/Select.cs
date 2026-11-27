@@ -4553,6 +4553,19 @@ internal sealed partial class Selector
         // so (RegisterArgs.Applies), its stack-only one for a call into C
         // and the rest.
         CallPlan plan = PlanOf(i, first, longMode || !native && RegisterArgs.Applies(i));
+        // A CALL INTO WINDOWS from a 64-bit Windows image is Windows' x64
+        // convention's (Conventions.Windows64): positional registers, the
+        // shadow space under the stack arguments, a float copied into its
+        // general register too. The image's own calls stay System V's.
+        bool win64 = longMode && native && X86Mode.Windows;
+        int shadow = 0;
+        if (win64)
+        {
+            IrType[] types = new IrType[i.Operands.Count - first];
+            for (int k = 0; k < types.Length; k++) types[k] = i.Operands[first + k].Type;
+            plan = Conventions.Windows64.Arguments(types);
+            shadow = Conventions.Windows64.StackArgumentsAt - 16;
+        }
 
         // THE STACK AT WHAT THE CALLEE MAY ASSUME. This backend's frames keep
         // the convention's own alignment, so a pad beneath the arguments
@@ -4563,8 +4576,8 @@ internal sealed partial class Selector
         // arguments themselves are all reached through the frame base or
         // registers, never through the stack pointer, so moving it under
         // them is safe.
-        int alignment = native ? convention.NativeStackAlignment : convention.StackAlignment;
-        int pad = (alignment - plan.StackBytes % alignment) % alignment;
+        int alignment = native && !win64 ? convention.NativeStackAlignment : convention.StackAlignment;
+        int pad = (alignment - (plan.StackBytes + shadow) % alignment) % alignment;
         MReg? savedSp = null;
         if (alignment > convention.StackAlignment)
         {
@@ -4610,11 +4623,22 @@ internal sealed partial class Selector
             EmitW(place.Kind == PlaceKind.Float ? MOp.MovF : MOp.Mov, width, home, value);
             reads.Add(home);
         }
+        // Windows' variadic callee takes a float from the general register of
+        // its position (Microsoft's convention: "duplicated in the
+        // corresponding general-purpose register"); every callee ignores it.
+        if (win64)
+        {
+            foreach ((MOperand _, ArgPlace place, int _) in moves)
+                if (place.Kind == PlaceKind.Float)
+                    EmitW(MOp.MovGx, 8, MReg.Of(Corsac.Lang.X86.Conventions.Win64Positions[place.Register]), MReg.Xmm(place.Register));
+            // The shadow space, under the stack arguments pushed above.
+            EmitW(MOp.Sub, w, Esp, Imm(shadow));
+        }
 
         // A CALL INTO C where the convention has a variadic callee read how
         // many vector registers carry arguments (System V's AL): every other
         // function ignores it, so a native call always says.
-        if (native && convention.NativeCountsVectorArguments) MovW(Eax, Imm(plan.Floats), 4);
+        if (native && !win64 && convention.NativeCountsVectorArguments) MovW(Eax, Imm(plan.Floats), 4);
 
         if (target is null && !native && i.Callee == Corsac.Lang.Lto.RuntimeAbi.Poll && i.Operands.Count == 0)
         {
@@ -4625,7 +4649,7 @@ internal sealed partial class Selector
         {
             MOperand callee = target is not null ? target : SymbolAddress(NativeCall.Symbol(i.Callee!), 0);
             MOp op = target is null ? MOp.Call : MOp.CallInd;
-            if (longMode) Emit(new MInstr(op, callee) { IntArgs = plan.Generals, FloatArgs = plan.Floats, NativeAl = native });
+            if (longMode) Emit(new MInstr(op, callee) { IntArgs = plan.Generals, FloatArgs = plan.Floats, NativeAl = native && !win64, Win64 = win64 });
             else
             {
                 reads.Insert(0, callee);
@@ -4634,7 +4658,7 @@ internal sealed partial class Selector
         }
 
         if (savedSp is not null) MovW(Esp, savedSp, w);
-        else if (pushed + pad > 0) EmitW(MOp.Add, w, Esp, Imm(pushed + pad));
+        else if (pushed + pad + shadow > 0) EmitW(MOp.Add, w, Esp, Imm(pushed + pad + shadow));
     }
 
     /// <summary>One stack argument pushed, the mode's way; the bytes it took.</summary>

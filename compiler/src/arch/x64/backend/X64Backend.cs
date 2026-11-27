@@ -264,22 +264,29 @@ public sealed class X64Backend : IBackend
                 continue;
             }
             if (EmitLinkSummary) FamilyObject.DirectCalls(f, encoder, start, summary, eligible);
-            if (Windows) Unwind(m, text, start, size, xdata!, unwindTable!, xdataBlobs, obj, errors);
+            // A WAY IN FROM WINDOWS (Function.NativeEntry): the body under a
+            // name of its own, the function's name the stub (WindowsEntry).
+            bool viaStub = Windows && f.NativeEntry;
+            string name = viaStub ? f.Name + NativeEntryBody : f.Name;
+            if (Windows) Unwind(m, name, text, start, size, xdata!, unwindTable!, xdataBlobs, obj, errors);
             FunctionSizes.Add((f.Name, size));
             obj.Symbols.Add(new Symbol
             {
-                Name = f.Name, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported,
+                // (The body as visible as the function: a direct call from
+                // another unit is sent to it by the link, Linker.LinkPe.)
+                Name = name, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported,
             });
-            defined.Add(f.Name);
+            defined.Add(name);
+            if (viaStub) WindowsEntry(f, name, text, obj, defined, xdata!, unwindTable!, xdataBlobs, errors);
             if (EmitLinkSummary)
                 Corsac.Lang.Opt.LinkSummary.AddConstantReturns(new[] { f }, obj, summary);
 
             frames.Add(new Corsac.Lang.X86.FrameTable.Entry(
-                f.Name, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
+                name, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
                 new List<(int, int)>(encoder.Lines)));
 
             if (StackMaps)
-                maps.Function<MInstr>(f.Name, start, m.Frame.Size, FamilyObject.SavedMask(m), m.FramePointerFree, encoder.CallSites, m.Safepoints,
+                maps.Function<MInstr>(name, start, m.Frame.Size, FamilyObject.SavedMask(m), m.FramePointerFree, encoder.CallSites, m.Safepoints,
                     m.Frame.SlotRanges(), m.SlotLiveness);
 
             // Jump tables: eight-byte absolute addresses of the blocks, which
@@ -511,10 +518,9 @@ public sealed class X64Backend : IBackend
     /// table's record is the function's start and end and its blob, three
     /// Abs64 words the PE link turns into a RUNTIME_FUNCTION.
     /// </summary>
-    private static void Unwind(Corsac.Lang.X86.MFunction m, Section text, int start, int size, Section xdata, Section table,
+    private static void Unwind(Corsac.Lang.X86.MFunction m, string name, Section text, int start, int size, Section xdata, Section table,
                                Dictionary<string, string> blobs, ObjectFile obj, List<string> errors)
     {
-        string name = m.Source.Name;
         if (m.ColdFrames || m.ReservedFrame)
         {
             errors.Add($"{name}: a frame made after its prologue, which Windows' unwind data cannot describe (FramePointerFree keeps it off in a Windows image)");
@@ -539,20 +545,24 @@ public sealed class X64Backend : IBackend
         }
         else
         {
-            for (; ; )
+            // Exactly its saves, then the probe where its frame is a page or
+            // more, then its `sub` where it has a frame: read for what the
+            // encoder wrote (PrologueL), and nothing of the body taken for it.
+            int frameBytes = Corsac.Lang.X86.Encoder.FramelessBytes(m);
+            for (int k = 0; k < m.SavedRegs.Count; k++)
             {
                 if (At(pos) is >= 0x50 and <= 0x57) { codes.Add((pos + 1, 0, At(pos) - 0x50)); pos += 1; continue; }
                 if (At(pos) == 0x41 && At(pos + 1) is >= 0x50 and <= 0x57) { codes.Add((pos + 2, 0, 8 + At(pos + 1) - 0x50)); pos += 2; continue; }
                 break;
             }
-            if (At(pos) == 0x49 && At(pos + 1) == 0x89 && At(pos + 2) == 0xE3) pos += Corsac.Lang.X86.Encoder.ProbeBytes;
-            if (At(pos) == 0x48 && At(pos + 1) == 0x83 && At(pos + 2) == 0xEC) { codes.Add((pos + 4, 1, At(pos + 3))); pos += 4; }
-            else if (At(pos) == 0x48 && At(pos + 1) == 0x81 && At(pos + 2) == 0xEC)
+            if (frameBytes >= Corsac.Lang.X86.Encoder.ProbePage && At(pos) == 0x49 && At(pos + 1) == 0x89 && At(pos + 2) == 0xE3) pos += Corsac.Lang.X86.Encoder.ProbeBytes;
+            if (frameBytes > 0 && At(pos) == 0x48 && At(pos + 1) == 0x83 && At(pos + 2) == 0xEC) { codes.Add((pos + 4, 1, At(pos + 3))); pos += 4; }
+            else if (frameBytes > 0 && At(pos) == 0x48 && At(pos + 1) == 0x81 && At(pos + 2) == 0xEC)
             {
                 codes.Add((pos + 7, 1, b[start + pos + 3] | b[start + pos + 4] << 8 | b[start + pos + 5] << 16 | b[start + pos + 6] << 24));
                 pos += 7;
             }
-            if (codes.Count != m.SavedRegs.Count + (Corsac.Lang.X86.Encoder.FramelessBytes(m) > 0 ? 1 : 0))
+            if (codes.Count != m.SavedRegs.Count + (frameBytes > 0 ? 1 : 0))
             {
                 errors.Add($"{name}: its leaf prologue was not read back as its {m.SavedRegs.Count} pushes and its frame");
                 return;
@@ -565,8 +575,9 @@ public sealed class X64Backend : IBackend
     /// <summary>
     /// One function's UNWIND_INFO from its prologue's operations, in prologue
     /// order -- (end of the instruction, 0 PUSH_NONVOL / 1 allocation / 3
-    /// SET_FPREG / 8 SAVE_XMM128, operand; for SAVE_XMM128 the register, and
-    /// the offset from the frame's base in Extra) -- written once an object
+    /// SET_FPREG / 4 SAVE_NONVOL / 8 SAVE_XMM128, operand; for SAVE_NONVOL and
+    /// SAVE_XMM128 the register, and the offset from the frame's base in
+    /// `extra`, by the operation's index) -- written once an object
     /// (Unwind), and its record in the table.
     /// </summary>
     private static void WriteUnwind(string name, int size, List<(int End, int Op, int Info)> codes, int frameRegister, Section xdata, Section table,
@@ -626,6 +637,119 @@ public sealed class X64Backend : IBackend
         table.Relocs.Add(new Relocation(record, name, 0, RelocKind.Abs64));
         table.Relocs.Add(new Relocation(record + 8, name, size, RelocKind.Abs64));
         table.Relocs.Add(new Relocation(record + 16, blob, 0, RelocKind.Abs64));
+    }
+
+    /// <summary>The name a way in from Windows' body is compiled under (Function.NativeEntry; WindowsEntry).</summary>
+    public const string NativeEntryBody = "$sysv";
+
+    /// <summary>
+    /// A WAY IN FROM WINDOWS (Function.NativeEntry): under the function's
+    /// name, a stub that Windows' x64 convention calls and that calls the
+    /// body (compiled by System V's under `body`), as Go's
+    /// PUSH_REGS_HOST_TO_ABI0 entries do:
+    ///
+    ///   push rbp ; mov rbp, rsp
+    ///   push rbx, rdi, rsi, r12, r13, r14, r15     what Windows' callee keeps and System V's may change, or
+    ///                                              must keep for the unwind walk (RBX, R12-R15: Unwind)
+    ///   sub rsp, 168 + out                         a word to align, XMM6-XMM15's 160 bytes, the body's stack arguments
+    ///   movaps [rbp - 80 - 16j], xmm(6+j)          j = 0..9
+    ///   the four register arguments homed in the caller's shadow space
+    ///   ([rbp + 16 + 8k], the k-th's home; the fifth on is at [rbp + 48]
+    ///   on, so every argument is then at [rbp + 16 + 8k]), and loaded from
+    ///   there into System V's places (Conventions.SystemV), stack ones
+    ///   written at [rsp + offset]
+    ///   call body
+    ///   movaps xmm(6+j), [rbp - 80 - 16j]
+    ///   lea rsp, [rbp - 56] ; pop r15 ... rbx ; pop rbp ; ret
+    ///
+    /// The result is in RAX or XMM0 in both conventions. The epilogue is one
+    /// of the forms Windows' unwinder knows (lea rsp,[frame]; pops; ret).
+    /// Its unwind data: PUSH_NONVOL rbp; at `mov rbp, rsp` an allocation of
+    /// 224 and SET_FPREG with RBP 224 above that base (Cranelift's form for a
+    /// frame register set before the saves), so each save is at an offset
+    /// from the base: SAVE_NONVOL for the seven pushes, SAVE_XMM128 for the
+    /// ten XMM registers; whatever the stack pointer then does needs none.
+    /// </summary>
+    private void WindowsEntry(Function f, string body, Section text, ObjectFile obj, HashSet<string> defined, Section xdata, Section table,
+                              Dictionary<string, string> blobs, List<string> errors)
+    {
+        ChunkedBytes b = text.Bytes;
+        int gap = (FunctionAlign - b.Count % FunctionAlign) % FunctionAlign;
+        Encoder.Nops(b, gap);
+        int start = b.Count;
+        void Bytes(params byte[] bytes) => b.AddRange(bytes);
+        void D32(int v) => b.AddRange(BitConverter.GetBytes(v));
+        int At() => b.Count - start;
+        List<(int End, int Op, int Info)> codes = new();
+        List<int> extra = new();
+        void Code(int op, int info, int offset = 0) { codes.Add((At(), op, info)); extra.Add(offset); }
+
+        const int saved = 7 * 8, xmmArea = 8 + 160, frame = saved + xmmArea;   // 224: RBP above the base by this
+        IReadOnlyList<IrType> types = f.Params.Select(p => p.Type).ToList();
+        Corsac.Lang.Calls.CallPlan plan = Corsac.Lang.X86.Conventions.SystemV.Arguments(types);
+        int outgoing = (plan.StackBytes + 15) & ~15;
+
+        Bytes(0x55); Code(0, 5);                                                    // push rbp
+        Bytes(0x48, 0x89, 0xE5); Code(1, frame); Code(3, 0);                        // mov rbp, rsp: ALLOC(224) + SET_FPREG
+        (int Reg, byte[] Push)[] pushes =
+        {
+            (3, new byte[] { 0x53 }), (7, new byte[] { 0x57 }), (6, new byte[] { 0x56 }),
+            (12, new byte[] { 0x41, 0x54 }), (13, new byte[] { 0x41, 0x55 }), (14, new byte[] { 0x41, 0x56 }), (15, new byte[] { 0x41, 0x57 }),
+        };
+        for (int k = 0; k < pushes.Length; k++) { Bytes(pushes[k].Push); Code(4, pushes[k].Reg, frame - 8 * (k + 1)); }  // SAVE_NONVOL
+        Bytes(0x48, 0x81, 0xEC); D32(xmmArea + outgoing);                           // sub rsp, 168 + out
+        for (int j = 0; j < 10; j++)
+        {
+            int x = 6 + j, disp = -80 - 16 * j;
+            if (x >= 8) Bytes(0x44);
+            Bytes(0x0F, 0x29, (byte)(0x85 | (x & 7) << 3)); D32(disp);             // movaps [rbp + disp], xmmX
+            Code(8, x, frame + disp);                                               // SAVE_XMM128, from the base
+        }
+        // The arguments: the four register ones homed, then each loaded from its home into System V's place.
+        for (int k = 0; k < Math.Min(types.Count, 4); k++)
+        {
+            byte home = (byte)(16 + 8 * k);
+            if (types[k].IsFloat()) Bytes(0xF2, 0x0F, 0x11, (byte)(0x45 | k << 3), home);          // movsd [rbp + home], xmmK
+            else Bytes(k < 2 ? (byte)0x48 : (byte)0x4C, 0x89, (byte)(0x45 | (k == 0 ? 1 : k == 1 ? 2 : k == 2 ? 0 : 1) << 3), home);   // mov [rbp + home], rcx/rdx/r8/r9
+        }
+        for (int k = 0; k < types.Count; k++)
+        {
+            int home = 16 + 8 * k;
+            Corsac.Lang.Calls.ArgPlace place = plan.Places[k];
+            if (place.Kind == Corsac.Lang.Calls.PlaceKind.Float)
+            {
+                int x = place.Register;
+                Bytes(types[k] == IrType.F32 ? (byte)0xF3 : (byte)0xF2);
+                if (x >= 8) Bytes(0x44);
+                Bytes(0x0F, 0x10, (byte)(0x85 | (x & 7) << 3)); D32(home);         // movss/movsd xmmX, [rbp + home]
+            }
+            else if (place.Kind == Corsac.Lang.Calls.PlaceKind.General)
+            {
+                int r = place.Register;
+                Bytes((byte)(0x48 | (r >= 8 ? 4 : 0)), 0x8B, (byte)(0x85 | (r & 7) << 3)); D32(home);   // mov reg, [rbp + home]
+            }
+            else
+            {
+                Bytes(0x48, 0x8B, 0x85); D32(home);                                // mov rax, [rbp + home]
+                Bytes(0x48, 0x89, 0x84, 0x24); D32(place.Offset);                  // mov [rsp + offset], rax
+            }
+        }
+        Bytes(0xE8);                                                                // call body
+        text.Relocs.Add(new Relocation(b.Count, body, -4, RelocKind.Plt32));
+        D32(0);
+        for (int j = 0; j < 10; j++)
+        {
+            int x = 6 + j;
+            if (x >= 8) Bytes(0x44);
+            Bytes(0x0F, 0x28, (byte)(0x85 | (x & 7) << 3)); D32(-80 - 16 * j);     // movaps xmmX, [rbp + disp]
+        }
+        Bytes(0x48, 0x8D, 0x65, unchecked((byte)-saved));                           // lea rsp, [rbp - 56]
+        Bytes(0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5E, 0x5F, 0x5B);     // pop r15 r14 r13 r12 rsi rdi rbx
+        Bytes(0x5D, 0xC3);                                                          // pop rbp ; ret
+        int size = b.Count - start;
+        obj.Symbols.Add(new Symbol { Name = f.Name, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported });
+        defined.Add(f.Name);
+        WriteUnwind(f.Name, size, codes, 5, xdata, table, blobs, obj, errors, frameOffset: frame / 16, extra: extra);
     }
 
     private const string MarkingFlag = "s_Runtime_Marking_t$V$I32", CardTable = "s_Runtime_Cards_t$V$NUInt";

@@ -29,6 +29,11 @@ public static partial class Os
     /// it was opened to append (Windows has no such mode; each write goes to
     /// the end first).
     static nuint[]? _handles;
+
+    /// OVERLAPPED: two ULONG_PTRs, the 64-bit offset's halves, a HANDLE --
+    /// 20 bytes on i386 with the offset at 8, 32 on x64 with it at 16 (minwinbase.h).
+    const int OverlappedBytes = WordSize.Bytes == 8 ? 32 : 20;
+    const int OverlappedOffset = 2 * WordSize.Bytes;
     static bool[]? _appending;
 
     [DllImport("kernel32")] static extern nuint GetStdHandle(int which);
@@ -191,9 +196,9 @@ public static partial class Os
     {
         nuint handle = HandleOf(fd);
         if (handle == 0) return -Err.BadF;
-        byte[] overlapped = new byte[20];
-        Raw.SetU32(overlapped, 8, offset & 0xFFFFFFFF);
-        Raw.SetU32(overlapped, 12, (offset >> 32) & 0xFFFFFFFF);
+        byte[] overlapped = new byte[OverlappedBytes];
+        Raw.SetU32(overlapped, OverlappedOffset, offset & 0xFFFFFFFF);
+        Raw.SetU32(overlapped, OverlappedOffset + 4, (offset >> 32) & 0xFFFFFFFF);
         int got = 0;
         if (ReadFile(handle, into, (int)count, Sys.AddressOf(ref got), At(overlapped)) == 0)
         {
@@ -218,9 +223,9 @@ public static partial class Os
     {
         nuint handle = HandleOf(fd);
         if (handle == 0) return -Err.BadF;
-        byte[] overlapped = new byte[20];
-        Raw.SetU32(overlapped, 8, offset & 0xFFFFFFFF);
-        Raw.SetU32(overlapped, 12, (offset >> 32) & 0xFFFFFFFF);
+        byte[] overlapped = new byte[OverlappedBytes];
+        Raw.SetU32(overlapped, OverlappedOffset, offset & 0xFFFFFFFF);
+        Raw.SetU32(overlapped, OverlappedOffset + 4, (offset >> 32) & 0xFFFFFFFF);
         int wrote = 0;
         if (WriteFile(handle, from, (int)count, Sys.AddressOf(ref wrote), At(overlapped)) == 0) return Failed();
         return wrote;
@@ -740,17 +745,19 @@ public static partial class Os
         foreach (string a in args) texts.Add(Utf8Transcoder.EncodeTerminated(a));
         foreach (string v in env) texts.Add(Utf8Transcoder.EncodeTerminated(v));
         nuint words = (nuint)(1 + args.Count + 1 + env.Count + 1);
-        nuint bytes = words * 4;
+        nuint w = WordSize.Bytes;
+        nuint bytes = words * w;
         foreach (byte[] t in texts) bytes = bytes + (nuint)t.Length;
         nuint stack = VirtualAlloc(0, bytes, 0x3000, 0x04);
         if (stack == 0) return 0;
-        // The program's entry stack as a 32-bit process has it: words of 4 bytes.
-        Sys.Write32(stack, (uint)args.Count);
-        nuint text = stack + words * 4;
+        // The program's entry stack as a process of this word size has it,
+        // a word each, as the readers take it (EnvironAddress, baremetal.cor).
+        Sys.WriteAddress(stack, (nuint)args.Count);
+        nuint text = stack + words * w;
         for (int i = 0; i < texts.Count; i++)
         {
-            nuint slot = i < args.Count ? stack + 4 * (nuint)(1 + i) : stack + 4 * (nuint)(1 + args.Count + 1 + (i - args.Count));
-            Sys.Write32(slot, Sys.Low32(text));
+            nuint slot = i < args.Count ? stack + w * (nuint)(1 + i) : stack + w * (nuint)(1 + args.Count + 1 + (i - args.Count));
+            Sys.WriteAddress(slot, text);
             byte[] t = texts[i];
             for (int k = 0; k < t.Length; k++) Sys.Write8(text + (nuint)k, t[k]);
             text = text + (nuint)t.Length;
@@ -822,7 +829,7 @@ public static partial class Os
     public static string? StartingVariable(string name)
     {
         nuint at = EnvironAddress();
-        for (nuint entry = Sys.Read32(at); entry != 0; at = at + 4, entry = Sys.Read32(at))
+        for (nuint entry = Sys.ReadAddress(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadAddress(at))
         {
             int i = 0;
             while (i < name.Length && Sys.Read8(entry + (nuint)i) == name[i]) i = i + 1;

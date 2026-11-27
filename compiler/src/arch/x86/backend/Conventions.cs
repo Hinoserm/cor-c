@@ -10,6 +10,12 @@ internal static class Conventions
     public static readonly Convention SystemV = new SystemVConvention();
     public static readonly Convention I386 = new I386Convention();
 
+    /// <summary>Windows' x64 convention: a 64-bit Windows image's calls into Windows (X86Mode.Windows; Selector.CallSequence).</summary>
+    public static readonly Convention Windows64 = new Windows64Convention();
+
+    /// <summary>The general registers of Windows' four argument positions: RCX, RDX, R8, R9.</summary>
+    public static readonly Gpr[] Win64Positions = { Gpr.Rcx, Gpr.Rdx, Gpr.R8, Gpr.R9 };
+
     /// <summary>The convention of the code being selected: System V's in long mode, i386's own otherwise.</summary>
     public static Convention Current => X86Mode.Long ? SystemV : I386;
 
@@ -48,6 +54,71 @@ internal static class Conventions
         }
 
         // (Made once: a function's every return and call asks.)
+        private static readonly ArgPlace[] None = [], Word = [ArgPlace.InGeneral((int)Gpr.Rax, 4)], Quad = [ArgPlace.InGeneral((int)Gpr.Rax, 8)],
+            Single = [ArgPlace.InFloat(0, 4)], Double = [ArgPlace.InFloat(0, 8)];
+
+        public override ArgPlace[] Result(IrType type) => type switch
+        {
+            IrType.Void => None,
+            IrType.I32 => Word,
+            IrType.F32 => Single,
+            IrType.F64 => Double,
+            _ => Quad,
+        };
+    }
+
+    /// <summary>
+    /// WINDOWS' x64 CONVENTION (Microsoft's "x64 calling convention"), as a
+    /// 64-bit Windows image's calls into Windows use it -- its own code keeps
+    /// System V's, and a way in from Windows is a stub between the two
+    /// (X64Backend's, as Go's): the first four arguments by POSITION, the
+    /// k-th in RCX, RDX, R8 or R9 if a word and in XMMk if a float (the
+    /// caller copies a float into its general register too, for a variadic
+    /// callee: Selector.CallSequence); the rest on the stack in order, a
+    /// word each, above the 32 bytes of shadow space the caller leaves for
+    /// the callee to home the four registers in. RAX or XMM0 back. The stack
+    /// at sixteen at the call.
+    /// </summary>
+    private sealed class Windows64Convention : Convention
+    {
+        public override string Name => "Windows x64";
+        public override int StackAlignment => 16;
+        // (Read only by a function's own way in, which is System V's: a stub makes the move.)
+        public override int StackArgumentsAt => 16 + ShadowBytes;
+
+        /// <summary>The caller's shadow space: a home for each of the four register arguments.</summary>
+        public const int ShadowBytes = 32;
+
+        /// <summary>The general registers of the four positions.</summary>
+        public static readonly Gpr[] Positions = { Gpr.Rcx, Gpr.Rdx, Gpr.R8, Gpr.R9 };
+
+        public override CallPlan Arguments(IReadOnlyList<IrType> types, bool registers = true)
+        {
+            ArgPlace[] places = new ArgPlace[types.Count];
+            int stack = 0, floats = 0;
+            for (int k = 0; k < types.Count; k++)
+            {
+                int bytes = types[k] is IrType.I32 or IrType.F32 ? 4 : 8;
+                if (k < Positions.Length)
+                {
+                    if (types[k].IsFloat())
+                    {
+                        places[k] = ArgPlace.InFloat(k, bytes);
+                        floats = k + 1;
+                    }
+                    else places[k] = ArgPlace.InGeneral((int)Positions[k], bytes);
+                }
+                else
+                {
+                    places[k] = ArgPlace.OnStack(ShadowBytes + stack, bytes);
+                    stack += 8;
+                }
+            }
+            // Generals: every position up to the last register argument, a
+            // float's too (its copy); Floats: XMM0 up to the last float's.
+            return new CallPlan { Places = places, StackBytes = stack, Generals = Math.Min(types.Count, Positions.Length), Floats = floats };
+        }
+
         private static readonly ArgPlace[] None = [], Word = [ArgPlace.InGeneral((int)Gpr.Rax, 4)], Quad = [ArgPlace.InGeneral((int)Gpr.Rax, 8)],
             Single = [ArgPlace.InFloat(0, 4)], Double = [ArgPlace.InFloat(0, 8)];
 

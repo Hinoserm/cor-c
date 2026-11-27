@@ -87,6 +87,9 @@ public partial class Thread
 
     static nuint WindowsEntry()
     {
+        // x64: ThreadStart, which Windows' convention calls through the way
+        // in the backend writes for it ([StackArguments], Function.NativeEntry).
+        if (WordSize.Bytes == 8) return Sys.AddressOf(ThreadStart);
         if (_windowsEntry != 0) return _windowsEntry;
         nuint stub = VirtualAlloc(0, 32, 0x3000, 0x40);    // MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE
         if (stub == 0) return 0;
@@ -128,6 +131,17 @@ public partial class Thread
         // Nobody joins it through Windows: Join waits on the thread's own word.
         CloseHandle(handle);
         _id = id;
+    }
+
+    /// A 64-BIT WINDOWS THREAD'S START ROUTINE, `DWORD WINAPI start(LPVOID)`:
+    /// the slot its argument, 0 back. Called by Windows' x64 convention
+    /// ([StackArguments]), with no way in from C, for the thread has its
+    /// block already, made and registered by its parent (Launch).
+    [StackArguments]
+    static uint ThreadStart(nuint slot)
+    {
+        ThreadEntry((int)slot);
+        return 0;
     }
 
     /// Where a Windows thread begins (WindowsEntry's stub calls it).

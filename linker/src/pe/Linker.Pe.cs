@@ -8,15 +8,18 @@ namespace Corsac.Lang.Elf;
 
 /// <summary>
 /// THE WINDOWS IMAGE: the same link -- merge, resolve, addresses, relocate --
-/// with a PE32 file around it instead of an ELF one (docs/WIN32-TARGET.md).
-/// The objects do not change; only what is written at the end does.
+/// with a PE file around it instead of an ELF one (docs/WIN32-TARGET.md):
+/// PE32 for i386 objects, PE32+ for long-mode ones (eight-byte addresses,
+/// DIR64 fix-ups, RIP-relative thunks, and .pdata from the objects' unwind
+/// tables). The objects do not change; only what is written at the end does.
 ///
 ///   ImageBase     MS-DOS header and stub, PE headers, section table
 ///   +0x1000       .text    code, then a `jmp [IAT]` thunk per import
 ///                 .rdata   constants, then the export directory
 ///                 .data    numbers, statics, then .bss (memory, no file bytes)
+///                 .pdata   (PE32+) a RUNTIME_FUNCTION for every function
 ///                 .idata   the import directory, its lookup tables and IAT
-///                 .reloc   a HIGHLOW fix-up for every absolute address
+///                 .reloc   a HIGHLOW (PE32) or DIR64 (PE32+) fix-up for every absolute address
 ///
 /// Each section starts on its own page (SectionAlignment) and on a sector in
 /// the file (FileAlignment). The code is not position-independent: every
@@ -155,7 +158,17 @@ public static partial class Linker
         if (ProgramInitializers(inputs, longMode) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
         if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), longMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
 
-        Layout layout = new(imageBase);
+        // A DIRECT CALL TO A WAY IN FROM WINDOWS GOES TO ITS BODY in a PE32+
+        // image: such a function's name is a stub Windows' x64 convention
+        // calls (X64Backend.WindowsEntry), and its body, compiled by this
+        // compiler's own convention, is the name with "$sysv". A call of this
+        // language's (Plt32, `call rel32`) is by the body's convention; only
+        // an address taken -- what Windows is handed -- stays the stub's.
+        if (longMode) CallBodies(inputs);
+
+        // (LongMode: eight-byte addresses in data, the managed metadata's
+        // words PC-relative; Relocate's long-mode static branch.)
+        Layout layout = new(imageBase) { LongMode = longMode };
         layout.ArrangeStatic();
         AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);
@@ -245,10 +258,12 @@ public static partial class Linker
                         slot = "got$" + r.Symbol;
                         layout.Globals[slot] = new Definition("the import directory", importSection!, offset, null);
                     }
-                    else if (longMode && RelaxableLoad(section, r))
+                    else if (longMode && input.Placed.FirstOrDefault(placed => placed.Section == section) is { } p && RelaxableLoad(p.Bytes, r))
                     {
-                        // mov r64, [rip + slot]  ->  lea r64, [rip + symbol]
-                        section.Bytes[r.Offset - 2] = 0x8D;
+                        // mov r64, [rip + slot]  ->  lea r64, [rip + symbol],
+                        // in the copy the link places (Merge's), as
+                        // Dynamic.RelaxableGotLoad patches it.
+                        p.Bytes[r.Offset - 2] = 0x8D;
                         section.Relocs[i] = r with { Kind = RelocKind.Rel32 };
                         continue;
                     }
@@ -310,8 +325,10 @@ public static partial class Linker
 
         // .reloc is last, and whether it is there at all is known now: an
         // image with no absolute address in it moves without one.
+        // (Not a word the runtime fills at start, DataImports: its words are no fix-up's.)
+        HashSet<(Placed, int)> importWords = new(dataImports.Select(d => (d.Placed, d.Reloc.Offset)));
         bool hasFixups = (thunks is not null && !longMode) || ownSlots.Count > 0
-            || inputs.Any(input => input.Placed.Any(p => p.Output.IsAllocated && p.Section.Relocs.Any(r => r.Kind == absolute)));
+            || inputs.Any(input => input.Placed.Any(p => p.Output.IsAllocated && p.Section.Relocs.Any(r => r.Kind == absolute && !importWords.Contains((p, r.Offset)))));
         int sectionCount = sections.Count + (hasFixups ? 1 : 0);
         int optionalHeaderBytes = longMode ? PeFormat.OptionalHeader64Bytes : PeFormat.OptionalHeaderBytes;
         uint headerBytes = (uint)(PeFormat.DosBytes + 4 + PeFormat.CoffHeaderBytes + optionalHeaderBytes + sectionCount * PeFormat.SectionHeaderBytes);
@@ -559,7 +576,7 @@ public static partial class Linker
     private static uint PeImportBytes(List<PeImport> imports, int word)
     {
         List<string> dlls = imports.Select(i => i.Dll).Distinct(StringComparer.Ordinal).ToList();
-        uint size = (uint)(dlls.Count + 1) * PeFormat.ImportDescriptorBytes;
+        uint size = DescriptorsBytes(dlls.Count, word);
         size += 2 * (uint)(imports.Count + dlls.Count) * (uint)word;
         foreach (PeImport import in imports)
         {
@@ -584,7 +601,7 @@ public static partial class Linker
         byte[] b = idata.Content!;
         uint rva = checked((uint)(idata.Addr - imageBase));
         List<string> dlls = imports.Select(i => i.Dll).Distinct(StringComparer.Ordinal).ToList();
-        uint lookups = (uint)(dlls.Count + 1) * PeFormat.ImportDescriptorBytes;
+        uint lookups = DescriptorsBytes(dlls.Count, word);
         uint tables = (uint)word * (uint)(imports.Count + dlls.Count);
         uint addresses = lookups + tables;
         uint names = addresses + tables;
@@ -656,7 +673,7 @@ public static partial class Linker
     {
         Dictionary<string, uint> offsets = new(StringComparer.Ordinal);
         List<string> dlls = imports.Select(i => i.Dll).Distinct(StringComparer.Ordinal).ToList();
-        uint lookups = (uint)(dlls.Count + 1) * PeFormat.ImportDescriptorBytes;
+        uint lookups = DescriptorsBytes(dlls.Count, word);
         uint addresses = lookups + (uint)word * (uint)(imports.Count + dlls.Count);
         uint slot = 0;
         foreach (string dll in dlls)
@@ -667,13 +684,48 @@ public static partial class Linker
         return offsets;
     }
 
-    /// <summary>`mov r64, [rip + slot]` (REX.W 8B, ModRM mod 00 r/m 101) ending at the relocation's field: the GOT load a defined symbol's address relaxes from.</summary>
-    private static bool RelaxableLoad(Section section, Relocation r)
+    /// <summary>The body's suffix a way in from Windows is compiled under (X64Backend.NativeEntryBody).</summary>
+    public const string NativeEntryBody = "$sysv";
+
+    /// <summary>
+    /// Every direct call (Plt32) to a symbol some input also defines with
+    /// NativeEntryBody after it, sent to that body: the input's own local
+    /// first, then a global.
+    /// </summary>
+    private static void CallBodies(List<Input> inputs)
     {
-        Span<byte> before = stackalloc byte[3];
-        return r.Offset >= 3 && r.Addend == -4 && section.ReadAt(r.Offset - 3, before)
-            && (before[0] & 0xF8) == 0x48 && before[1] == 0x8B && (before[2] & 0xC7) == 0x05;
+        HashSet<string> globalBodies = new(StringComparer.Ordinal);
+        foreach (Input input in inputs)
+            foreach (Symbol sym in input.Object.Symbols)
+                if (sym.Global && sym.Section is not null && sym.Name.EndsWith(NativeEntryBody, StringComparison.Ordinal)) globalBodies.Add(sym.Name);
+        foreach (Input input in inputs)
+        {
+            HashSet<string> localBodies = new(input.Object.Symbols
+                .Where(sym => !sym.Global && sym.Section is not null && sym.Name.EndsWith(NativeEntryBody, StringComparison.Ordinal)).Select(sym => sym.Name), StringComparer.Ordinal);
+            foreach (Section section in input.Object.Sections)
+                for (int i = 0; i < section.Relocs.Count; i++)
+                {
+                    Relocation r = section.Relocs[i];
+                    if (r.Kind != RelocKind.Plt32 || r.Symbol.EndsWith(NativeEntryBody, StringComparison.Ordinal)) continue;
+                    string body = r.Symbol + NativeEntryBody;
+                    if (localBodies.Contains(body) || globalBodies.Contains(body)) section.Relocs[i] = r with { Symbol = body };
+                }
+        }
     }
+
+    /// <summary>
+    /// The import descriptors and the null one ending them, padded to the
+    /// word the lookup and address tables after them hold: a PE32+ image's
+    /// eight-byte entries each on an eight-byte boundary, as MSVC's and
+    /// LLD's are.
+    /// </summary>
+    private static uint DescriptorsBytes(int dlls, int word)
+        => PeFormat.AlignUp((uint)(dlls + 1) * PeFormat.ImportDescriptorBytes, (uint)word);
+
+    /// <summary>`mov r64, [rip + slot]` (REX.W 8B, ModRM mod 00 r/m 101) ending at the relocation's field: the GOT load a defined symbol's address relaxes from.</summary>
+    private static bool RelaxableLoad(Corsac.Lang.Ir.ChunkedBytes bytes, Relocation r)
+        => r.Offset >= 3 && r.Offset <= bytes.Count && r.Addend == -4
+            && (bytes[r.Offset - 3] & 0xF8) == 0x48 && bytes[r.Offset - 2] == 0x8B && (bytes[r.Offset - 1] & 0xC7) == 0x05;
 
     /// <summary>
     /// .pdata: a RUNTIME_FUNCTION -- the begin, end and UNWIND_INFO RVAs --
@@ -701,10 +753,26 @@ public static partial class Linker
                 }
             }
         }
-        records.Sort((a, b) => a.Begin.CompareTo(b.Begin));
-        for (int i = 1; i < records.Count; i++)
-            if (records[i].Begin < records[i - 1].End)
-                errors.Add($"two functions' unwind records overlap at RVA 0x{records[i].Begin:x}");
+        // ONE RECORD A FUNCTION: a function several units define is kept once
+        // (DefinitionCoalescer), and every copy's record then names the one
+        // kept -- the same range twice, with the same blob's shape -- so
+        // such twins are one entry. Two records that overlap otherwise are
+        // an error. The unused tail of .pdata is left zero; its directory
+        // says only what is filled (FillPdata's count).
+        records.Sort((a, b) => a.Begin != b.Begin ? a.Begin.CompareTo(b.Begin) : a.End.CompareTo(b.End));
+        List<(uint Begin, uint End, uint Info)> kept = new();
+        foreach (var record in records)
+        {
+            if (kept.Count > 0 && kept[^1].Begin == record.Begin && kept[^1].End == record.End) continue;
+            if (kept.Count > 0 && record.Begin < kept[^1].End)
+            {
+                errors.Add($"two functions' unwind records overlap at RVA 0x{record.Begin:x}");
+                continue;
+            }
+            kept.Add(record);
+        }
+        records = kept;
+        pdata.Size = (uint)records.Count * PeFormat.RuntimeFunctionBytes;
         byte[] b = pdata.Content!;
         for (int i = 0; i < records.Count; i++)
         {
@@ -952,9 +1020,10 @@ public static partial class Linker
         if (imports is not null)
         {
             int dllCount = importList.Select(i => i.Dll).Distinct(StringComparer.Ordinal).Count();
-            uint tables = (uint)(longMode ? 8 : 4) * (uint)(importList.Count + dllCount);
+            int word = longMode ? 8 : 4;
+            uint tables = (uint)word * (uint)(importList.Count + dllCount);
             Directory(PeDirectory.Import, imports.Addr, (uint)(dllCount + 1) * PeFormat.ImportDescriptorBytes);
-            Directory(PeDirectory.ImportAddressTable, imports.Addr + (uint)(dllCount + 1) * PeFormat.ImportDescriptorBytes + tables, tables);
+            Directory(PeDirectory.ImportAddressTable, imports.Addr + DescriptorsBytes(dllCount, word) + tables, tables);
         }
         if (reloc is not null) Directory(PeDirectory.BaseRelocation, imageBase + reloc.Rva, reloc.VirtualSize);
         if (pdata is not null) Directory(PeDirectory.Exception, pdata.Addr, pdata.Size);

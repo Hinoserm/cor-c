@@ -480,6 +480,12 @@ public sealed partial class Lowering
             NoInlining = NoInlining(decl) || (m.Static && decl.Name == "StaticInitBody$") || fromC, Unjudged = decl.AutoAccessor,
             // A copy that runs inside its caller's state is called directly only.
             Dispatched = !_insideCopy && !m.Static && (m.Virtual || m.Override || m.Abstract || ImplementsAny(m.Owner)),
+            // CALLED BY ITS ADDRESS IN THE PLATFORM'S C CONVENTION ([StackArguments]):
+            // in a 64-bit Windows image that is Windows' x64 convention -- a
+            // thread's start routine, the vectored fault handler -- so the
+            // backend writes the way in (Function.NativeEntry); a direct call
+            // of this language's still reaches the body (Linker.LinkPe).
+            NativeEntry = Windows && _t.WordSize == 8 && StackArguments(m) && !_insideCopy && !fromC,
             InsideState = _insideCopy,
         };
         Block entry = _f.NewBlock("entry");
@@ -750,6 +756,8 @@ public sealed partial class Lowering
         {
             SourceFile = body.SourceFile, Line = body.Line, Display = body.Display, FromLibrary = body.FromLibrary, SystemCode = body.SystemCode,
             SourcePath = body.SourcePath, Exported = m.Owner.Decl?.LocalOnly != true, Unjudged = true, KeepsCallerRegisters = true,
+            // C calls it by Windows' x64 convention in a 64-bit Windows image.
+            NativeEntry = Windows && _t.WordSize == 8,
             // Called by C only; put in place in anything, it would lose the
             // register file it is made with.
             NoInlining = true,
