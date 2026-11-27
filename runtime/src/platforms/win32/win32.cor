@@ -132,9 +132,6 @@ public static class Win32
     static extern int TlsSetValue(int slot, nuint value);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern nuint TlsGetValue(int slot);
-
-    [DllImport("kernel32"), SuppressGCTransition]
     static extern nuint AddVectoredExceptionHandler(uint first, nuint handler);
 
     [DllImport("kernel32"), SuppressGCTransition]
@@ -239,11 +236,22 @@ public static class Win32
 
     /// THIS THREAD'S BLOCK, OR 0, ON A THREAD THAT MAY NEVER HAVE HAD ONE
     /// (Enter, ThreadDetach: Windows calls a DLL on every thread of the
-    /// process). On x64 through TlsGetValue: a slot from 64 on is in the
-    /// thread's expansion array, which a thread that never wrote a slot
-    /// does not have (its TEB's pointer null), and the block's own read
-    /// (Sys.ThreadBlock) would read through it. Elsewhere the read itself.
-    static nuint CurrentBlock() => WordSize.Bytes == 8 ? TlsGetValue(_slotTaken - 1) : Sys.ThreadBlock();
+    /// process). On x64 a slot under 64 is in the TEB's own array, which
+    /// every thread has: the block's read itself. A slot from 64 on is in
+    /// the thread's expansion array (gs:[0x1780]), which a thread that never
+    /// wrote a slot does not have -- the pointer null, and the block's read
+    /// would go through it -- so it is read here as kernelbase's TlsGetValue
+    /// reads it, 0 where there is none, but without TlsGetValue: that clears
+    /// the thread's last error on every call (its disassembly, and Wine's
+    /// kernelbase), and a host's GetLastError after a call into this image
+    /// would read 0. Elsewhere the read itself.
+    static nuint CurrentBlock()
+    {
+        int slot = _slotTaken - 1;
+        if (WordSize.Bytes != 8 || slot < TlsSlotsInTeb) return Sys.ThreadBlock();
+        nuint expansion = Sys.PerCpuRead(TebTlsExpansion64);
+        return expansion == 0 ? 0 : Sys.ReadAddress(expansion + (nuint)(8 * (slot - TlsSlotsInTeb)));
+    }
 
     static void Adopt()
     {
