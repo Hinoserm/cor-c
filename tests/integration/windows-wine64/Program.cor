@@ -1,0 +1,101 @@
+// A 64-bit Windows program (PE32+), run under Wine (windows-wine64.sh): each
+// line is one edge between this compiler's own convention and Windows' x64
+// one, or one thing the runtime does in its own way on Windows.
+//
+//   hello          the image loads and its entry runs (the way in: a stub that
+//                  takes Windows' convention to this compiler's)
+//   null caught    a read through null is an access violation that the
+//                  vectored handler sends on as NullReferenceException
+//   threads        four threads started by CreateThread through ThreadStart,
+//                  each with its block in the TLS slot, allocating as they go
+//   collected      a collection while those blocks exist
+//   deep           frames of 16 KiB, ten deep: each probes its pages in
+//                  order, as Windows grows a stack one guard page at a time
+//   sorted         msvcrt's qsort calling back into an [UnmanagedCallersOnly]
+//                  method (Windows' convention in, by the stub), which
+//                  allocates
+//   printf         a variadic call with a double, which Windows' convention
+//                  passes in XMM2 and in R8 both
+//   pow            a call with two doubles in XMM0 and XMM1, one back in XMM0
+//   seven          the exit code
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+static unsafe class Program
+{
+    static int _calls;
+
+    [UnmanagedCallersOnly]
+    static int Compare(nint a, nint b)
+    {
+        _calls++;
+        string noise = "compare " + _calls + " " + new string('x', _calls % 40);
+        return Marshal.ReadInt32(a) - Marshal.ReadInt32(b) + noise.Length * 0;
+    }
+
+    [DllImport("msvcrt.dll")] static extern void qsort(int[] items, nint count, nint size, delegate* unmanaged<nint, nint, int> compare);
+    [DllImport("msvcrt.dll")] static extern int _snprintf(byte[] buffer, nint count, byte[] format, double value);
+    [DllImport("msvcrt.dll")] static extern double pow(double x, double y);
+
+    static int Deep(int n)
+    {
+        Span<byte> big = stackalloc byte[16384];
+        big[n] = (byte)n;
+        big[16000] = 1;
+        return n == 0 ? big[16000] : Deep(n - 1) + big[n] - n;
+    }
+
+    static int Main(string[] args)
+    {
+        Console.WriteLine("hello 64");
+
+        string? none = args.Length > 99 ? "x" : null;
+        try
+        {
+            Console.WriteLine("no fault " + none!.Length);
+        }
+        catch (NullReferenceException)
+        {
+            Console.WriteLine("null caught");
+        }
+
+        long total = 0;
+        object gate = new object();
+        List<Thread> threads = new List<Thread>();
+        for (int i = 0; i < 4; i++)
+        {
+            int k = i;
+            Thread t = new Thread(() =>
+            {
+                long local = 0;
+                for (int j = 0; j < 100000; j++)
+                {
+                    int[] junk = new int[8];
+                    local += junk.Length;
+                }
+                lock (gate) total += local + k;
+            });
+            threads.Add(t);
+            t.Start();
+        }
+        foreach (Thread t in threads) t.Join();
+        Console.WriteLine("threads " + total);
+        GC.Collect();
+        Console.WriteLine("collected yes");
+
+        Console.WriteLine("deep " + Deep(10));
+
+        int[] items = new int[] { 5, 3, 9, 1, 7, 2, 8 };
+        qsort(items, items.Length, 4, &Compare);
+        Console.WriteLine("sorted " + string.Join(",", items) + " " + (_calls > 0));
+
+        byte[] buffer = new byte[64];
+        int written = _snprintf(buffer, buffer.Length, System.Text.Encoding.ASCII.GetBytes("%.3f\0"), 2.5);
+        Console.WriteLine("printf " + System.Text.Encoding.ASCII.GetString(buffer, 0, written));
+
+        Console.WriteLine("pow " + pow(2.0, 10.0));
+        return 7;
+    }
+}

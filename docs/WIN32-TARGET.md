@@ -394,6 +394,75 @@ waits on that profile's audit). Faster code on a newer processor would need
 the same program to choose at run time (CPUID, then the function compiled
 for that profile): a compiler feature of its own, not part of this target.
 
+## 64-bit Windows (PE32+)
+
+Hino, 2026-11-26: "we should be able to build 64-bit windows programs" and
+64-bit DLLs. `--target x86-64` with `--windows` or `--dll` makes them, and
+`--windows --shared` the 64-bit runtime DLL (`--dynamic` images over it), as
+for i386. A 64-bit process cannot load a 32-bit DLL (Windows refuses it,
+`ERROR_BAD_EXE_FORMAT`); a 32-bit one is used from outside the process, a
+COM surrogate's way, if at all. The floor is the first 64-bit Windows, XP
+x64 and Server 2003 x64. The design's research -- Microsoft's PE and x64
+calling and unwinding specifications, MinGW's output disassembled, and Go's,
+LLVM's, Cranelift's, GCC's, Wine's and .NET's implementations -- is in the
+11-26 Windows x64 note.
+
+- THE IMAGE (Linker.LinkPe): PE32+ -- machine 0x8664, a 240-byte optional
+  header with an eight-byte ImageBase and no BaseOfData, subsystem 5.2,
+  LARGE_ADDRESS_AWARE and HIGH_ENTROPY_VA with DYNAMIC_BASE; based at
+  0x140000000 (a program) or 0x180000000 (a DLL), as MSVC and LLD base them;
+  eight-byte import lookup and address entries (an ordinal is bit 63),
+  RIP-relative `jmp [rip+slot]` thunks, DIR64 fix-ups. A 32-bit absolute
+  address cannot be moved above 4 GiB and is refused.
+- THE CONVENTION AT THE EDGES. The image's own code keeps System V's, which
+  every pass, the stack maps and the runtime's hand-written stubs are
+  written for; Windows' x64 convention is used only where Windows is met,
+  as Go does it:
+  - a call into Windows (Conventions.Windows64): positional RCX, RDX, R8, R9
+    or XMM0-3, each float copied into its general register too for a
+    variadic callee, 32 bytes of shadow space under the stack arguments;
+  - a way in from Windows (Function.NativeEntry -- DllMain, the entry, an
+    export's or callback's thunk, a `[StackArguments]` method, which is
+    "the platform's C convention"): a stub the backend writes under the
+    function's name (X64Backend.WindowsEntry) keeps RBX RBP RDI RSI R12-R15
+    and XMM6-15, takes the arguments to System V's places and calls the body
+    (`name$sysv`). The link sends this compiler's own direct calls to the
+    body (Linker.CallBodies).
+- UNWINDING. Every function has a RUNTIME_FUNCTION in .pdata and an
+  UNWIND_INFO (version 1) in .xdata, read back from its prologue
+  (X64Backend.Unwind): a frame is `push rbp ; mov rbp, rsp`, described as Go
+  describes its functions (PUSH_NONVOL rbp, SET_FPREG), so the unwinder
+  recovers RSP from RBP whatever the body pushes; a leaf's pushes and frame
+  are described exactly; a way-in stub describes each register it keeps, so
+  a walk up through the image's frames gives Windows' frames above their
+  own registers back. A frame made after the prologue (FramePointerFree's
+  cold frames) cannot be described and is not made in a Windows image.
+- THE STACK. A frame of a page or more touches its pages in order before
+  `sub rsp` (Encoder.ProbeStack, inline, R10 and R11), as `__chkstk` does:
+  Windows grows a stack through one guard page.
+- THE THREAD BLOCK: a TLS slot again, read without a branch as on i386 --
+  `mov r,[base]; mov r,gs:[r]; add r,[offset]; mov r,[r]` -- where the base
+  cell is 0x30 (the TEB) and the offset 0x1480 + 8k for a slot under 64, or
+  the cell 0x1780 (TlsExpansionSlots) and 8(k - 64) above; written through
+  TlsSetValue (Win32.SetBlock), which makes the expansion array.
+- FAULTS: a vectored handler (Win32.VectoredFault; XP x64 has them, and Go
+  and the CLR use them), since x64 has no registration chain. It reads the
+  x64 CONTEXT and sends a null access violation in the image's code on to
+  Runtime.NullFault through a stub, as Linux's long-mode handler does.
+- THE RUNTIME'S STRUCTURES are the x64 ones: MEMORY_BASIC_INFORMATION (48
+  bytes), SYSTEM_INFO (48), OVERLAPPED (32), handles a word, the program's
+  argv and environment in words of eight.
+- NOT IN A 64-BIT WINDOWS IMAGE: `--store-sequences` (a kernel's: their
+  saves begin mid-function, which no unwind data describes, and a Windows
+  collector stops threads where they cooperate).
+
+TESTED by tests/integration/windows-wine64.sh under Wine: the images'
+headers as objdump reads them, a program whose every line is one edge (a
+null read caught, threads, a collection, frames that probe, a callback from
+msvcrt's qsort, a variadic call with a double, the exit code), and the
+32-bit tests' DLLs and C hosts built for x64, alone and over the 64-bit
+runtime DLL.
+
 ## Testing
 
 Wine on the build host first (Hino, 2026-10-23), the Windows host where Wine
