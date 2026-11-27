@@ -200,7 +200,7 @@ public sealed class MInstr : MOperandList
     /// <summary>The same, marked as selected inside a packed block or outside one (OwnsState): THE ONE LIST of what an instruction carries besides its operands, for every copy made of one (the allocator's rebuild, LoopRotate.Clone, Select.Owning).</summary>
     public MInstr Rebuilt(List<MBlock>? table, byte ownsState) => new(Op)
     {
-        Width = Width, SourceWidth = SourceWidth, To32 = To32, TableSymbol = TableSymbol, FloatArgs = FloatArgs, FloatMask = FloatMask, IntArgs = IntArgs, NativeAl = NativeAl,
+        Width = Width, SourceWidth = SourceWidth, To32 = To32, TableSymbol = TableSymbol, FloatArgs = FloatArgs, FloatMask = FloatMask, IntArgs = IntArgs, NativeAl = NativeAl, Win64 = Win64,
         Line = Line, Cond = Cond, ZeroFirst = ZeroFirst, Native = Native, Lock = Lock, Probed = Probed, OwnsState = ownsState, Asm = Asm,
         Table = table, CallReloc = CallReloc,
     };
