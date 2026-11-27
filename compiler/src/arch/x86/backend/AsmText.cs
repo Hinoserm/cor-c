@@ -38,12 +38,12 @@ internal static class AsmText
     public static void PrintData(StringBuilder sb, Corsac.Lang.Ir.Module module)
     {
         string address = X86Mode.Long ? "dq" : "dd";
-        foreach (string section in new[] { ".rodata", ".data", ".bss" })
+        foreach (string section in new[] { ".rodata", Corsac.Lang.Ir.Section.ObjectsName, ".data", ".bss" })
         {
-            // (A string object, read-only in its contents, is listed with the
-            // read-only data; the object places it with the image's objects,
-            // writable for its lock word: ObjectData.Place.)
-            List<Corsac.Lang.Ir.DataItem> items = module.Data.Where(d => (d.Zero ? ".bss" : d.ReadOnly ? ".rodata" : ".data") == section).ToList();
+            // (A string object, read-only in its contents, is listed where the
+            // object places it: with the image's objects, writable for its
+            // lock word, ObjectData.Place.)
+            List<Corsac.Lang.Ir.DataItem> items = module.Data.Where(d => (d.Zero ? ".bss" : d.ReadOnly && d.HasHeader ? Corsac.Lang.Ir.Section.ObjectsName : d.ReadOnly ? ".rodata" : ".data") == section).ToList();
             if (items.Count == 0) continue;
             sb.Append("section ").Append(section).Append('\n');
             foreach (Corsac.Lang.Ir.DataItem d in items)

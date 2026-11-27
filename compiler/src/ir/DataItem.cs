@@ -39,8 +39,21 @@ public sealed class DataItem
     /// (Section.ObjectsName, ObjectData.Place). Its contents stay ReadOnly to
     /// everything that reads them. `lock ("literal")` faulted on both
     /// targets while literals lay in the read-only segment.
+    /// ONE OBJECT A LITERAL AN IMAGE: equal literals in two images (the
+    /// kernel and a module, a program and a library) are two objects, as the
+    /// C# specification allows -- the same instance is promised only within
+    /// one assembly, and Roslyn marks every assembly NoStringInterning.
     /// </summary>
     public bool HasHeader { get; init; }
+
+    /// <summary>
+    /// Whether the `size` bytes at `at` are the constant the item's bytes say,
+    /// in a target of `word`-byte words: everything a read-only item holds, but
+    /// a string object's sync word (its second header word, HasHeader), which
+    /// a lock writes. Every reader that folds a load from read-only data asks
+    /// it (ReadOnlyFold, Devirtualize, EscapeFields).
+    /// </summary>
+    public bool IsConstantAt(long at, int size, int word) => !(HasHeader && at < 2 * word && at + size > word);
 
     /// <summary>
     /// A volatile static's: written where the program's IR cannot see -- by

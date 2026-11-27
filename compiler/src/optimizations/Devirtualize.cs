@@ -582,7 +582,7 @@ public sealed class Devirtualize : IModulePass
                         // as this one shadows it, which leaves its relocations
                         // out: a word there may be one.
                         if (Shadow(table, item) || item.Relocs.Any(rel => rel.Offset < w + d.Size && rel.Offset + word > w)) return null;
-                        if (w < 0 || w + d.Size > item.Bytes.Length || d.Size is not (4 or 8)) return null;
+                        if (w < 0 || w + d.Size > item.Bytes.Length || d.Size is not (4 or 8) || !item.IsConstantAt(w, d.Size, word)) return null;
                         read.Add((null, d.Size == 8 ? BitConverter.ToInt64(item.Bytes, (int)w) : (d.Signed ? BitConverter.ToInt32(item.Bytes, (int)w) : BitConverter.ToUInt32(item.Bytes, (int)w))));
                     }
                     return read;

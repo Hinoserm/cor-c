@@ -492,6 +492,7 @@ public sealed class Module
         {
             sb.Append("data ").Append(d.Name).Append(' ').Append(d.Bytes.Length).Append(" bytes");
             if (d.ReadOnly) sb.Append(" ro");
+            if (d.HasHeader) sb.Append(" object");
             if (d.Zero) sb.Append(" zero");
             if (d.Relocs.Count > 0) sb.Append(' ').Append(d.Relocs.Count).Append(" relocs");
             sb.Append('\n');

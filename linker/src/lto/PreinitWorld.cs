@@ -68,7 +68,7 @@ public sealed class PreinitWorld
         public string? Maker { get; init; }
         public required byte[] Bytes;
         public Dictionary<int, Val> Refs = new();
-        /// <summary>Read-only data: a descriptor, a literal. Never written.</summary>
+        /// <summary>Read-only data: a descriptor, a literal's contents (a lock writes only its header's sync word, at run time). Never written here.</summary>
         public bool ReadOnly { get; init; }
         /// <summary>A symbol the image does not define, made for the run alone (Address): never laid down, nor kept.</summary>
         public bool Dropped { get; init; }

@@ -10801,10 +10801,12 @@ public static class Gc
     /// share nothing but the heap lock, under which alone the walk sees a
     /// call's lists.
     ///
-    /// A STRING OF THE RANGE'S OWN -- a literal in a module's read-only data,
-    /// kept by the kernel as a key or a name -- is not cleared: the slot is
-    /// given a copy of it in the heap (`moved`), so a table keeps its key and
-    /// its entry. Found under the lock, copied after it, and put in under it
+    /// A STRING OF THE RANGE'S OWN -- a literal of a module's, kept by the
+    /// kernel as a key or a name -- is not cleared: the slot is given a copy
+    /// of it in the heap (`moved`), so a table keeps its key and its entry.
+    /// (A copy is another object: a lock someone holds on the module's
+    /// literal while the module goes is not carried to it -- nothing should
+    /// hold one across its own module's unloading.) Found under the lock, copied after it, and put in under it
     /// again with no collection under way, each only where the slot still
     /// holds the literal.
     public static long CutReferencesInto(nuint low, nuint high, long max, out long marked, out long cut, out long moved)

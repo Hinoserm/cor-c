@@ -83,8 +83,8 @@ internal static class ObjectData
     /// one the loader must make writable -- the whole page, privately, for
     /// every process. In a shared object that is every address; in an
     /// executable it is only an address a library supplies
-    /// (`suppliedByAnother`), which a string literal has (the descriptor of
-    /// `byte[]` is the runtime's). Such constants go in a section the
+    /// (`suppliedByAnother`), which a UTF-8 literal's array has (the
+    /// descriptor of `byte[]` is the runtime's). Such constants go in a section the
     /// loader relocates and then protects; those of them naming what this
     /// module does not define (its functions and its data, not the tables
     /// every object carries), in a shared object, in one of their own

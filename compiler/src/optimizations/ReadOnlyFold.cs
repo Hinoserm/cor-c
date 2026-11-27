@@ -113,7 +113,7 @@ public sealed class ReadOnlyFold : IParallelModulePass
                     // header word, is the one word of it a lock writes:
                     // never folded to the zero it starts as, or IsEntered
                     // and Exit inlined over a literal read 0 while it is held.
-                    if (item.HasHeader && at < 2 * relocBytes && at + i.Size > relocBytes)
+                    if (!item.IsConstantAt(at, i.Size, relocBytes))
                     {
                         continue;
                     }

@@ -2065,7 +2065,8 @@ public sealed partial class Lowering
     {
         byte[] block = new byte[_t.ArrayHeaderBytes + 2 * text.Length];
         WriteWord(block, _t.ArrayCountOffset, text.Length);
-        // ITS HASH, WRITTEN IN NOW: a literal is read-only data, and the
+        // ITS HASH, WRITTEN IN NOW: a literal's contents are read-only (a
+        // lock writes only its sync word, DataItem.HasHeader), and the
         // runtime keeps a string's hash in these four bytes the first time it
         // is asked (Runtime.StringHashCode) -- which must find it already here.
         uint hash = 2166136261;

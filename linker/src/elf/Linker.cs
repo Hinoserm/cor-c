@@ -290,13 +290,13 @@ public static partial class Linker
         // .bss carries no bytes, so the file ends where the last section with
         // bytes does: .data, or the numbers ahead of it, or the constants.
         ulong last = layout.Text.Size;
-        foreach (OutputSection s in new[] { layout.ReadOnlyData, layout.Numbers, layout.Data })
+        foreach (OutputSection s in new[] { layout.ReadOnlyData, layout.Objects, layout.Numbers, layout.Data })
         {
             if (s.Size != 0) last = Math.Max(last, s.Addr + s.Size - baseAddress);
         }
         uint size = checked((uint)last);
         byte[] image = new byte[size];
-        foreach (OutputSection s in new[] { layout.Text, layout.ReadOnlyData, layout.Numbers, layout.Data })
+        foreach (OutputSection s in new[] { layout.Text, layout.ReadOnlyData, layout.Objects, layout.Numbers, layout.Data })
         {
             if (s.Size == 0)
             {
@@ -319,7 +319,7 @@ public static partial class Linker
         uint zeroBytes = checked((uint)(layout.Bss.Size == 0 ? 0
             : checked(layout.Bss.Addr + layout.Bss.Size - baseAddress - size)));
         return new FlatImage(image, baseAddress, entry.Address,
-                             layout.Text.Size, layout.ReadOnlyData.Size, layout.Numbers.Size + layout.Data.Size, zeroBytes);
+                             layout.Text.Size, layout.ReadOnlyData.Size, layout.Objects.Size + layout.Numbers.Size + layout.Data.Size, zeroBytes);
     }
 
     /// <summary>
@@ -577,8 +577,8 @@ public static partial class Linker
         public OutputSection Data { get; } = new(".data", SectionKind.Data);
         public OutputSection RelocatedConstants { get; } = new(".data.rel.ro", SectionKind.Data);
         /// <summary>
-        /// The loader-written constants that name another image -- a string
-        /// literal's descriptor, a vtable's imported interface -- apart from
+        /// The loader-written constants that name another image -- a
+        /// descriptor's runtime type, a vtable's imported interface -- apart from
         /// the rest, and after them: the loader writes these words at every
         /// start, which makes each page they are on the process's own, and
         /// scattered among the others they made most of a library's
@@ -587,14 +587,21 @@ public static partial class Linker
         public OutputSection RelocatedImports { get; } = new(".data.rel.ro.imports", SectionKind.Data);
 
         /// <summary>
-        /// Writable data that holds no reference to the heap -- a static array
-        /// of numbers, and the image's objects (Section.ObjectsName: its
-        /// strings, which name only their descriptors) -- ahead of .data and
-        /// so outside __data_start.._end, the statics the collector reads as
-        /// roots: read there, its words looked like addresses and kept
-        /// whatever the heap held at them.
+        /// Writable data that holds no reference -- a static array of numbers --
+        /// ahead of .data and so outside __data_start.._end, the statics the
+        /// collector reads as roots: read there, its words looked like
+        /// addresses and kept whatever the heap held at them.
         /// </summary>
         public OutputSection Numbers { get; } = new(".data.corsac.numbers", SectionKind.Data);
+
+        /// <summary>
+        /// THE IMAGE'S OBJECTS (Section.ObjectsName: its strings), together,
+        /// writable for a lock's header word and outside the roots, beside
+        /// the numbers: in a moving image every one holds a word the loader
+        /// writes, and spread among the number tables those writes made the
+        /// tables' pages private in every process too.
+        /// </summary>
+        public OutputSection Objects { get; } = new(Section.ObjectsName, SectionKind.Data);
         public OutputSection Bss { get; } = new(".bss", SectionKind.Uninitialised);
         public List<OutputSection> Notes { get; } = new();
         /// <summary>Loadable sections the linker made itself, outside the RX and RW runs: the resources.</summary>
@@ -661,6 +668,7 @@ public static partial class Linker
         {
             ReadOnly.Add(Text);
             ReadOnly.Add(ReadOnlyData);
+            Writable.Add(Objects);
             Writable.Add(Numbers);
             Writable.Add(Data);
             Writable.Add(Bss);
@@ -676,10 +684,12 @@ public static partial class Linker
             if (s.Kind == SectionKind.Data && (s.Name == ".data.rel.ro"
                 || s.Name.StartsWith(".data.rel.ro.", StringComparison.Ordinal)))
                 return Dyn is null ? ReadOnlyData : RelocatedConstants;
-            // THE IMAGE'S OBJECTS (Section.ObjectsName) with the numbers:
-            // writable, for a lock writes their headers, and outside the
-            // roots, for they name nothing but the image's own.
-            if (s.Kind == SectionKind.Data && (s.Name == ".data.corsac.numbers" || s.Name == Section.ObjectsName))
+            // THE IMAGE'S OBJECTS (Section.ObjectsName), together beside the
+            // numbers: writable, for a lock writes their headers, and outside
+            // the roots, for they name nothing but the image's own.
+            if (s.Kind == SectionKind.Data && s.Name == Section.ObjectsName)
+                return Objects;
+            if (s.Kind == SectionKind.Data && s.Name == ".data.corsac.numbers")
                 return Numbers;
             switch (s.Kind)
             {

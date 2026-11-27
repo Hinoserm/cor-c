@@ -8,7 +8,7 @@
 // 5000,5000
 //
 // A string's hash is worked out once and kept in its header; a literal's is
-// written in by the compiler, since a literal is read-only data. A literal and
+// written in by the compiler, since a literal's contents are read-only. A literal and
 // the same characters built at run time must hash alike through every door --
 // GetHashCode, StringComparer.Ordinal, EqualityComparer<string>.Default -- and
 // tables keyed by strings, ordinal or folded, must find them. Expected output

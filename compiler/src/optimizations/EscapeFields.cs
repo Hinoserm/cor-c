@@ -1318,7 +1318,7 @@ public sealed partial class Escape
                         foreach (DataReloc rel in item.Relocs)
                             if (rel.Offset == w) return i.Size == word ? new Known(rel.Symbol, rel.Addend) : null;
                         if (item.Relocs.Any(rel => rel.Offset < w + i.Size && rel.Offset + word > w)) return null;
-                        if (w < 0 || w + i.Size > item.Bytes.Length || i.Size is not (4 or 8)) return null;
+                        if (w < 0 || w + i.Size > item.Bytes.Length || i.Size is not (4 or 8) || !item.IsConstantAt(w, i.Size, word)) return null;
                         return new Known(null, i.Size == 8 ? BitConverter.ToInt64(item.Bytes, (int)w) : (i.Signed ? BitConverter.ToInt32(item.Bytes, (int)w) : BitConverter.ToUInt32(item.Bytes, (int)w)));
                     }
                     case var _ when IrInfo.IsIntCompare(i.Op) && i.Operands.Count == 2 && Of(i.Operands[0]) is { } x && Of(i.Operands[1]) is { } y:

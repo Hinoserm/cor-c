@@ -7655,8 +7655,9 @@ public static partial class Runtime
     /// bytes after the count, which the header pads to eight-byte elements
     /// and nothing else uses; 0 there means not yet worked out, so a hash
     /// that comes out 0 is kept as 1. A literal's is written in by the
-    /// compiler (Lowering.InternString), because a literal lives in read-only
-    /// data and must never be written here.
+    /// compiler (Lowering.InternString), because a literal's contents are
+    /// read-only and must never be written here (only a lock writes its
+    /// header's sync word).
     ///
     /// 32-bit FNV-1a over the code units: one 32-bit multiply a unit where
     /// the 64-bit one was three on this processor, for a hash that is an int

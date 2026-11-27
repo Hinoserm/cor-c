@@ -16,7 +16,8 @@ namespace Corsac.Lang.Elf;
 ///   ImageBase     MS-DOS header and stub, PE headers, section table
 ///   +0x1000       .text    code, then a `jmp [IAT]` thunk per import
 ///                 .rdata   constants, then the export directory
-///                 .data    numbers, statics, then .bss (memory, no file bytes)
+///                 .data    the image's objects (its strings), numbers,
+///                          statics, then .bss (memory, no file bytes)
 ///                 .pdata   (PE32+) a RUNTIME_FUNCTION for every function
 ///                 .idata   the import directory, its lookup tables and IAT
 ///                 .reloc   a HIGHLOW (PE32) or DIR64 (PE32+) fix-up for every absolute address
@@ -318,7 +319,7 @@ public static partial class Linker
             new PeSection(".text", PeSectionFlags.Code | PeSectionFlags.Execute | PeSectionFlags.Read, layout.Text, thunks),
             new PeSection(".rdata", PeSectionFlags.InitializedData | PeSectionFlags.Read, layout.ReadOnlyData, ownGot, dataImportTable, exportSection),
             new PeSection(".pdata", PeSectionFlags.InitializedData | PeSectionFlags.Read, pdata),
-            new PeSection(".data", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, layout.Numbers, layout.Data, layout.Bss),
+            new PeSection(".data", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, layout.Objects, layout.Numbers, layout.Data, layout.Bss),
             new PeSection(".idata", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, importSection),
         };
         sections.RemoveAll(section => section.Empty);
