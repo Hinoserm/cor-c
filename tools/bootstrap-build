@@ -4,17 +4,19 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tool="$root/compiler/bin/managed/Release/net10.0/corc"
 packages="${NUGET_PACKAGES:-$(dotnet nuget locals global-packages --list | sed 's/^global-packages: //')}"
-# AOT packs 10.0.15 or later only (NativeAotBuild.MinimumPacks): 10.0.3's
-# garbage collector can hang the compiler. Older ones in the cache do not
-# count, so the seed below restores the SDK's own -- which must be 10.0.15 or
-# later too, or the build refuses them by name.
-minimum=10.0.15
+# THE NEWEST .NET INSTALLED, NOT A VERSION NAMED HERE: the AOT packs count
+# only when they are as new as the newest runtime of the compiler's major
+# version on this machine, so an update of the SDK is taken by the next
+# bootstrap (the seed below restores the SDK's own packs). The cache once kept
+# 10.0.3's while 10.0.15 had fixed a collector hang in it.
+major=$(sed -n 's|.*<TargetFramework>net\([0-9]*\)\..*|\1|p' "$root/compiler/corc.csproj" | head -n 1)
+newest=$(dotnet --list-runtimes | awk -v m="$major" '$1 == "Microsoft.NETCore.App" && index($2, m ".") == 1 { print $2 }' | sort -V | tail -n 1)
 have_packs=0
-for pack in "$packages"/runtime.linux-x64.microsoft.dotnet.ilcompiler/10.*/tools/ilc; do
+for pack in "$packages"/runtime.linux-x64.microsoft.dotnet.ilcompiler/"$major".*/tools/ilc; do
     if [ -f "$pack" ]; then
         version=${pack%/tools/ilc}
         version=${version##*/}
-        [ "$(printf '%s\n%s\n' "$minimum" "$version" | sort -V | head -n 1)" = "$minimum" ] || continue
+        [ -z "$newest" ] || [ "$(printf '%s\n%s\n' "$newest" "$version" | sort -V | head -n 1)" = "$newest" ] || continue
         if [ -f "$packages/microsoft.netcore.app.runtime.nativeaot.linux-x64/$version/runtimes/linux-x64/native/libbootstrapper.o" ]; then have_packs=1; break; fi
     fi
 done
