@@ -91,8 +91,10 @@ public static class NativeAotBuild
             ["System.GC.HeapHardLimit"] = "GCHeapHardLimit",
             ["System.GC.Gen0Size"] = "GCgen0size",
         };
+        bool serverCollector = false;
         foreach (var pair in ManagedRuntimeConfiguration.Create(project.Properties))
         {
+            if (pair.Key == "System.GC.Server" && pair.Value is true) serverCollector = true;
             if (!knobs.TryGetValue(pair.Key, out string? knob)) continue;
             args.Add("--runtimeopt:" + knob + "=" + pair.Value switch
             {
@@ -105,7 +107,12 @@ public static class NativeAotBuild
             ? ["System.Native", "System.IO.Compression.Native", "System.Net.Security.Native", "System.Security.Cryptography.Native.OpenSsl"]
             : ["System.Native", "System.IO.Compression.Native", "System.Net.Security.Native", "System.Security.Cryptography.Native.OpenSsl", "System.Globalization.Native"];
         args.AddRange(shims.Select(name => "--directpinvoke:" + name));
-        string[] archives = new[] { "libbootstrapper.o", "libRuntime.WorkstationGC.a", "libeventpipe-disabled.a",
+        // THE COLLECTOR IS LINKED IN, not chosen by a knob alone: an image with
+        // only the workstation library runs the workstation collector
+        // whatever gcServer says (the SDK's Microsoft.NETCore.Native.Unix.targets:
+        // libRuntime.ServerGC when ServerGarbageCollection is on). corc asked
+        // for the server collector and ran the workstation one.
+        string[] archives = new[] { "libbootstrapper.o", serverCollector ? "libRuntime.ServerGC.a" : "libRuntime.WorkstationGC.a", "libeventpipe-disabled.a",
             "libRuntime.VxsortEnabled.a", "libstandalonegc-disabled.a", "libaotminipal.a", "libstdc++compat.a",
             "libz.a", "libbrotlienc.a", "libbrotlidec.a", "libbrotlicommon.a" }
             .Concat(shims.Select(name => "lib" + name + ".a")).Select(name => Path.Combine(native, name)).ToArray();
