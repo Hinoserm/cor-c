@@ -8,6 +8,19 @@ namespace Corsac.Build;
 /// <summary>Host-native publishing after owned project evaluation and Roslyn compilation.</summary>
 public static class NativeAotBuild
 {
+    /// <summary>
+    /// THE OLDEST NATIVE AOT PACKS THE TOOLCHAIN IS BUILT WITH. 10.0.3's
+    /// garbage collector can loop forever in its plan phase on a plug of
+    /// live objects nearly one 4 MiB region long (gc_heap::
+    /// allocate_in_condemned_generations: with its front padding the plug fits
+    /// in no region, and the retry never ends); corc hung so linking the
+    /// x86-64 kernel, every other thread waiting on the collection.
+    /// dotnet/runtime fixed it in 78f97fa34e33, first released in 10.0.15
+    /// (10.0.8 has not got it). Older packs are refused by name rather than
+    /// built with.
+    /// </summary>
+    public static readonly Version MinimumPacks = new(10, 0, 15);
+
     public static bool Enabled(IReadOnlyDictionary<string, string> properties)
     {
         if (!properties.TryGetValue("PublishAot", out string? value)) return true;
@@ -27,10 +40,10 @@ public static class NativeAotBuild
         string runtimeRoot = Path.Combine(packages, "microsoft.netcore.app.runtime.nativeaot." + rid);
         string? version = Directory.Exists(compilerRoot) ? Directory.GetDirectories(compilerRoot)
             .Select(Path.GetFileName).Where(name => Version.TryParse(name, out Version? v)
-                && v.Major.ToString() == project.Framework[3..].Split('.')[0]
+                && v.Major.ToString() == project.Framework[3..].Split('.')[0] && v >= MinimumPacks
                 && Directory.Exists(Path.Combine(runtimeRoot, name!, "runtimes", rid, "lib", project.Framework)))
             .OrderByDescending(name => Version.Parse(name!)).FirstOrDefault() : null;
-        if (version is null) throw new IOException("Native AOT packs are missing; run tools/bootstrap-build to provision the build utility and its matching AOT packs");
+        if (version is null) throw new IOException("Native AOT packs " + MinimumPacks + " or later are missing (10.0.3's garbage collector can hang the compiler: dotnet/runtime 78f97fa34e33); update the .NET 10 SDK to one bundling runtime " + MinimumPacks + " or later, then run tools/bootstrap-build to provision its AOT packs");
         string ilc = Path.Combine(compilerRoot, version, "tools/ilc");
         string runtime = Path.Combine(runtimeRoot, version, "runtimes", rid);
         string native = Path.Combine(runtime, "native");

@@ -4,11 +4,17 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tool="$root/compiler/bin/managed/Release/net10.0/corc"
 packages="${NUGET_PACKAGES:-$(dotnet nuget locals global-packages --list | sed 's/^global-packages: //')}"
+# AOT packs 10.0.15 or later only (NativeAotBuild.MinimumPacks): 10.0.3's
+# garbage collector can hang the compiler. Older ones in the cache do not
+# count, so the seed below restores the SDK's own -- which must be 10.0.15 or
+# later too, or the build refuses them by name.
+minimum=10.0.15
 have_packs=0
 for pack in "$packages"/runtime.linux-x64.microsoft.dotnet.ilcompiler/10.*/tools/ilc; do
     if [ -f "$pack" ]; then
         version=${pack%/tools/ilc}
         version=${version##*/}
+        [ "$(printf '%s\n%s\n' "$minimum" "$version" | sort -V | head -n 1)" = "$minimum" ] || continue
         if [ -f "$packages/microsoft.netcore.app.runtime.nativeaot.linux-x64/$version/runtimes/linux-x64/native/libbootstrapper.o" ]; then have_packs=1; break; fi
     fi
 done
